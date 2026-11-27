@@ -788,16 +788,16 @@ pub fn open_print(app: &mut DesignApp) {
 
 /// File › Export PDF…: the "Export PDF" options dialog, seeded from the persisted settings
 /// (`UiState.pdf_export`). `pages` is per-job (not persisted); `flatten` falls back to the global
-/// flattener preset when the persisted value is empty. `title` starts empty: a title given to the
+/// flattener preset until the user has chosen a flattener in the dialog (`flatten_chosen`).
+/// `title` starts empty: a title given to the
 /// dialog is the PDF's title and names the file, and without one the file is named after the
 /// document and the PDF takes its title from File Info.
 pub fn open_pdf_export(app: &mut DesignApp) {
     let mut fields = serde_json::to_value(&app.ui.pdf_export).unwrap_or_else(|_| json!({}));
     if let Value::Object(m) = &mut fields {
         m.insert("pages".into(), json!("all"));
-        if app.ui.pdf_export.flatten.is_empty() {
-            m.insert("flatten".into(), json!(app.ui.flattener));
-        }
+        let flatten = app.ui.pdf_export.resolved_flatten(&app.ui.flattener);
+        m.insert("flatten".into(), json!(flatten));
     }
     app.ui.dialog = Some(Dialog::new("pdfExport", fields));
 }
@@ -980,9 +980,7 @@ fn pdf_export_params(d: &Dialog) -> Value {
         },
     });
     let flatten = d.s("flatten");
-    if !flatten.is_empty() {
-        params["flatten"] = json!(flatten);
-    }
+    params["flatten"] = if flatten.is_empty() { json!(false) } else { json!(flatten) };
     params
 }
 
@@ -998,16 +996,16 @@ pub(crate) fn pdf_preset_params(preset: &str) -> Value {
     pdf_export_params(&d)
 }
 
-/// Apply a preset's dependent fields. Flatten is only touched by "Screen and Email" and
-/// "PDF/X-1a:2003" (High Resolution); "Custom" (and any unknown value) changes nothing.
+/// Apply a preset's dependent fields. Every preset keeps live transparency (`flatten = ""`)
+/// except `"PDF/X-1a:2003"` (High Resolution); `"Custom"` (and any unknown value) changes nothing.
 fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     let (standard, compress, crop, bleed, page_info, flatten) = match preset {
-        "Desktop Printing" => ("none", false, false, false, false, None),
-        "Commercial Printing" => ("none", true, true, true, false, None),
-        "Screen and Email" => ("none", true, false, false, false, Some("low")),
-        "PDF/X-1a:2003" => ("x1a", false, true, true, false, Some("high")),
-        "PDF/X-4" => ("x4", false, true, true, false, None),
-        "PDF/A-2b" => ("a2b", false, false, false, false, None),
+        "Desktop Printing" => ("none", false, false, false, false, ""),
+        "Commercial Printing" => ("none", true, true, true, false, ""),
+        "Screen and Email" => ("none", true, false, false, false, ""),
+        "PDF/X-1a:2003" => ("x1a", false, true, true, false, "high"),
+        "PDF/X-4" => ("x4", false, true, true, false, ""),
+        "PDF/A-2b" => ("a2b", false, false, false, false, ""),
         _ => return,
     };
     d.fields.insert("standard".into(), json!(standard));
@@ -1015,9 +1013,7 @@ fn apply_pdf_preset(d: &mut Dialog, preset: &str) {
     d.fields.insert("marksCrop".into(), json!(crop));
     d.fields.insert("marksBleed".into(), json!(bleed));
     d.fields.insert("marksPageInfo".into(), json!(page_info));
-    if let Some(f) = flatten {
-        d.fields.insert("flatten".into(), json!(f));
-    }
+    d.fields.insert("flatten".into(), json!(flatten));
 }
 
 /// File › Export PDF: the "Export PDF" options (General / Compression / Marks and Bleeds /
@@ -1467,6 +1463,14 @@ pub(crate) fn general(lang: &str, ui: &mut egui::Ui, d: &mut Dialog) {
             let columns = crate::widgets::NumField::number("tfo_columns", n, "", 0).name(number.trim_end_matches(':'));
             if let Some(v) = columns.width(field).spinner().range(1.0, 40.0).show(ui) {
                 d.fields.insert("columns".into(), json!(v.round().to_string()));
+            }
+            // InDesign opens with the Columns count focused, so Up, Up, Return makes 3 columns
+            // without the mouse. Once, after the field is shown and registered this frame:
+            // moving focus elsewhere is not overridden on later frames. (Object Styles reuse
+            // this page for their Text Frame section: only Text Frame Options takes the focus.)
+            if d.id == "textFrameOptions" && !d.fields.contains_key("_focusColumns") {
+                ui.ctx().memory_mut(|m| m.request_focus(crate::widgets::NumField::editor_id(ui, "tfo_columns")));
+                d.fields.insert("_focusColumns".into(), json!(true));
             }
             // Fixed Number: the width follows from the frame; Fixed Width: it's set here.
             caption_at(ui, tr("Width:"), cap2);
@@ -2492,6 +2496,8 @@ fn setup_link(ui: &mut egui::Ui, lang: &str, d: &mut Dialog, group: &str, change
 /// then Page Size (preset, width, height, orientation), Margins, Bleed and Slug (each edge, linked or
 /// not), and Adjust Layout. Returns true when Adjust Layout was clicked (apply now, objects follow).
 fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> bool {
+    // Binding shows under Show Right-to-Left Features, or when the document is bound right to left.
+    let show_binding = crate::show_rtl_control(app, app.session.active().is_some_and(|s| s.doc.settings.right_to_left_binding));
     let lang = app.ui.language.as_str();
     let tr = |s: &'static str| crate::i18n::tr(lang, s);
     let rtl = crate::i18n::is_rtl(lang);
@@ -2532,20 +2538,6 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
         // Set when the document is made (New Document); shown here, as InDesign does.
         ui.add_enabled_ui(false, |ui| check(ui, d, "primaryTextFrame", tr("Primary Text Frame")));
     });
-    setup_row(ui, rtl, |ui| {
-        setup_caption(ui, tr("Binding:"), label_w);
-        let right_to_left = d.s("binding") == "rightToLeft";
-        craft_ui::ComboBox::from_id_salt("ds_binding")
-            .selected_text(crate::rtl::widget(ui, tr(if right_to_left { "Right to Left" } else { "Left to Right" })))
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                for (v, l) in [("leftToRight", "Left to Right"), ("rightToLeft", "Right to Left")] {
-                    if ui.selectable_label((v == "rightToLeft") == right_to_left, crate::rtl::widget(ui, tr(l))).clicked() {
-                        d.fields.insert("binding".into(), json!(v));
-                    }
-                }
-            });
-    });
     ui.add_space(4.0);
     // Page Size.
     let (w, h) = (setup_measure(d, "width").unwrap_or(612.0), setup_measure(d, "height").unwrap_or(792.0));
@@ -2585,6 +2577,20 @@ fn document_setup(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog) -> 
         setup_row(ui, rtl, |ui| {
             setup_caption(ui, tr("Height:"), 70.0);
             setup_spin(ui, d, "height", 130.0, 1.0);
+            // Binding, under Orientation as two buttons, under Show Right-to-Left Features or for a
+            // right-to-left bound document.
+            if show_binding {
+                ui.add_space(30.0);
+                crate::rtl::label(ui, tr("Binding:"));
+                let right_to_left = d.s("binding") == "rightToLeft";
+                for (icon, tip, value, on) in
+                    [("bind-ltr", "Left to Right", "leftToRight", !right_to_left), ("bind-rtl", "Right to Left", "rightToLeft", right_to_left)]
+                {
+                    if crate::widgets::icon_toggle_sized(ui, icon, on, tr(tip), egui::vec2(26.0, 26.0)).clicked() && !on {
+                        d.fields.insert("binding".into(), json!(value));
+                    }
+                }
+            }
         });
     });
     ui.add_space(4.0);
@@ -2855,12 +2861,39 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     ui.add_space(6.0);
                     ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Links")).font(semibold(12.0))));
                     check(ui, d, "linkTextFiles", crate::i18n::tr(&app.ui.language, "Create Links When Placing Text Files"));
+                    ui.add_space(6.0);
+                    ui.label(crate::rtl::widget(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Saving")).font(semibold(12.0))));
+                    ui.horizontal(|ui| {
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Save documents as:"));
+                        let cur = d.s("saveFormat");
+                        let formats = [("designcraft", "DesignCraft (.designcraft)"), ("idml", "InDesign Markup (.idml)")];
+                        let shown = formats.iter().find(|(v, _)| *v == cur).map_or(formats[0].1, |(_, l)| l);
+                        craft_ui::ComboBox::from_id_salt("pref_save_format")
+                            .selected_text(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, shown)))
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for (v, l) in formats {
+                                    if ui.selectable_label(v == cur, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, l))).clicked() {
+                                        d.fields.insert("saveFormat".into(), json!(v));
+                                    }
+                                }
+                            });
+                    });
+                    crate::rtl::label(
+                        ui,
+                        egui::RichText::new(crate::i18n::tr(
+                            &app.ui.language,
+                            "InDesign Markup: new documents are saved as .idml, and an opened .idml file is saved back to itself.",
+                        ))
+                        .small(),
+                    );
                 }
                 "type" => {
                     crate::rtl::label(ui, egui::RichText::new(crate::i18n::tr(&app.ui.language, "Type Options")).font(semibold(12.0)));
                     check(ui, d, "typographersQuotes", crate::i18n::tr(&app.ui.language, "Use Typographer's Quotes"));
                     check(ui, d, "showFontNamesInEnglish", crate::i18n::tr(&app.ui.language, "Show Font Names in English"));
                     check(ui, d, "cjkFeatures", crate::i18n::tr(&app.ui.language, "Show CJK Features"));
+                    check(ui, d, "rtlFeatures", crate::i18n::tr(&app.ui.language, "Show Right-to-Left Features"));
                     ui.add_space(6.0);
                     ui.label(crate::rtl::widget(
                         ui,
@@ -3314,6 +3347,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         "userDictionary" => crate::i18n::tr(&app.ui.language, "User Dictionary"),
         "newWorkspace" => crate::i18n::tr(&app.ui.language, "New Workspace"),
         "closeDocument" => crate::i18n::tr(&app.ui.language, "Unsaved Changes"),
+        "idmlLoss" => crate::i18n::tr(&app.ui.language, "Save as IDML"),
         "deletePages" => crate::i18n::tr(&app.ui.language, "Warning"),
         "pagesPanelOptions" => crate::i18n::tr(&app.ui.language, "Panel Options"),
         "parentOptions" => crate::i18n::tr(&app.ui.language, "Parent Options"),
@@ -3353,7 +3387,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let available = (ctx.content_rect().size() - frame_margin - egui::vec2(16.0, 16.0)).max(egui::Vec2::splat(1.0));
         let preferred_width: f32 = match d.id.as_str() {
             "alert" => 440.0,
-            "closeDocument" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "parentOptions" | "insertTable"
+            "closeDocument" | "idmlLoss" | "updateLink" | "deletePages" | "newWorkspace" | "pagesPanelOptions" | "parentOptions" | "insertTable"
             | "convertTableToText" => 380.0,
             "insertPages" => 440.0,
             "convertTextToTable" => 420.0,
@@ -3934,6 +3968,13 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                             .replace("{}", &d.s("title"));
                         crate::rtl::label(ui, text);
                     }
+                    "idmlLoss" => {
+                        idml_loss_text(app, ui, &d);
+                        ui.add_space(8.0);
+                        // With Save Anyway: no more asking about this document until DesignCraft
+                        // quits.
+                        check(ui, &mut d, "dontAskAgain", crate::i18n::tr(&app.ui.language, "Don't ask again for this document"));
+                    }
                     "deletePages" => {
                         let several = d.fields.get("pages").and_then(Value::as_array).is_some_and(|p| p.len() > 1);
                         crate::rtl::label(
@@ -4211,6 +4252,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
         let ok_label = match d.id.as_str() {
             "colorTheme" => crate::i18n::tr(&app.ui.language, "Add to Swatches").to_string(),
             "closeDocument" => crate::i18n::tr(&app.ui.language, "  Save  ").to_string(),
+            "idmlLoss" => crate::i18n::tr(&app.ui.language, "Save Anyway").to_string(),
             "updateLink" => crate::i18n::tr(&app.ui.language, "  Update  ").to_string(),
             "findFont" => crate::i18n::tr(&app.ui.language, "Replace All").to_string(),
             "newDocument" => format!("  {}  ", crate::i18n::tr(&app.ui.language, "Create")),
@@ -4258,6 +4300,10 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
                 }
                 if d.id == "closeDocument" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Don't Save"))).clicked() {
                     d.fields.insert("discard".into(), json!(true));
+                    result = Some(true);
+                }
+                if d.id == "idmlLoss" && ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Save as DesignCraft…"))).clicked() {
+                    d.fields.insert("asDesigncraft".into(), json!(true));
                     result = Some(true);
                 }
             });
@@ -4605,6 +4651,11 @@ pub fn cancel(app: &mut DesignApp) {
         }
     }
     app.cancel_pdf_import();
+    if d.as_ref().is_some_and(|d| d.id == "idmlLoss")
+        && let Err(e) = crate::menus::answer_idml_loss(app, crate::menus::LossyAnswer::Cancel)
+    {
+        app.status(e);
+    }
     if let Some(d) = d
         && d.id == "preferences"
     {
@@ -4620,6 +4671,24 @@ pub fn cancel(app: &mut DesignApp) {
             let _ = app.run("window.brightness", json!({"brightness": b}));
         }
     }
+}
+
+/// The IDML loss question: what saving as IDML would lose, and what the answers do.
+fn idml_loss_text(app: &DesignApp, ui: &mut egui::Ui, d: &Dialog) {
+    let lang = &app.ui.language;
+    let count = |k: &str| d.fields.get(k).and_then(Value::as_u64).unwrap_or(0);
+    crate::rtl::label(ui, crate::i18n::tr(lang, "IDML can't keep all of this document. Saving it as IDML loses:"));
+    ui.add_space(4.0);
+    let (notes, endnotes) = (count("editorialNotes"), count("endnotes"));
+    if notes > 0 {
+        crate::rtl::label(ui, format!("•  {}", crate::i18n::tr(lang, "{} editorial note(s)").replace("{}", &notes.to_string())));
+    }
+    if endnotes > 0 {
+        let text = crate::i18n::tr(lang, "{} endnote(s): their text stays as plain text in the endnote frame").replace("{}", &endnotes.to_string());
+        crate::rtl::label(ui, format!("•  {text}"));
+    }
+    ui.add_space(8.0);
+    crate::rtl::label(ui, crate::i18n::tr(lang, "Saved as DesignCraft, the document keeps everything."));
 }
 
 fn find_change_params(d: &Dialog) -> Value {
@@ -5303,7 +5372,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                 return app.confirm_pdf_import(page, if crop.is_empty() { "crop".into() } else { crop }, d.b("append"));
             }
             if let Some(target) = d.fields.get("target").and_then(Value::as_u64) {
-                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target) })?;
+                app.activate_import_target(&crate::ImportRequest { purpose: "place".into(), target: Some(target), wanted: Vec::new() })?;
             }
             let placed = app.place_file(
                 json!({"path": d.s("path"), "pdfPage": page, "pdfCrop": if crop.is_empty() { "crop".to_string() } else { crop }, "append": d.b("append")}),
@@ -5373,6 +5442,7 @@ fn confirm_part3(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             app.ui.pdf_export.standard = d.s("standard");
             app.ui.pdf_export.compress_images = d.b("compressImages");
             app.ui.pdf_export.flatten = d.s("flatten");
+            app.ui.pdf_export.flatten_chosen = true;
             app.ui.pdf_export.spreads = d.b("spreads");
             app.ui.pdf_export.bleed = d.b("bleed");
             app.ui.pdf_export.marks_crop = d.b("marksCrop");
@@ -5434,6 +5504,13 @@ fn confirm_part4(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
                     }).collect::<Vec<_>>()});
             if d.b("cjkFeatures") != d.b("cjkFeatures.initial") {
                 prefs["cjkFeatures"] = json!(d.b("cjkFeatures"));
+            }
+            if d.b("rtlFeatures") != d.b("rtlFeatures.initial") {
+                prefs["rtlFeatures"] = json!(d.b("rtlFeatures"));
+            }
+            // Save documents as (File Handling): only a format the dialog shows.
+            if let Some(format) = Some(d.s("saveFormat")).filter(|f| f == "designcraft" || f == "idml") {
+                prefs["saveFormat"] = json!(format);
             }
             // No document open: the Units & Increments new documents start with, saved with the
             // rest in one `prefs.set` (which checks everything before it changes anything). A value
@@ -5597,6 +5674,16 @@ fn confirm_part5(app: &mut DesignApp, d: Dialog) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "updateLink" => crate::panels::properties::run_update_links(app, d.fields.get("target").cloned().unwrap_or_else(|| json!({}))),
+        "idmlLoss" => {
+            let answer = if d.b("asDesigncraft") { crate::menus::LossyAnswer::SaveAsDesigncraft } else { crate::menus::LossyAnswer::SaveAnyway };
+            if matches!(answer, crate::menus::LossyAnswer::SaveAnyway)
+                && d.b("dontAskAgain")
+                && let Some(uid) = d.fields.get("uid").and_then(Value::as_u64)
+            {
+                app.idml_loss_accepted.insert(uid);
+            }
+            crate::menus::answer_idml_loss(app, answer)
+        }
         "closeDocument" => {
             // The document may have moved in the tab row (or gone) while the dialog was open.
             let uid = d.fields.get("uid").and_then(Value::as_u64);
@@ -6160,6 +6247,31 @@ fn paragraph_style_options(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialo
                         .response
                         .labelled_by(alignment_label.id);
                     ui.end_row();
+                    // Paragraph Direction, under Show Right-to-Left Features or for a right-to-left
+                    // style: switching also mirrors left and right alignment, as the Paragraph panel
+                    // does (after #1220).
+                    if crate::show_rtl_control(app, pv["direction"].as_str() == Some("rightToLeft")) {
+                        let direction_label = crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Paragraph Direction:"));
+                        let rtl = cur(d, "p.direction", &pv["direction"]).as_str() == Some("rightToLeft");
+                        craft_ui::ComboBox::from_id_salt("psdirection")
+                            .selected_text(crate::rtl::widget(
+                                ui,
+                                crate::i18n::tr(&app.ui.language, if rtl { "Right to Left" } else { "Left to Right" }),
+                            ))
+                            .width(240.0)
+                            .show_ui(ui, |ui| {
+                                for (on, label, dir) in [(!rtl, "Left to Right", "leftToRight"), (rtl, "Right to Left", "rightToLeft")] {
+                                    if ui.selectable_label(on, crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, label))).clicked() && !on {
+                                        d.fields.insert("p.direction".into(), json!(dir));
+                                        let align = crate::panels::properties::mirrored_align(a);
+                                        d.fields.insert("p.align".into(), serde_json::to_value(align).unwrap_or_default());
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(direction_label.id);
+                        ui.end_row();
+                    }
                     for (label, key) in [
                         ("Left Indent:", "leftIndent"),
                         ("First Line Indent:", "firstLineIndent"),
@@ -6608,7 +6720,7 @@ fn link_toggle(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, key: &str, linked:
 
 /// A swatch menu with a colour chip per swatch (hidden swatches left out); returns the swatch
 /// picked.
-fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
+pub(crate) fn swatch_menu(ui: &mut egui::Ui, doc: &designcraft_doc::Document, id: impl egui::AsIdSalt, current: &str, width: f32) -> Option<String> {
     swatch_menu_with(ui, doc, id, current, width, None)
 }
 

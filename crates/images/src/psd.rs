@@ -81,3 +81,19 @@ fn cmyk(file: &craft_psd::PsdFile, pixels: usize) -> Option<CmykRaster> {
     let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
     Some(CmykRaster { width: header.width, height: header.height, cmyk: inks, alpha })
 }
+
+/// ResolutionInfo stores pixels per inch regardless of its display units. Read only the
+/// borrowed head within the declared resource section, without allocating or decoding pixels.
+/// Preserve the placement policy from #2550: reject incomplete or out-of-range values.
+pub(crate) fn resolution(bytes: &[u8]) -> Option<(f64, f64)> {
+    let head = craft_psd::HeadView::from_bytes(bytes).ok()?;
+    for resource in head.resources() {
+        let resource = resource.ok()?;
+        if resource.id == craft_psd::resources::ids::RESOLUTION_INFO {
+            let info = craft_psd::ResolutionInfo::from_bytes(resource.data).ok()?;
+            let (h, v) = (info.h_res(), info.v_res());
+            return ((1.0..=10_000.0).contains(&h) && (1.0..=10_000.0).contains(&v)).then_some((h, v));
+        }
+    }
+    None
+}
