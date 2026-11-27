@@ -40,6 +40,21 @@ pub(crate) fn open_sla(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("file.openScribus", "missing `path` or `base64`"));
     };
+    open_sla_imported(s, &bytes, file, title)
+}
+
+/// Import already-read `.sla` bytes. `path` is the source file, used for linked images and
+/// Document Fonts; `None` when the document was not opened from a path.
+pub(crate) fn open_sla_from(s: &mut Session, bytes: &[u8], path: Option<&str>) -> Result<Value> {
+    if bytes.len() > designcraft_sla::MAX_BYTES {
+        return Err(too_large());
+    }
+    let file = path.map(std::path::PathBuf::from);
+    let title = file.as_deref().and_then(|p| p.file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    open_sla_imported(s, bytes, file, title)
+}
+
+fn open_sla_imported(s: &mut Session, bytes: &[u8], file: Option<std::path::PathBuf>, title: String) -> Result<Value> {
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -58,7 +73,7 @@ pub(crate) fn open_sla(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let has_family = |family: &str| designcraft_fonts::FontDb::global().has_family(family);
-    let imported = designcraft_sla::import_sla_report(&bytes, &read, &has_family).map_err(|e| EngineError::Other(e.to_string()))?;
+    let imported = designcraft_sla::import_sla_report(bytes, &read, &has_family).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut d = imported.document;
     let mut warnings = imported.warnings;
     #[cfg(not(target_arch = "wasm32"))]
@@ -66,7 +81,7 @@ pub(crate) fn open_sla(s: &mut Session, p: &Value) -> Result<Value> {
     if !title.is_empty() {
         d.title = title;
     }
-    let (fonts, faces, font_warnings) = match str_param(p, "path").filter(|_| str_param(p, "base64").is_none()) {
+    let (fonts, faces, font_warnings) = match file.as_deref().and_then(std::path::Path::to_str) {
         Some(path) => super::file::load_document_fonts(&mut d, path),
         None => (None, 0, Vec::new()),
     };

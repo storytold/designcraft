@@ -165,7 +165,7 @@ fn install_document(s: &mut Session, read: ReadDocument) -> Result<Value> {
     let (r, note_recent) = match content {
         ReadContent::Interchange(bytes) => (crate::cmd::interchange::open_idml_file(s, bytes, &path)?, true),
         // A Scribus file starts unsaved and is not entered as a recent native path.
-        ReadContent::Scribus(_) => (crate::cmd::scribus::open_sla(s, &json!({"path": path}))?, false),
+        ReadContent::Scribus(bytes) => (crate::cmd::scribus::open_sla_from(s, &bytes, Some(path.as_str()))?, false),
         ReadContent::Native { doc, mut warnings, links } => {
             let mut d = *doc;
             let (fonts, faces, font_warnings) = load_document_fonts(&mut d, &path);
