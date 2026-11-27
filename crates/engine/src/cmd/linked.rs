@@ -13,6 +13,7 @@ fn copy_into(d: &mut Document, parent: StoryId, child: StoryId) -> Result<()> {
     let st = d.story_mut(child).ok_or_else(|| bad("story.link", format!("no story {}", child.0)))?;
     let (frames, rev, file_link) = (std::mem::take(&mut st.frames), st.rev, st.file_link.take());
     *st = Story { id: child, frames, rev: rev.wrapping_add(1), link: Some((parent, src.rev)), file_link, ..src };
+    d.prune_story_text_ranges(child);
     Ok(())
 }
 
