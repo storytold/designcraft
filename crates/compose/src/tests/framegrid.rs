@@ -204,6 +204,20 @@ fn an_empty_paragraph_takes_the_rows_its_marks_em_box_needs() {
 }
 
 #[test]
+fn an_empty_paragraphs_mark_box_is_scaled_vertically() {
+    // A 12 pt mark at 300% vertical scale has a 36 pt em box, as a glyph of that style has, so it
+    // takes the rows a 36 pt mark takes.
+    let (lines, rows) = grid_lines("AB\n\nCD", aligned(R::EmCenter), |d, sid| {
+        d.story_mut(sid).unwrap().format_chars(3..4, |f| {
+            f.over.v_scale = Some(3.0);
+            f.over.leading = Some(designcraft_doc::Leading::Points(6.0));
+        });
+    });
+    let after = ((em_box(lines.last().unwrap()).0 - rows.top) / rows.pitch).round();
+    assert!(after >= 4.0, "a 36 pt high mark takes rows 1 to 3: {after}");
+}
+
+#[test]
 fn vertical_justification_moves_frame_grid_lines_by_whole_rows() {
     // InDesign: Bottom puts the last line on the last row and Center moves the lines by whole rows.
     for vj in [designcraft_doc::VerticalJustification::Bottom, designcraft_doc::VerticalJustification::Center] {
@@ -222,6 +236,29 @@ fn vertical_justification_moves_frame_grid_lines_by_whole_rows() {
             assert!(next > 400.0 + 1e-6, "{vj:?}: a row is left below the last line ({last})");
         }
     }
+}
+
+#[test]
+fn vertical_justification_uses_the_frame_grid_over_a_baseline_grid() {
+    // A caller may give a frame both grids. Lines are placed on the frame grid's rows, so
+    // justification moves them by its rows, not by the baseline grid's 10 pt steps.
+    let (mut d, sid, fid) = doc_with("AB\nCD\nEF", Rect::new(0.0, 0.0, 300.0, 400.0), aligned(R::EmCenter));
+    d.story_mut(sid).unwrap().frame_grid = Some(FrameGrid { size: 12.0, line_aki: 6.0, ..Default::default() });
+    if let Some(tf) = d.item_mut(fid).and_then(|i| i.text_frame_mut()) {
+        tf.options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+        tf.options.vertical_justification = designcraft_doc::VerticalJustification::Bottom;
+    }
+    let mut specs = frame_specs(&d, sid);
+    let rows = specs[0].frame_grid.expect("a frame grid frame has rows");
+    specs[0].grid = Some((rows.top, 10.0));
+    let cs = compose(&d, d.story(sid).unwrap(), &specs, &ComposeOptions::default());
+    let lines: Vec<&Line> = all_lines(&cs);
+    for l in &lines {
+        let at = (em_box(l).0 - rows.top) / rows.pitch;
+        assert!((at - at.round()).abs() < 1e-6, "a line between rows ({at})");
+    }
+    let last = (em_box(lines.last().unwrap()).0 - rows.top) / rows.pitch;
+    assert!(rows.top + (last.round() + 1.0) * rows.pitch + rows.cell > 400.0 + 1e-6, "a row is left below the last line ({last})");
 }
 
 #[test]

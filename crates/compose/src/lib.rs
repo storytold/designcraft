@@ -1946,11 +1946,12 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         // ascender (InDesign, observed black-box: Ascent sets as Em Box Height there).
         // An empty line has no glyph to measure: in a frame grid its em box is its paragraph mark's,
         // split as the face's ascent and descent split it (InDesign gives an empty 36 pt paragraph
-        // the rows a 36 pt em box needs).
+        // the rows a 36 pt em box needs). Its height is scaled vertically, as a glyph's em is.
         let mark_em = (f.frame_grid.is_some() && line_glyphs.iter().all(|g| g.adv <= 0.0))
             .then(|| {
-                let top = -mark_chars.size * asc / (asc + desc).max(1e-9);
-                (top, top + mark_chars.size)
+                let height = mark_chars.size * mark_chars.v_scale.abs();
+                let top = -height * asc / (asc + desc).max(1e-9);
+                (top, top + height)
             })
             .filter(|(top, bottom)| top.is_finite() && bottom.is_finite());
         let reference_offset = |r: designcraft_doc::cjk::CharacterAlignment| {
@@ -6390,9 +6391,10 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        // A frame grid's lines move by whole rows, as a baseline grid's move by whole steps.
+        // A frame grid's lines move by whole rows, as a baseline grid's move by whole steps. A frame
+        // grid comes first, as it does when the lines are placed.
         let rows_step = f.frame_grid.map(|rows| rows.pitch).filter(|p| *p > 0.0 && p.is_finite());
-        let step = f.countable_grid().map(|(_, inc)| inc).or(rows_step).filter(|_| match f.opts.vertical_justification {
+        let step = rows_step.or(f.countable_grid().map(|(_, inc)| inc)).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
