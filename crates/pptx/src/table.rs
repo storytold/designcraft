@@ -93,11 +93,8 @@ fn model_border(ex: &Exporter, s: Option<&StrokeSeg>, k: f64, opacity: f32) -> c
         if pattern.len() % 2 == 1 {
             pattern.extend(pattern.clone());
         }
-        let pairs = pattern
-            .chunks(2)
-            .filter_map(|pair| pair.first().zip(pair.get(1)))
-            .map(|(dash, gap)| (*dash / st.weight, *gap / st.weight))
-            .collect();
+        let pairs =
+            pattern.chunks(2).filter_map(|pair| pair.first().zip(pair.get(1))).map(|(dash, gap)| (*dash / st.weight, *gap / st.weight)).collect();
         Some(craft_pptx::style::Dash::Custom { pattern: pairs })
     } else if matches!(st.kind, StrokeType::Dotted) {
         Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() })

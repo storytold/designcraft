@@ -732,4 +732,3 @@ fn encode_png(rgba: Vec<u8>, w: u32, h: u32) -> Option<Vec<u8>> {
     let image = craft_image_codecs::Image::from_u8(w, h, craft_image_codecs::ChannelLayout::Rgba, rgba).ok()?;
     craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &Default::default()).ok()
 }
-
