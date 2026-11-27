@@ -557,13 +557,17 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-"));
     }
 
+    /// An export name drops reserved characters, and a Windows device name (`CON`, `COM¹`, `LPT³`)
+    /// is written with a leading `_`. Two files built from one name stay distinct.
     #[test]
     fn names_are_made_safe_and_unique() {
         assert_eq!(safe_name("../a/b:c*?"), "a b c");
         assert_eq!(safe_name("  ...  "), "Untitled");
         assert_eq!(safe_name(&"x".repeat(500)).chars().count(), MAX_NAME);
         // Windows device names name no file.
-        for (name, safe) in [("CON", "_CON"), ("nul", "_nul"), ("com1.x", "_com1.x"), ("Console", "Console")] {
+        for (name, safe) in
+            [("CON", "_CON"), ("nul", "_nul"), ("com1.x", "_com1.x"), ("COM¹", "_COM¹"), ("lpt³.x", "_lpt³.x"), ("Console", "Console")]
+        {
             assert_eq!(safe_name(name), safe);
         }
         let mut s = two_layouts();

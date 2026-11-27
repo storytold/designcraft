@@ -97,6 +97,9 @@ fn row(rows: &mut Vec<Row>, name: impl Into<String>, ms: f64, budget: Option<f64
 
 /// Measure `doc`. `runs` = repetitions per row (median).
 fn measure(doc: &Document, runs: usize) -> Result<Vec<Row>, String> {
+    if doc.spreads.is_empty() {
+        return Err("cannot benchmark a document with no spreads".into());
+    }
     let mut rows = vec![];
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let chars: usize = doc.stories.values().map(|s| s.text.len()).sum();

@@ -40,6 +40,27 @@ fn svg_depth_is_checked_before_recursive_parsing() {
     }
 }
 
+/// An SVG whose `<use>` elements hold one another `links` deep, with no element nested deeper
+/// than four levels (the root counts as one).
+fn use_chain_svg(links: usize) -> String {
+    let chain: String = (0..links).map(|i| format!("<g id='g{i}'><use xlink:href='#g{}'/></g>", i + 1)).collect();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><defs>{chain}<rect id='g{links}' width='10' height='10'/></defs><use xlink:href='#g0'/></svg>"#
+    )
+}
+
+/// Following references counts toward the depth limit: a short `<use>` chain parses, a chain
+/// past `MAX_SVG_DEPTH` levels is rejected by the tree, size and render APIs.
+#[test]
+fn svg_reference_depth_is_checked_before_recursive_parsing() {
+    let short = use_chain_svg(8);
+    assert!(svg_tree(short.as_bytes()).is_some());
+    let long = use_chain_svg(MAX_SVG_DEPTH);
+    assert!(svg_tree(long.as_bytes()).is_none());
+    assert!(natural_size(long.as_bytes()).is_none());
+    assert!(render_svg(long.as_bytes(), 10).is_none());
+}
+
 /// Markup-looking text in comments, CDATA and attributes does not count as XML depth.
 #[test]
 fn svg_depth_ignores_markup_in_comments_cdata_and_attributes() {
@@ -105,15 +126,18 @@ fn nested_svg_data_images_cannot_bypass_the_depth_limit() {
     }
 }
 
-/// The nested SVG data of one parse adds up against one budget; the next parse starts again.
+/// Each SVG parse gets a fresh shared nested-image budget.
 #[test]
-fn nested_svg_data_shares_one_budget() {
-    NESTED_SVG_BYTES.set(0);
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES / 2).is_some());
-    assert!(charge_nested_svg(1).is_none());
-    assert!(svg_tree(SVG.as_bytes()).is_some());
-    assert!(charge_nested_svg(MAX_NESTED_SVG_BYTES).is_some());
+fn nested_svg_data_budget_is_fresh_per_parse() {
+    let nested = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><circle r="1"/></svg>"#;
+    let encoded = nested.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image width="1" height="1" href="data:image/svg+xml,{encoded}"/></svg>"#
+    );
+    for _ in 0..2 {
+        let tree = svg_tree(svg.as_bytes()).unwrap();
+        assert_eq!(tree.root().children().len(), 1);
+    }
 }
 
 #[test]
@@ -164,8 +188,8 @@ fn svg_images_come_only_from_data_urls() {
 }
 
 /// The family of the font that sets each text glyph of `svg`, and the glyph's id.
-fn glyph_families(svg: &str) -> Vec<(String, u16)> {
-    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u16)>) {
+fn glyph_families(svg: &str) -> Vec<(String, u32)> {
+    fn walk(g: &usvg::Group, tree: &usvg::Tree, out: &mut Vec<(String, u32)>) {
         for n in g.children() {
             match n {
                 usvg::Node::Group(g) => walk(g, tree, out),
@@ -306,6 +330,53 @@ fn tiny_psd() -> Vec<u8> {
     b
 }
 
+/// `tiny_psd` with a ResolutionInfo resource of `ppi` horizontally and vertically.
+fn tiny_psd_at(ppi: u32) -> Vec<u8> {
+    tiny_psd_with_resolution(ppi, 16)
+}
+
+/// `tiny_psd` with a ResolutionInfo resource of `ppi`, its data cut to `len` bytes (16 in full).
+fn tiny_psd_with_resolution(ppi: u32, len: usize) -> Vec<u8> {
+    let mut b = tiny_psd();
+    let mut data = Vec::new();
+    for v in [ppi << 16, 0x0001_0002, ppi << 16, 0x0001_0002] {
+        data.extend(v.to_be_bytes());
+    }
+    data.truncate(len);
+    let mut res = Vec::new();
+    res.extend(b"8BIM");
+    res.extend(1005u16.to_be_bytes());
+    res.extend([0, 0]); // empty name, padded
+    res.extend((data.len() as u32).to_be_bytes());
+    res.extend(data);
+    let at = 26 + 4; // header and empty colour mode data; then the image resources length
+    b.splice(at..at + 4, (res.len() as u32).to_be_bytes());
+    b.splice(at + 4..at + 4, res);
+    b
+}
+
+/// A 300 ppi PSD places at its resolution (2 px = 0.48 pt), as in the reference app; without
+/// ResolutionInfo, or with a nonsense or incomplete one, at 72 ppi.
+#[test]
+fn psd_natural_size_follows_its_resolution() {
+    assert_eq!(natural_size(&tiny_psd()), Some((2.0, 1.0)));
+    let b = tiny_psd_at(300);
+    let (w, h) = natural_size(&b).unwrap();
+    assert!((w - 0.48).abs() < 1e-9 && (h - 0.24).abs() < 1e-9, "{w} {h}");
+    assert_eq!(raster_resolution(&b), Some((300.0, 300.0)));
+    assert_eq!(pixel_size(&b), Some((2, 1)));
+    assert!(decode_rgba(&b).is_some(), "the resource does not disturb decoding");
+    assert_eq!(natural_size(&tiny_psd_at(0)), Some((2.0, 1.0)));
+    assert_eq!(natural_size(&tiny_psd_at(20_000)), Some((2.0, 1.0)));
+    // ResolutionInfo is 16 bytes; a shorter one holding both resolutions is still not trusted.
+    assert!(psd::resolution(&tiny_psd_with_resolution(300, 16)).is_some());
+    assert_eq!(natural_size(&tiny_psd_with_resolution(300, 12)), Some((2.0, 1.0)));
+    // A resource length past the end of the file is ignored, not trusted.
+    let mut cut = tiny_psd_at(300);
+    cut.truncate(40);
+    assert!(psd::resolution(&cut).is_none());
+}
+
 #[test]
 fn psd_composite_decodes() {
     let b = tiny_psd();
@@ -372,6 +443,49 @@ fn cmyk_tiff_keeps_inks() {
     assert_eq!(decode_cmyk_tiff(&b[..b.len() / 2]), None, "truncated");
 }
 
+/// A decode holds the samples as decoded beside the copies they are converted to.
+#[test]
+fn decode_bytes_per_pixel_counts_the_stored_samples_and_their_copy() {
+    use tiff::encoder::colortype::{CMYK8, CMYK16, CMYKA8, RGB16};
+    // CMYK: the stored samples, the 8-bit CMYKA copy, and the ink and alpha planes split from it.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK8>(1, 1, &[0; 4], false)), 14);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYKA8>(1, 1, &[0; 5], true)), 15);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<CMYK16>(1, 1, &[0; 4], false)), 18);
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<Cmyka16>(1, 1, &[0; 5], true)), 20);
+    // Two copies of the 16-bit samples while they are turned upright.
+    assert_eq!(decode_bytes_per_pixel(&tiff_of::<RGB16>(1, 1, &[0; 3], false)), 12);
+    // A progressive JPEG's coefficients beside its 8-bit RGB output.
+    assert_eq!(decode_bytes_per_pixel(&progressive_jpeg(64, 48, 3)), 9);
+    let mut psd = b"8BPS".to_vec();
+    psd.resize(26, 0);
+    assert_eq!(decode_bytes_per_pixel(&psd), 9);
+    assert_eq!(decode_bytes_per_pixel(b"not an image"), 8);
+    // An EPS counts as its TIFF preview, or 8 without one.
+    let ps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nnewpath\n%%EOF\n";
+    assert_eq!(decode_bytes_per_pixel(ps), 8);
+    let preview = tiff_of::<CMYK16>(1, 1, &[0; 4], false);
+    let mut dos = vec![0xC5, 0xD0, 0xD3, 0xC6];
+    for v in [30, ps.len(), 0, 0, 30 + ps.len(), preview.len()] {
+        dos.extend((v as u32).to_le_bytes());
+    }
+    dos.extend([0xFF, 0xFF]);
+    dos.extend_from_slice(ps);
+    dos.extend_from_slice(&preview);
+    assert_eq!(decode_bytes_per_pixel(&dos), 18);
+}
+
+/// 16-bit CMYK with an alpha sample, which the `tiff` encoder has no type for.
+struct Cmyka16;
+impl tiff::encoder::colortype::ColorType for Cmyka16 {
+    type Inner = u16;
+    const TIFF_VALUE: tiff::tags::PhotometricInterpretation = tiff::tags::PhotometricInterpretation::CMYK;
+    const BITS_PER_SAMPLE: &[u16] = &[16; 5];
+    const SAMPLE_FORMAT: &[tiff::tags::SampleFormat] = &[tiff::tags::SampleFormat::Uint; 5];
+    fn horizontal_predict(row: &[u16], result: &mut Vec<u16>) {
+        result.extend_from_slice(row);
+    }
+}
+
 /// Indexed colour (PhotometricInterpretation 3), which the `tiff` encoder has no type for.
 struct Palette<const BITS: u16>;
 impl<const BITS: u16> tiff::encoder::colortype::ColorType for Palette<BITS> {
@@ -430,6 +544,355 @@ fn cmyk_tiff_with_alpha_reports_its_pixel_size() {
     use tiff::encoder::colortype::CMYKA8;
     let b = tiff_of::<CMYKA8>(2, 1, &[0, 0, 0, 255, 255, 0, 0, 0, 0, 0], true);
     assert_eq!(pixel_size(&b), Some((2, 1)));
+}
+
+// ---------- embedded resolution (#1991) ----------
+
+/// A real encoder-written 600x900 JPEG with an APPn segment inserted after SOI (decoders skip
+/// APPn, so the file stays fully valid and dimension readers exercise the real path).
+fn jpeg_with(app: &[u8]) -> Vec<u8> {
+    use image::codecs::jpeg::JpegEncoder;
+    let img = image::RgbaImage::from_pixel(600, 900, image::Rgba([200, 30, 30, 255]));
+    let mut b = Vec::new();
+    JpegEncoder::new_with_quality(&mut b, 90).encode_image(&img).unwrap();
+    assert_eq!(&b[..2], &[0xFF, 0xD8]);
+    let mut out = b[..2].to_vec();
+    out.extend_from_slice(app);
+    out.extend_from_slice(&b[2..]);
+    out
+}
+
+/// JFIF APP0 with the given units (0 aspect, 1 dpi, 2 per cm) and densities.
+fn jfif_app(units: u8, x: u16, y: u16) -> Vec<u8> {
+    let mut a = vec![0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x02, units];
+    a.extend_from_slice(&x.to_be_bytes());
+    a.extend_from_slice(&y.to_be_bytes());
+    a.extend_from_slice(&[0x00, 0x00]);
+    a
+}
+
+/// Minimal little-endian TIFF with X/YResolution rationals and an optional ResolutionUnit.
+fn tiff_bytes(x: (u32, u32), y: (u32, u32), unit: Option<u16>) -> Vec<u8> {
+    let mut t = vec![b'I', b'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+    let n = if unit.is_some() { 3 } else { 2 };
+    t.extend_from_slice(&(n as u16).to_le_bytes());
+    let data = 8 + 2 + n * 12 + 4;
+    let mut entry = |tag: u16, typ: u16, val: u32| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&typ.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&val.to_le_bytes());
+    };
+    entry(0x011A, 5, data as u32);
+    entry(0x011B, 5, (data + 8) as u32);
+    if let Some(u) = unit {
+        // SHORT count 1: the value sits inline in the low bytes.
+        t.extend_from_slice(&0x0128u16.to_le_bytes());
+        t.extend_from_slice(&3u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&u.to_le_bytes());
+        t.extend_from_slice(&[0, 0]);
+    }
+    t.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(t.len(), data);
+    for (num, den) in [x, y] {
+        t.extend_from_slice(&num.to_le_bytes());
+        t.extend_from_slice(&den.to_le_bytes());
+    }
+    t
+}
+
+/// EXIF APP1 wrapping a TIFF header.
+fn exif_app(tiff: &[u8]) -> Vec<u8> {
+    let mut a = vec![0xFF, 0xE1];
+    a.extend_from_slice(&((tiff.len() + 8) as u16).to_be_bytes());
+    a.extend_from_slice(b"Exif\x00\x00");
+    a.extend_from_slice(tiff);
+    a
+}
+
+/// #1991: a 600x900 px photo saved at 600 dpi places 1 x 1.5 in, not 600 x 900 pt.
+#[test]
+fn jpeg_jfif_density_sets_natural_size() {
+    let jpg = jpeg_with(&jfif_app(1, 600, 600));
+    assert_eq!(pixel_size(&jpg), Some((600, 900)));
+    assert_eq!(raster_resolution(&jpg), Some((600.0, 600.0)));
+    assert_eq!(natural_size(&jpg), Some((72.0, 108.0)));
+    // Dots per cm convert to dpi; aspect-only JFIF (units 0) carries no density.
+    let cm = jpeg_with(&jfif_app(2, 100, 100));
+    assert_eq!(raster_resolution(&cm), Some((254.0, 254.0)));
+    let aspect = jpeg_with(&jfif_app(0, 600, 600));
+    assert_eq!(raster_resolution(&aspect), None);
+    assert_eq!(natural_size(&aspect), Some((600.0, 900.0)));
+}
+
+#[test]
+fn jpeg_exif_resolution_beats_jfif() {
+    // EXIF wins over a conflicting JFIF density.
+    let mut app = jfif_app(1, 72, 72);
+    app.extend_from_slice(&exif_app(&tiff_bytes((300, 1), (300, 1), Some(2))));
+    let jpg = jpeg_with(&app);
+    assert_eq!(raster_resolution(&jpg), Some((300.0, 300.0)));
+    assert_eq!(natural_size(&jpg), Some((600.0 * 72.0 / 300.0, 900.0 * 72.0 / 300.0)));
+    // A missing unit defaults to inch; per-cm scales by 2.54.
+    let no_unit = jpeg_with(&exif_app(&tiff_bytes((300, 1), (300, 1), None)));
+    assert_eq!(raster_resolution(&no_unit), Some((300.0, 300.0)));
+    // A non-EXIF APP1 (XMP) before the EXIF one does not stop the scan.
+    let mut xmp = vec![0xFF, 0xE1];
+    let xmp_payload = b"http://ns.adobe.com/xap/1.0/\x00<x:xmpmeta/>";
+    xmp.extend_from_slice(&((xmp_payload.len() + 2) as u16).to_be_bytes());
+    xmp.extend_from_slice(xmp_payload);
+    xmp.extend_from_slice(&exif_app(&tiff_bytes((300, 1), (300, 1), Some(2))));
+    assert_eq!(raster_resolution(&jpeg_with(&xmp)), Some((300.0, 300.0)));
+    let cm = jpeg_with(&exif_app(&tiff_bytes((100, 1), (100, 1), Some(3))));
+    assert_eq!(raster_resolution(&cm), Some((254.0, 254.0)));
+    // A zero denominator or a missing axis is unusable: back to a pixel per point.
+    let zero = jpeg_with(&exif_app(&tiff_bytes((300, 0), (300, 1), Some(2))));
+    assert_eq!(raster_resolution(&zero), None);
+}
+
+/// An EXIF density of 0 ppi (or any value outside the usable range) does not hide the JFIF
+/// density: the 600x900 px photo at a JFIF 300 dpi still places 144 x 216 pt.
+#[test]
+fn unusable_exif_density_keeps_the_jfif_density() {
+    for exif in [(0, 1), (1, 4), (1_000_000, 1)] {
+        let mut app = jfif_app(1, 300, 300);
+        app.extend_from_slice(&exif_app(&tiff_bytes(exif, exif, Some(2))));
+        let jpg = jpeg_with(&app);
+        assert_eq!(raster_resolution(&jpg), Some((300.0, 300.0)), "EXIF {exif:?}");
+        assert_eq!(natural_size(&jpg), Some((144.0, 216.0)), "EXIF {exif:?}");
+    }
+}
+
+/// Big-endian EXIF parses too.
+#[test]
+fn jpeg_exif_big_endian_parses() {
+    let mut t = vec![b'M', b'M', 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08];
+    t.extend_from_slice(&[0x00, 0x02]);
+    let mut entry = |tag: u16, val: u32| {
+        t.extend_from_slice(&tag.to_be_bytes());
+        t.extend_from_slice(&5u16.to_be_bytes());
+        t.extend_from_slice(&1u32.to_be_bytes());
+        t.extend_from_slice(&val.to_be_bytes());
+    };
+    entry(0x011A, 38);
+    entry(0x011B, 46);
+    t.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(t.len(), 38);
+    for (num, den) in [(600u32, 2u32), (600u32, 2u32)] {
+        t.extend_from_slice(&num.to_be_bytes());
+        t.extend_from_slice(&den.to_be_bytes());
+    }
+    let jpg = jpeg_with(&exif_app(&t));
+    assert_eq!(raster_resolution(&jpg), Some((300.0, 300.0)));
+    assert_eq!(natural_size(&jpg), Some((144.0, 216.0)));
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// A real encoder-written PNG with a pHYs chunk spliced in after IHDR (valid CRC, so the
+/// file stays fully decodable and exercises the real dimension path).
+fn png_with_phys(ppu: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(600, 900, image::Rgba([30, 200, 30, 255]));
+    let mut b = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+    // Signature (8) + IHDR chunk (length 4 + type 4 + data 13 + CRC 4).
+    assert_eq!(&b[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(&b[12..16], b"IHDR");
+    let mut out = b[..33].to_vec();
+    let mut phys = Vec::new();
+    phys.extend_from_slice(&ppu.to_be_bytes());
+    phys.extend_from_slice(&ppu.to_be_bytes());
+    phys.push(1);
+    out.extend_from_slice(&(phys.len() as u32).to_be_bytes());
+    out.extend_from_slice(b"pHYs");
+    out.extend_from_slice(&phys);
+    let mut c = b"pHYs".to_vec();
+    c.extend_from_slice(&phys);
+    out.extend_from_slice(&crc32(&c).to_be_bytes());
+    out.extend_from_slice(&b[33..]);
+    out
+}
+
+#[test]
+fn png_phys_sets_natural_size() {
+    // 23622 px/m = 600 dpi: the photo places 1 x 1.5 in.
+    let png = png_with_phys(23622);
+    assert_eq!(pixel_size(&png), Some((600, 900)));
+    let (dx, _) = raster_resolution(&png).unwrap();
+    assert!((dx - 600.0).abs() < 0.05, "{dx}");
+    let (w, h) = natural_size(&png).unwrap();
+    assert!((w - 72.0).abs() < 0.01 && (h - 108.0).abs() < 0.02, "{w} x {h}");
+    // No pHYs: a pixel is a point.
+    let plain_img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+    let mut plain = Vec::new();
+    plain_img.write_to(&mut std::io::Cursor::new(&mut plain), image::ImageFormat::Png).unwrap();
+    assert_eq!(raster_resolution(&plain), None);
+    assert_eq!(natural_size(&plain), Some((4.0, 4.0)));
+}
+
+/// A pHYs chunk behind 100 text chunks is still read, and the scan stops at the first IDAT.
+#[test]
+fn png_phys_after_many_chunks_is_read() {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&[0, 0, 0, 0]);
+    }
+    let mut phys = 11811u32.to_be_bytes().repeat(2);
+    phys.push(1);
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut png, b"IHDR", &[0; 13]);
+    for _ in 0..100 {
+        chunk(&mut png, b"tEXt", b"Comment\x00x");
+    }
+    let mut late = png.clone();
+    chunk(&mut png, b"pHYs", &phys);
+    let (dx, dy) = raster_resolution(&png).unwrap();
+    assert!((dx - 300.0).abs() < 0.05 && (dy - 300.0).abs() < 0.05, "{dx} x {dy}");
+    // A pHYs after the image data is not read.
+    chunk(&mut late, b"IDAT", &[0; 4]);
+    chunk(&mut late, b"pHYs", &phys);
+    assert_eq!(raster_resolution(&late), None);
+}
+
+/// An EXIF chunk stored after 100 animation frames of a WebP is still read.
+#[test]
+fn webp_exif_after_many_frames_is_read() {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
+    }
+    let mut body = b"WEBP".to_vec();
+    chunk(&mut body, b"VP8X", &[0; 10]);
+    chunk(&mut body, b"ANIM", &[0; 6]);
+    for _ in 0..100 {
+        chunk(&mut body, b"ANMF", &[0; 17]);
+    }
+    chunk(&mut body, b"EXIF", &tiff_bytes((300, 1), (300, 1), Some(2)));
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    webp.extend_from_slice(&body);
+    assert_eq!(raster_resolution(&webp), Some((300.0, 300.0)));
+}
+
+/// The RIFF size counts the bytes after its own field (offset 8): an EXIF chunk that runs past
+/// the declared container is not read, even when trailing bytes follow the container.
+#[test]
+fn webp_exif_past_the_declared_riff_end_is_not_read() {
+    let mut body = b"WEBP".to_vec();
+    body.extend_from_slice(b"VP8X");
+    body.extend_from_slice(&10u32.to_le_bytes());
+    body.extend_from_slice(&[0; 10]);
+    let exif = tiff_bytes((300, 1), (300, 1), Some(2));
+    body.extend_from_slice(b"EXIF");
+    body.extend_from_slice(&(exif.len() as u32).to_le_bytes());
+    body.extend_from_slice(&exif);
+    if exif.len() % 2 == 1 {
+        body.push(0);
+    }
+    let riff = |size: usize, trailing: usize| {
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&(size as u32).to_le_bytes());
+        webp.extend_from_slice(&body);
+        webp.extend_from_slice(&vec![0xAA; trailing]);
+        webp
+    };
+    // The exact size, with or without trailing data, reads the chunk.
+    assert_eq!(raster_resolution(&riff(body.len(), 0)), Some((300.0, 300.0)));
+    assert_eq!(raster_resolution(&riff(body.len(), 4)), Some((300.0, 300.0)));
+    // A size declared 4 bytes short ends the container inside the EXIF chunk.
+    assert_eq!(raster_resolution(&riff(body.len() - 4, 4)), None);
+    assert_eq!(raster_resolution(&riff(body.len() - 4, 0)), None);
+    // A file cut inside the EXIF chunk is not read either.
+    let mut cut = riff(body.len(), 0);
+    cut.truncate(cut.len() - 6);
+    assert_eq!(raster_resolution(&cut), None);
+}
+
+/// A real encoder-written BMP with the header pixels-per-meter patched (compression and image
+/// size stay zero, as the encoder writes them).
+fn bmp_with_ppm(ppm: i32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(600, 900, image::Rgba([30, 30, 200, 255]));
+    let mut b = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Bmp).unwrap();
+    assert_eq!(&b[..2], b"BM");
+    b[38..42].copy_from_slice(&ppm.to_le_bytes());
+    b[42..46].copy_from_slice(&ppm.to_le_bytes());
+    b
+}
+
+#[test]
+fn bmp_density_sets_natural_size() {
+    // 2835 px/m = 72 dpi: the bitmap keeps its pixel size in points.
+    let bmp = bmp_with_ppm(2835);
+    assert_eq!(pixel_size(&bmp), Some((600, 900)));
+    let (dx, _) = raster_resolution(&bmp).unwrap();
+    assert!((dx - 72.0).abs() < 0.05, "{dx}");
+    // 600 dpi (23622 px/m): the bitmap places 1 x 1.5 in.
+    let dense = bmp_with_ppm(23622);
+    let (w, h) = natural_size(&dense).unwrap();
+    assert!((w - 72.0).abs() < 0.01 && (h - 108.0).abs() < 0.02, "{w} x {h}");
+    // Zero density: no metadata, a pixel is a point.
+    let flat = bmp_with_ppm(0);
+    assert_eq!(raster_resolution(&flat), None);
+    assert_eq!(natural_size(&flat), Some((600.0, 900.0)));
+}
+
+#[test]
+fn bmp_density_preserves_unrounded_axes_and_placement_policy() {
+    let mut bmp = bmp_with_ppm(11811);
+    bmp[42..46].copy_from_slice(&23622i32.to_le_bytes());
+    let (x, y) = raster_resolution(&bmp).unwrap();
+    assert!((x - 299.9994).abs() < 1e-9, "{x}");
+    assert!((y - 599.9988).abs() < 1e-9, "{y}");
+    let (w, h) = natural_size(&bmp).unwrap();
+    assert!((w - 144.000288000576).abs() < 1e-9, "{w}");
+    assert!((h - 108.000216000432).abs() < 1e-9, "{h}");
+    for (x, y) in [(1, 11811), (11811, 1), (i32::MAX, 11811), (11811, i32::MAX)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert!(raster_resolution(&bmp).is_some());
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+    for (x, y) in [(0i32, 11811i32), (-1, 11811), (11811, 0), (11811, -1)] {
+        bmp[38..42].copy_from_slice(&x.to_le_bytes());
+        bmp[42..46].copy_from_slice(&y.to_le_bytes());
+        assert_eq!(raster_resolution(&bmp), None);
+        assert_eq!(natural_size(&bmp), Some((600.0, 900.0)));
+    }
+}
+
+#[test]
+fn tiff_resolution_tags_set_natural_size() {
+    use tiff::encoder::colortype::Gray8;
+    // A TIFF the encoder writes carries no density: pixels are points.
+    let mut plain = Vec::new();
+    {
+        let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut plain)).unwrap();
+        enc.new_image::<Gray8>(6, 9).unwrap().write_data(&[0u8; 54]).unwrap();
+    }
+    assert_eq!(pixel_size(&plain), Some((6, 9)));
+    assert_eq!(natural_size(&plain), Some((6.0, 9.0)));
+    // The hand-built tag body parses (300 dpi, inch default and explicit).
+    for unit in [None, Some(2)] {
+        let t = tiff_bytes((300, 1), (300, 1), unit);
+        assert_eq!(resolution::tiff_resolution(&t), Some((300.0, 300.0)));
+    }
 }
 
 #[test]
@@ -533,4 +996,866 @@ fn gif_tone_and_cmyk_inks_check_the_rgba_budget() {
     assert_eq!(pixel_size(&tiff), Some((16_385, 16_385)));
     assert!(too_large_to_decode(&tiff));
     assert_eq!(decode_cmyk_tiff(&tiff), None);
+}
+
+fn webp_with(chunks: &[(&[u8; 4], u32, &[u8])]) -> Vec<u8> {
+    let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
+    for (id, declared, body) in chunks {
+        v.extend_from_slice(*id);
+        v.extend_from_slice(&declared.to_le_bytes());
+        v.extend_from_slice(body);
+        if body.len() % 2 == 1 {
+            v.push(0);
+        }
+    }
+    v
+}
+
+/// A WebP that declares an `ICCP` chunk larger than the file (or than the ICC cap) never reaches the
+/// decoder's profile read, which would size a buffer from the declared length.
+#[test]
+fn a_webp_icc_chunk_that_declares_more_than_it_holds_is_refused_before_decoding() {
+    assert!(webp_icc_is_sane(&webp_with(&[(b"VP8X", 10, &[0; 10]), (b"ICCP", 4, &[1; 4])])));
+    // An odd-sized chunk before it is padded to even.
+    assert!(webp_icc_is_sane(&webp_with(&[(b"EXIF", 3, &[0; 3]), (b"ICCP", 4, &[1; 4])])));
+    assert!(!webp_icc_is_sane(&webp_with(&[(b"VP8X", 10, &[0; 10]), (b"ICCP", u32::MAX, &[1; 4])])));
+    assert!(!webp_icc_is_sane(&webp_with(&[(b"ICCP", 100, &[1; 4])])));
+    assert!(embedded_icc(&webp_with(&[(b"ICCP", u32::MAX, &[1; 4])])).is_none());
+    assert!(webp_icc_is_sane(b"\x89PNG not a webp"));
+    assert!(webp_icc_is_sane(&webp_with(&[(b"VP8L", 6, &[0; 6])])));
+}
+
+/// A JPEG of a smooth gradient, `w` × `h`.
+fn gradient_jpeg(w: u32, h: u32, gray: bool) -> Vec<u8> {
+    let rgb = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 128]));
+    let img = if gray { image::DynamicImage::ImageRgb8(rgb).into_luma8().into() } else { image::DynamicImage::ImageRgb8(rgb) };
+    let mut out = Vec::new();
+    img.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90)).unwrap();
+    out
+}
+
+#[test]
+fn reduced_jpegs_decode_at_a_half_quarter_or_eighth_rounded_up() {
+    let jpeg = gradient_jpeg(1001, 77, false);
+    let full = decode_rgba(&jpeg).unwrap();
+    for (shrink, size) in [(1, (501, 39)), (2, (251, 20)), (3, (126, 10))] {
+        let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+        assert_eq!(img.dimensions(), size, "shrink {shrink}");
+        // The same picture as the full decode sampled at the block centres, give or take rounding.
+        let step = 1u32 << shrink;
+        let (mut total, mut n) = (0u64, 0u64);
+        for y in 0..size.1 - 1 {
+            for x in 0..size.0 - 1 {
+                let (p, q) = (img.get_pixel(x, y).0, full.get_pixel(x * step + step / 2, y * step + step / 2).0);
+                total += (0..3).map(|c| u64::from(p[c].abs_diff(q[c]))).sum::<u64>();
+                n += 3;
+                assert_eq!(p[3], 255);
+            }
+        }
+        assert!(total / n <= 3, "shrink {shrink}: mean difference {}", total / n);
+    }
+    // Only 1/2, 1/4 and 1/8 are read from the blocks.
+    assert!(decode_rgba_reduced(&jpeg, 0).is_none());
+    assert!(decode_rgba_reduced(&jpeg, 4).is_none());
+}
+
+#[test]
+fn a_thin_reduced_jpeg_keeps_its_long_side_at_the_requested_reduction() {
+    // The short side rounds up to 1 at every reduction, so it cannot pick the scale.
+    for (w, h) in [(100, 2), (2, 100)] {
+        let jpeg = gradient_jpeg(w, h, false);
+        for (shrink, long) in [(1, 50), (2, 25), (3, 13)] {
+            let img = decode_rgba_reduced(&jpeg, shrink).unwrap();
+            let size = if w > h { (long, 1) } else { (1, long) };
+            assert_eq!(img.dimensions(), size, "{w} × {h}, shrink {shrink}");
+        }
+    }
+}
+
+#[test]
+fn reduced_decoding_is_for_jpegs_and_survives_damaged_ones() {
+    let gray = decode_rgba_reduced(&gradient_jpeg(64, 64, true), 2).unwrap();
+    assert_eq!(gray.dimensions(), (16, 16));
+    assert!(gray.pixels().all(|p| p[0] == p[1] && p[1] == p[2] && p[3] == 255));
+    let png = png_from_rgba(16, 16, vec![255; 16 * 16 * 4]).unwrap();
+    assert!(decode_rgba_reduced(&png, 1).is_none());
+    assert!(decode_rgba_reduced(&[0xFF, 0xD8], 1).is_none());
+    let jpeg = gradient_jpeg(200, 150, false);
+    for n in (0..jpeg.len()).step_by(37) {
+        if let Some(img) = decode_rgba_reduced(&jpeg[..n], 1) {
+            assert_eq!(img.dimensions(), (100, 75));
+        }
+    }
+}
+
+#[test]
+fn reduced_decoding_refuses_a_jpeg_whose_size_the_size_check_cannot_read() {
+    let jpeg = gradient_jpeg(64, 48, false);
+    assert_eq!(decode_rgba_reduced(&jpeg, 1).unwrap().dimensions(), (32, 24));
+    // A stray byte after the start marker: the JPEG decoder skips it, but `pixel_size` doesn't
+    // recognize the file, so `too_large_to_decode` has no size to check.
+    let mut stray = jpeg.clone();
+    stray.insert(2, 0);
+    assert_eq!(pixel_size(&stray), None);
+    assert!(decode_rgba_reduced(&stray, 1).is_none());
+    assert!(decode_rgba(&stray).is_none());
+}
+
+/// A progressive JPEG with only its DC scan, `w` × `h` with `components` 1×1-sampled components:
+/// every coefficient is zero (a flat mid-gray image).
+fn progressive_jpeg(w: u16, h: u16, components: u8) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8];
+    // One quantization table of ones.
+    out.extend([0xFF, 0xDB, 0, 67, 0]);
+    out.extend([1; 64]);
+    // Start of frame, progressive DCT.
+    out.extend([0xFF, 0xC2, 0, 8 + 3 * components, 8]);
+    out.extend(h.to_be_bytes());
+    out.extend(w.to_be_bytes());
+    out.push(components);
+    for id in 1..=components {
+        out.extend([id, 0x11, 0]);
+    }
+    // A DC table with one code, "0", for a difference of 0.
+    out.extend([0xFF, 0xC4, 0, 20, 0x00, 1]);
+    out.extend([0; 15]);
+    out.push(0);
+    // The DC scan of every component (Ss, Se, Ah/Al all 0), then zero bits.
+    out.extend([0xFF, 0xDA, 0, 6 + 2 * components, components]);
+    for id in 1..=components {
+        out.extend([id, 0x00]);
+    }
+    out.extend([0, 0, 0]);
+    out.extend([0; 16]);
+    out.extend([0xFF, 0xD9]);
+    out
+}
+
+#[test]
+fn reduced_decoding_refuses_progressive_jpegs_whose_full_size_coefficients_are_over_the_limit() {
+    let small = decode_rgba_reduced(&progressive_jpeg(64, 48, 3), 3).unwrap();
+    assert_eq!(small.dimensions(), (8, 6));
+    // 10,240 × 8,800 is within the RGBA limit, but its three components' coefficients take
+    // 10,240 × 8,800 × 3 × 2 bytes, over 512 MiB, whatever the output size.
+    let large = progressive_jpeg(10_240, 8_800, 3);
+    assert_eq!(pixel_size(&large), Some((10_240, 8_800)));
+    assert!(!too_large_to_decode(&large));
+    assert!(decode_rgba_reduced(&large, 3).is_none());
+    // A 1-component progressive JPEG that stays within the 512 MiB decoder buffer budget succeeds.
+    let gray = decode_rgba_reduced(&progressive_jpeg(10_240, 4_400, 1), 3).unwrap();
+    assert_eq!(gray.dimensions(), (1_280, 550));
+}
+
+/// PackBits-compressed run of `len` identical bytes (`val`).
+fn packbits_repeat(len: usize, val: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity((len / 128 + 1) * 2);
+    let mut left = len;
+    while left >= 128 {
+        out.push(129);
+        out.push(val);
+        left -= 128;
+    }
+    if left > 1 {
+        out.push((1 - left as isize) as u8);
+        out.push(val);
+    } else if left == 1 {
+        out.push(0);
+        out.push(val);
+    }
+    out
+}
+
+/// Minimal little-endian single-IFD TIFF builder supporting multiple strips, arbitrary `RowsPerStrip`,
+/// `Compression`, `InkSet` (tag 332), and `ExtraSamples` (tag 338).
+#[allow(clippy::too_many_arguments)]
+fn custom_striped_tiff(
+    w: u32,
+    h: u32,
+    rows_per_strip: u32,
+    photometric: u16,
+    compression: u16,
+    spp: u16,
+    strips: &[&[u8]],
+    extra_sample: Option<u16>,
+    ink_set: Option<u16>,
+) -> Vec<u8> {
+    custom_striped_tiff_with(w, h, rows_per_strip, photometric, compression, spp, 8, None, None, strips, extra_sample, ink_set)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn custom_striped_tiff_with(
+    w: u32,
+    h: u32,
+    rows_per_strip: u32,
+    photometric: u16,
+    compression: u16,
+    spp: u16,
+    bps: u16,
+    sample_format: Option<u16>,
+    orientation: Option<u16>,
+    strips: &[&[u8]],
+    extra_sample: Option<u16>,
+    ink_set: Option<u16>,
+) -> Vec<u8> {
+    let n_strips = strips.len();
+    assert_eq!(n_strips as u32, h.div_ceil(rows_per_strip));
+    let mut entries: Vec<(u16, u16, u32, u32)> = vec![
+        (256, 4, 1, w),
+        (257, 4, 1, h),
+        (258, 3, u32::from(spp), if spp == 1 { u32::from(bps) } else { 0 }),
+        (259, 3, 1, u32::from(compression)),
+        (262, 3, 1, u32::from(photometric)),
+        (273, 4, n_strips as u32, 0),
+        (277, 3, 1, u32::from(spp)),
+        (278, 4, 1, rows_per_strip),
+        (279, 4, n_strips as u32, 0),
+    ];
+    if let Some(orient) = orientation {
+        entries.push((274, 3, 1, u32::from(orient)));
+    }
+    if let Some(set) = ink_set {
+        entries.push((332, 3, 1, u32::from(set)));
+    }
+    if let Some(es) = extra_sample {
+        entries.push((338, 3, 1, u32::from(es)));
+    }
+    if let Some(fmt) = sample_format {
+        entries.push((339, 3, 1, u32::from(fmt)));
+    }
+    entries.sort_by_key(|e| e.0);
+
+    let ifd_start = 8usize;
+    let ifd_len = 2 + entries.len() * 12 + 4;
+    let mut extra_data_off = ifd_start + ifd_len;
+    let bps_off = extra_data_off;
+    if spp > 1 {
+        extra_data_off += usize::from(spp) * 2;
+    }
+    let offsets_off = extra_data_off;
+    if n_strips > 1 {
+        extra_data_off += n_strips * 4;
+    }
+    let counts_off = extra_data_off;
+    if n_strips > 1 {
+        extra_data_off += n_strips * 4;
+    }
+
+    let mut data_off = extra_data_off;
+    let mut strip_offsets = Vec::with_capacity(n_strips);
+    let mut strip_counts = Vec::with_capacity(n_strips);
+    for s in strips {
+        strip_offsets.push(u32::try_from(data_off).unwrap());
+        strip_counts.push(u32::try_from(s.len()).unwrap());
+        data_off += s.len();
+    }
+
+    for (tag, _, _, val) in &mut entries {
+        match *tag {
+            258 if spp > 1 => *val = bps_off as u32,
+            273 => *val = if n_strips == 1 { strip_offsets[0] } else { offsets_off as u32 },
+            279 => *val = if n_strips == 1 { strip_counts[0] } else { counts_off as u32 },
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::with_capacity(data_off);
+    out.extend(b"II*\0");
+    out.extend(8u32.to_le_bytes());
+    out.extend((entries.len() as u16).to_le_bytes());
+    for (tag, kind, count, val) in entries {
+        out.extend(tag.to_le_bytes());
+        out.extend(kind.to_le_bytes());
+        out.extend(count.to_le_bytes());
+        out.extend(val.to_le_bytes());
+    }
+    out.extend(0u32.to_le_bytes());
+    if spp > 1 {
+        for _ in 0..spp {
+            out.extend(bps.to_le_bytes());
+        }
+    }
+    if n_strips > 1 {
+        for o in strip_offsets {
+            out.extend(o.to_le_bytes());
+        }
+        for c in strip_counts {
+            out.extend(c.to_le_bytes());
+        }
+    }
+    for s in strips {
+        out.extend_from_slice(s);
+    }
+    out
+}
+
+#[test]
+fn reduced_tiffs_decode_rgb_cmyk_alpha_and_cross_strip_boundaries() {
+    // 33 × 25 RGB gradient split across 9 strips of 3 rows each (every 8×8 cell crosses strip joins).
+    let (w, h, rps) = (33u32, 25u32, 3u32);
+    let mut strips_owned: Vec<Vec<u8>> = Vec::new();
+    for y0 in (0..h).step_by(rps as usize) {
+        let rows = (h - y0).min(rps);
+        let mut s = Vec::with_capacity((rows * w * 3) as usize);
+        for dy in 0..rows {
+            let y = y0 + dy;
+            for x in 0..w {
+                s.extend_from_slice(&[((x * 255) / w) as u8, ((y * 255) / h) as u8, 128]);
+            }
+        }
+        strips_owned.push(s);
+    }
+    let refs: Vec<&[u8]> = strips_owned.iter().map(Vec::as_slice).collect();
+    let rgb_tiff = custom_striped_tiff(w, h, rps, 2, 1, 3, &refs, None, None);
+    let full_rgb = decode_rgba(&rgb_tiff).unwrap();
+    for (shrink, want_size) in [(1u8, (17, 13)), (2, (9, 7)), (3, (5, 4))] {
+        let img = decode_rgba_reduced(&rgb_tiff, shrink).unwrap();
+        assert_eq!(img.dimensions(), want_size, "RGB shrink {shrink}");
+        let est = reduced_estimate(&rgb_tiff, shrink).unwrap();
+        assert_eq!((est.0, est.1), want_size);
+        let step = 1u32 << shrink;
+        let (mut diff, mut n) = (0u64, 0u64);
+        for ry in 0..want_size.1 {
+            for rx in 0..want_size.0 {
+                let (ux0, ux1) = (rx * step, ((rx + 1) * step).min(w));
+                let (uy0, uy1) = (ry * step, ((ry + 1) * step).min(h));
+                let mut sum = [0u64; 3];
+                let cnt = u64::from((ux1 - ux0) * (uy1 - uy0));
+                for y in uy0..uy1 {
+                    for x in ux0..ux1 {
+                        let p = full_rgb.get_pixel(x, y).0;
+                        for c in 0..3 {
+                            sum[c] += u64::from(p[c]);
+                        }
+                    }
+                }
+                let got = img.get_pixel(rx, ry).0;
+                for (c, &s) in sum.iter().enumerate() {
+                    let avg = ((s + cnt / 2) / cnt) as u8;
+                    diff += u64::from(got[c].abs_diff(avg));
+                    n += 1;
+                }
+                assert_eq!(got[3], 255);
+            }
+        }
+        assert!(diff / n <= 1, "RGB shrink {shrink} mean diff {}", diff / n);
+    }
+
+    // Odd-sized CMYK TIFF via the `tiff` encoder matches `decode_rgba` averaged over each block.
+    use tiff::encoder::colortype::{CMYK8, CMYKA8};
+    let mut cmyk_px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            cmyk_px.extend_from_slice(&[0, ((x * 255) / w) as u8, ((y * 255) / h) as u8, 20]);
+        }
+    }
+    let cmyk_tiff = tiff_of::<CMYK8>(w, h, &cmyk_px, false);
+    let full_cmyk = decode_rgba(&cmyk_tiff).unwrap();
+    let red_cmyk = decode_rgba_reduced(&cmyk_tiff, 2).unwrap();
+    assert_eq!(red_cmyk.dimensions(), (9, 7));
+    for ry in 0..6 {
+        for rx in 0..8 {
+            let p = red_cmyk.get_pixel(rx, ry).0;
+            let q = full_cmyk.get_pixel(rx * 4 + 2, ry * 4 + 2).0;
+            for c in 0..4 {
+                assert!(p[c].abs_diff(q[c]) <= 12, "CMYK ({rx},{ry}) c{c}: {} vs {}", p[c], q[c]);
+            }
+        }
+    }
+
+    // CMYKA with transparent black pixels beside an opaque pixel: alpha-weighted averaging prevents
+    // transparent pixels from darkening opaque colour.
+    #[rustfmt::skip]
+    let cmyka_px: [u8; 4 * 4 * 5] = [
+        0, 255, 255, 0, 255,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,
+        0, 0, 0, 255, 0,       0, 0, 0, 255, 0,   0, 0, 0, 255, 0,   0, 0, 0, 255, 0,
+        0, 0, 0, 255, 255,     0, 0, 0, 255, 255, 0, 0, 0, 0, 255,   0, 0, 0, 0, 255,
+        0, 0, 0, 255, 255,     0, 0, 0, 255, 255, 0, 0, 0, 0, 255,   0, 0, 0, 0, 255,
+    ];
+    let cmyka_tiff = tiff_of::<CMYKA8>(4, 4, &cmyka_px, true);
+    let reduced_alpha = decode_rgba_reduced(&cmyka_tiff, 1).unwrap();
+    assert_eq!(reduced_alpha.dimensions(), (2, 2));
+    let opaque_want = decode_rgba(&tiff_of::<CMYK8>(1, 1, &[0, 255, 255, 0], false)).unwrap().get_pixel(0, 0).0;
+    let tl = reduced_alpha.get_pixel(0, 0).0;
+    assert_eq!(tl[3], 64, "quarter opaque: {tl:?}");
+    for c in 0..3 {
+        assert!(tl[c].abs_diff(opaque_want[c]) <= 1, "no dark bleed in top-left {tl:?} vs {opaque_want:?}");
+    }
+    assert_eq!(reduced_alpha.get_pixel(1, 0).0[3], 0, "fully transparent cell stays alpha 0");
+
+    // Non-CMYK InkSet (InkSet = 2) is refused just like `decode_cmyk_tiff`.
+    let spot_cmyk = custom_striped_tiff(4, 4, 4, 5, 1, 4, &[&[0; 64]], None, Some(2));
+    assert!(decode_rgba_reduced(&spot_cmyk, 1).is_none());
+}
+
+/// Oversized multi-strip TIFFs (> 256 MP / 1 GiB RGBA) are refused by `decode_rgba`, yet decode
+/// cleanly at reduced proxy resolution via banded streaming (`#2381`).
+#[test]
+fn oversized_multi_strip_tiff_decodes_at_reduced_size_while_full_decode_is_refused() {
+    // 65,536 × 4,097 RGBA8 PackBits (~1.0002 GiB RGBA > MAX_RGBA_BYTES, ~16 MiB compressed).
+    let (w, h, rps) = (65_536u32, 4_097u32, 64u32);
+    let pb_row = packbits_repeat(w as usize * 4, 200);
+    let full_strip = pb_row.repeat(rps as usize);
+    let rem_rows = (h % rps) as usize;
+    let rem_strip = pb_row.repeat(rem_rows);
+    let full_strips = (h / rps) as usize;
+    let mut strips: Vec<&[u8]> = vec![&full_strip; full_strips];
+    if rem_rows > 0 {
+        strips.push(&rem_strip);
+    }
+    let big_tiff = custom_striped_tiff(w, h, rps, 2, 32773, 4, &strips, Some(2), None);
+
+    assert_eq!(pixel_size(&big_tiff), Some((w, h)));
+    assert!(too_large_to_decode(&big_tiff));
+    assert!(decode_rgba(&big_tiff).is_none(), "full decode exceeds 1 GiB RGBA limit");
+
+    let reduced = decode_rgba_reduced(&big_tiff, 3).expect("reduced 1/8 decode succeeds via TiffBands");
+    assert_eq!(reduced.dimensions(), (8_192, 513));
+    assert_eq!(reduced.get_pixel(0, 0).0, [200, 200, 200, 200]);
+    assert_eq!(reduced.get_pixel(8_191, 512).0, [200, 200, 200, 200]);
+
+    // A complete PackBits single-strip 1-bit monochrome TIFF works within the 512 MiB band cap,
+    // and is refused before pixel allocation once its single strip exceeds 512 MiB (~1 MiB file).
+    let mono_row = packbits_repeat(w as usize / 8, 0);
+    let small_strip = mono_row.repeat(16);
+    let small_single = custom_striped_tiff_with(w, 16, 16, 1, 32773, 1, 1, None, None, &[&small_strip], None, None);
+    let small_out = decode_rgba_reduced(&small_single, 3).expect("16-row 1-bit strip is within 512 MiB cap");
+    assert_eq!(small_out.dimensions(), (8_192, 2));
+
+    let over_h = 8_200u32; // 65,536 × 8,200 = 537.4 MiB > 512 MiB band cap
+    let over_strip = mono_row.repeat(over_h as usize);
+    let single_strip_over_band = custom_striped_tiff_with(w, over_h, over_h, 1, 32773, 1, 1, None, None, &[&over_strip], None, None);
+    assert!(reduced_estimate(&single_strip_over_band, 3).is_none());
+    assert!(decode_rgba_reduced(&single_strip_over_band, 3).is_none());
+}
+
+#[test]
+fn reduced_tiff_estimate_counts_orientation_copy_and_float_or_lab_buffers() {
+    let (w, h) = (16u32, 12u32);
+    let px_count = (w * h) as usize;
+
+    // Orientations 2..=8 keep `bands.dimensions() == pixel_size` after `upright()`,
+    // adding a full group copy alongside the band during `TiffBands::decode`.
+    // Orientations 5..=8 also swap the reduced output dimensions.
+    let rgba_raw = vec![120u8; px_count * 4];
+    let mut rgba_swapped = rgba_raw.clone();
+    let paint_2x2 = |buf: &mut [u8], x0: usize, y0: usize, px: [u8; 4]| {
+        for y in y0..y0 + 2 {
+            for x in x0..x0 + 2 {
+                let off = (y * w as usize + x) * 4;
+                buf[off..off + 4].copy_from_slice(&px);
+            }
+        }
+    };
+    paint_2x2(&mut rgba_swapped, 0, 0, [240, 20, 20, 255]);
+    paint_2x2(&mut rgba_swapped, 14, 0, [20, 240, 20, 255]);
+    paint_2x2(&mut rgba_swapped, 0, 10, [20, 20, 240, 255]);
+    paint_2x2(&mut rgba_swapped, 14, 10, [240, 240, 20, 255]);
+    let upright = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(1), &[&rgba_raw], Some(2), None);
+    let flipped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(3), &[&rgba_raw], Some(2), None);
+    let swapped = custom_striped_tiff_with(w, h, h, 2, 1, 4, 8, None, Some(6), &[&rgba_swapped], Some(2), None);
+    let est_upright = reduced_estimate(&upright, 1).unwrap();
+    let est_flip = reduced_estimate(&flipped, 1).unwrap();
+    let est_swapped = reduced_estimate(&swapped, 1).unwrap();
+    assert_eq!((est_upright.0, est_upright.1), (8, 6));
+    assert_eq!((est_flip.0, est_flip.1), (8, 6));
+    assert_eq!(est_flip.2, est_upright.2 + px_count * 4);
+    assert_eq!(decode_rgba_reduced(&flipped, 1).unwrap().dimensions(), (8, 6));
+    assert_eq!((est_swapped.0, est_swapped.1), (6, 8));
+    assert_eq!(est_swapped.2, est_upright.2 + px_count * 4);
+    let swapped_out = decode_rgba_reduced(&swapped, 1).unwrap();
+    assert_eq!(swapped_out.dimensions(), (6, 8));
+    // Orientation 6 rotates 90 deg CW: stored (TL=red, TR=green, BL=blue, BR=yellow)
+    // maps to upright (TR=red, BR=green, TL=blue, BL=yellow).
+    assert_eq!(swapped_out.get_pixel(0, 0).0, [20, 20, 240, 255]);
+    assert_eq!(swapped_out.get_pixel(5, 0).0, [240, 20, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(0, 7).0, [240, 240, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(5, 7).0, [20, 240, 20, 255]);
+    assert_eq!(swapped_out.get_pixel(2, 3).0, [120, 120, 120, 120]);
+
+    // Lab8 and Rgb32F convert through normalized 32-bit float intermediates before U8 output.
+    let rgb_raw = vec![128u8; px_count * 3];
+    let rgb8 = custom_striped_tiff(w, h, h, 2, 1, 3, &[&rgb_raw], None, None);
+    let lab8 = custom_striped_tiff(w, h, h, 8, 1, 3, &[&rgb_raw], None, None);
+    let est_rgb8 = reduced_estimate(&rgb8, 1).unwrap();
+    let est_lab8 = reduced_estimate(&lab8, 1).unwrap();
+    assert_eq!(est_lab8.2 - est_rgb8.2, px_count * (32 - 4));
+    assert!(decode_rgba_reduced(&lab8, 1).is_some());
+
+    let f32_raw: Vec<u8> = [0.5f32, 0.25, 0.75].repeat(px_count).into_iter().flat_map(f32::to_le_bytes).collect();
+    let rgb32f = custom_striped_tiff_with(w, h, h, 2, 1, 3, 32, Some(3), None, &[&f32_raw], None, None);
+    let est_f32 = reduced_estimate(&rgb32f, 1).unwrap();
+    let partial_16x12 = 32 * (std::mem::size_of::<((u32, u32), ([u32; 4], u32, u16))>() + 1);
+    assert_eq!(est_f32.2, px_count * 12 + px_count * 32 + partial_16x12 + (8 * 6) * 8);
+    assert!(decode_rgba_reduced(&rgb32f, 1).is_some());
+
+    // Multi-strip with Orientation = 3 crossing shrink boundaries still decodes cleanly.
+    let strip_rows = 3usize;
+    let strip_bytes = w as usize * strip_rows * 4;
+    let rgba_strips: Vec<&[u8]> = (0..4).map(|i| &rgba_raw[i * strip_bytes..(i + 1) * strip_bytes]).collect();
+    let multi_flip = custom_striped_tiff_with(w, h, strip_rows as u32, 2, 1, 4, 8, None, Some(3), &rgba_strips, Some(2), None);
+    assert_eq!(decode_rgba_reduced(&multi_flip, 2).unwrap().dimensions(), (4, 3));
+
+    // Wide 1-row-per-strip grayscale TIFF counts the bounded partial-cell table at shrink = 3.
+    let wide_w = 262_136u32;
+    let wide_row = packbits_repeat(wide_w as usize, 180);
+    let wide_strips = vec![wide_row.as_slice(); 8];
+    let wide_tiff = custom_striped_tiff(wide_w, 8, 1, 1, 32773, 1, &wide_strips, None, None);
+    let est_wide = reduced_estimate(&wide_tiff, 3).unwrap();
+    assert_eq!((est_wide.0, est_wide.1), (32_767, 1));
+    let min_partial = 65_536 * (std::mem::size_of::<((u32, u32), ([u32; 4], u32, u16))>() + 1);
+    assert!(est_wide.2 >= min_partial + wide_w as usize * 8 + 32_767 * 8);
+    assert_eq!(decode_rgba_reduced(&wide_tiff, 3).unwrap().dimensions(), (32_767, 1));
+}
+
+/// Planar CMYK TIFFs and CMYK TIFFs with associated (premultiplied) alpha keep their inks through
+/// the shared decoder, so the PDF export's RGB fallback is only for other inks and oversized files.
+#[test]
+fn planar_and_premultiplied_cmyk_tiffs_keep_their_inks() {
+    use tiff::encoder::colortype::CMYKA8;
+    // 2×1, PlanarConfiguration 2: one strip per ink, 100% K then C0 M100 Y100 K0.
+    let (bps, offsets, counts, data) = (134u32, 142u32, 158u32, 174u32);
+    let entries: [(u16, u16, u32, u32); 10] = [
+        (256, 4, 1, 2),       // width
+        (257, 4, 1, 1),       // height
+        (258, 3, 4, bps),     // bits per sample
+        (259, 3, 1, 1),       // no compression
+        (262, 3, 1, 5),       // separated (CMYK)
+        (273, 4, 4, offsets), // strip offsets
+        (277, 3, 1, 4),       // samples per pixel
+        (278, 4, 1, 1),       // rows per strip
+        (279, 4, 4, counts),  // strip byte counts
+        (284, 3, 1, 2),       // planar
+    ];
+    let mut t = b"II*\0".to_vec();
+    t.extend(8u32.to_le_bytes());
+    t.extend(10u16.to_le_bytes());
+    for (tag, kind, count, value) in entries {
+        t.extend(tag.to_le_bytes());
+        t.extend(kind.to_le_bytes());
+        t.extend(count.to_le_bytes());
+        t.extend(value.to_le_bytes());
+    }
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len(), bps as usize);
+    t.extend([8u16; 4].iter().flat_map(|b| b.to_le_bytes()));
+    t.extend((0..4u32).flat_map(|i| (data + 2 * i).to_le_bytes()));
+    t.extend([2u32; 4].iter().flat_map(|c| c.to_le_bytes()));
+    assert_eq!(t.len(), data as usize);
+    t.extend([0, 0, 0, 255, 0, 255, 255, 0]);
+    assert!(is_cmyk_tiff(&t));
+    assert_eq!(decode_cmyk_tiff(&t), Some(CmykRaster { width: 2, height: 1, cmyk: vec![0, 0, 0, 255, 0, 255, 255, 0], alpha: None }));
+
+    // ExtraSamples 1 (associated alpha): the second pixel is C0 M100 Y100 K0 at half coverage.
+    let mut b = Vec::new();
+    let mut enc = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut b)).unwrap();
+    let mut img = enc.new_image::<CMYKA8>(2, 1).unwrap();
+    img.encoder().write_tag(tiff::tags::Tag::ExtraSamples, &[1u16][..]).unwrap();
+    img.write_data(&[0, 0, 0, 255, 255, 0, 128, 128, 0, 128]).unwrap();
+    let r = decode_cmyk_tiff(&b).expect("a CMYK TIFF with associated alpha keeps its inks");
+    assert_eq!(r.alpha, Some(vec![255, 128]));
+    assert_eq!(&r.cmyk[..4], &[0, 0, 0, 255]);
+    let straight = &r.cmyk[4..];
+    assert!(straight[0] <= 1 && straight[1] >= 254 && straight[2] >= 254 && straight[3] <= 1, "made straight: {straight:?}");
+}
+
+#[test]
+fn psd_resolution_preserves_axes_display_units_and_section_bounds() {
+    let mut bytes = tiny_psd_at(300);
+    // Resource payload begins after header, two section lengths and the resource framing.
+    let payload = 46;
+    bytes[payload + 8..payload + 12].copy_from_slice(&(150u32 << 16).to_be_bytes());
+    bytes[payload + 4..payload + 6].copy_from_slice(&2u16.to_be_bytes());
+    bytes[payload + 12..payload + 14].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    assert_eq!(natural_size(&bytes), Some((0.48, 0.48)));
+    // The same resource framing is used in PSB; display units do not rescale the values.
+    bytes[4..6].copy_from_slice(&2u16.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), Some((300.0, 150.0)));
+    // Bytes beyond the declared resource section must never complete a short payload.
+    bytes[30..34].copy_from_slice(&24u32.to_be_bytes());
+    assert_eq!(raster_resolution(&bytes), None);
+}
+
+#[test]
+fn gif_pixel_size_keeps_logical_screen_while_admission_checks_frame_extent() {
+    let mut gif = Vec::new();
+    gif.extend_from_slice(b"GIF89a");
+    gif.extend_from_slice(&10u16.to_le_bytes());
+    gif.extend_from_slice(&10u16.to_le_bytes());
+    gif.extend_from_slice(&[0x80, 0, 0]);
+    gif.extend_from_slice(&[0, 0, 0, 255, 255, 255]);
+    gif.push(0x2C);
+    gif.extend_from_slice(&15u16.to_le_bytes());
+    gif.extend_from_slice(&0u16.to_le_bytes());
+    gif.extend_from_slice(&5u16.to_le_bytes());
+    gif.extend_from_slice(&5u16.to_le_bytes());
+    gif.push(0);
+    gif.extend_from_slice(&[2, 2, 0x4C, 0x01, 0, 0x3B]);
+
+    assert_eq!(pixel_size(&gif), Some((10, 10)));
+    assert_eq!(craft_image_codecs::probe_allocation_size(&gif).ok(), Some((20, 10)));
+    assert!(!too_large_to_decode(&gif));
+
+    // A frame whose extent exceeds the RGBA decode budget is still rejected by admission
+    // even though the logical screen stays 10x10.
+    let mut oversized = gif;
+    oversized[19 + 5..19 + 7].copy_from_slice(&20_000u16.to_le_bytes());
+    oversized[19 + 7..19 + 9].copy_from_slice(&20_000u16.to_le_bytes());
+    assert_eq!(pixel_size(&oversized), Some((10, 10)));
+    assert!(too_large_to_decode(&oversized));
+}
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005) from 16.16 fixed-point ppi.
+fn irb_app_fixed(x_fixed: u32, y_fixed: u32) -> Vec<u8> {
+    let mut body = b"Photoshop 3.0\08BIM".to_vec();
+    body.extend_from_slice(&1005u16.to_be_bytes());
+    body.extend_from_slice(&[0, 0]);
+    body.extend_from_slice(&16u32.to_be_bytes());
+    body.extend_from_slice(&x_fixed.to_be_bytes());
+    body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
+    body.extend_from_slice(&y_fixed.to_be_bytes());
+    body.extend_from_slice(&0x0001_0002u32.to_be_bytes());
+    let mut seg = vec![0xFF, 0xED];
+    seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(&body);
+    seg
+}
+
+/// Photoshop APP13 segment containing ResolutionInfo (resource 1005).
+fn irb_app(x_ppi: u16, y_ppi: u16) -> Vec<u8> {
+    irb_app_fixed(u32::from(x_ppi) << 16, u32::from(y_ppi) << 16)
+}
+
+/// XMP APP1 segment with `tiff:XResolution`, `tiff:YResolution`, and `tiff:ResolutionUnit`.
+fn xmp_app(x_res: &str, y_res: &str, unit: u8) -> Vec<u8> {
+    let xml = format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/"><tiff:XResolution>{x_res}</tiff:XResolution><tiff:YResolution>{y_res}</tiff:YResolution><tiff:ResolutionUnit>{unit}</tiff:ResolutionUnit></rdf:Description></rdf:RDF></x:xmpmeta>"#
+    );
+    let mut body = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+    body.extend_from_slice(xml.as_bytes());
+    let mut seg = vec![0xFF, 0xE1];
+    seg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(&body);
+    seg
+}
+
+/// Little-endian TIFF with Orientation, XResolution, YResolution, and ResolutionUnit.
+fn tiff_bytes_with_orientation(x: (u32, u32), y: (u32, u32), unit: u16, orientation: u16) -> Vec<u8> {
+    let mut t = vec![b'I', b'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00];
+    let n = 4usize;
+    t.extend_from_slice(&(n as u16).to_le_bytes());
+    let data = 8 + 2 + n * 12 + 4;
+    let short_entry = |t: &mut Vec<u8>, tag: u16, val: u16| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&3u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&val.to_le_bytes());
+        t.extend_from_slice(&[0, 0]);
+    };
+    let rational_entry = |t: &mut Vec<u8>, tag: u16, off: u32| {
+        t.extend_from_slice(&tag.to_le_bytes());
+        t.extend_from_slice(&5u16.to_le_bytes());
+        t.extend_from_slice(&1u32.to_le_bytes());
+        t.extend_from_slice(&off.to_le_bytes());
+    };
+    short_entry(&mut t, 0x0112, orientation);
+    rational_entry(&mut t, 0x011A, data as u32);
+    rational_entry(&mut t, 0x011B, (data + 8) as u32);
+    short_entry(&mut t, 0x0128, unit);
+    t.extend_from_slice(&[0, 0, 0, 0]);
+    assert_eq!(t.len(), data);
+    for (num, den) in [x, y] {
+        t.extend_from_slice(&num.to_le_bytes());
+        t.extend_from_slice(&den.to_le_bytes());
+    }
+    t
+}
+
+#[test]
+fn jpeg_density_precedence_and_invalid_fallbacks() {
+    // IRB beats XMP, EXIF, and JFIF.
+    let mut all = jfif_app(1, 72, 72);
+    all.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    all.extend_from_slice(&xmp_app("200/1", "200/1", 2));
+    all.extend_from_slice(&irb_app(300, 150));
+    assert_eq!(raster_resolution(&jpeg_with(&all)), Some((300.0, 150.0)));
+
+    // XMP beats EXIF and JFIF.
+    let mut xmp_wins = jfif_app(1, 72, 72);
+    xmp_wins.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    xmp_wins.extend_from_slice(&xmp_app("240/1", "120/1", 2));
+    assert_eq!(raster_resolution(&jpeg_with(&xmp_wins)), Some((240.0, 120.0)));
+
+    // Zero or sub-1.0 IRB falls back to XMP.
+    for bad_irb in [0u32, 0x0000_8000u32] {
+        let mut segs = jfif_app(1, 96, 96);
+        segs.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+        segs.extend_from_slice(&xmp_app("240/1", "120/1", 2));
+        segs.extend_from_slice(&irb_app_fixed(bad_irb, bad_irb));
+        assert_eq!(raster_resolution(&jpeg_with(&segs)), Some((240.0, 120.0)), "bad IRB {bad_irb:#x}");
+    }
+
+    // Zero XMP falls back to EXIF.
+    let mut bad_xmp = jfif_app(1, 96, 96);
+    bad_xmp.extend_from_slice(&exif_app(&tiff_bytes((150, 1), (150, 1), Some(2))));
+    bad_xmp.extend_from_slice(&xmp_app("0/1", "120/1", 2));
+    assert_eq!(raster_resolution(&jpeg_with(&bad_xmp)), Some((150.0, 150.0)));
+
+    // Zero IRB + XMP + EXIF falls back to JFIF; zero JFIF yields None.
+    let mut fall_to_jfif = jfif_app(1, 96, 96);
+    fall_to_jfif.extend_from_slice(&exif_app(&tiff_bytes((0, 1), (150, 1), Some(2))));
+    fall_to_jfif.extend_from_slice(&xmp_app("0/1", "0/1", 2));
+    fall_to_jfif.extend_from_slice(&irb_app(0, 0));
+    assert_eq!(raster_resolution(&jpeg_with(&fall_to_jfif)), Some((96.0, 96.0)));
+
+    let mut all_bad = jfif_app(1, 0, 96);
+    all_bad.extend_from_slice(&exif_app(&tiff_bytes((0, 1), (0, 1), Some(2))));
+    all_bad.extend_from_slice(&xmp_app("0/1", "0/1", 2));
+    all_bad.extend_from_slice(&irb_app(0, 0));
+    assert_eq!(raster_resolution(&jpeg_with(&all_bad)), None);
+}
+
+#[test]
+fn jpeg_exif_orientation_swaps_pixel_size_and_resolution() {
+    let jpg = jpeg_with(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6)));
+    assert_eq!(pixel_size(&jpg), Some((900, 600)));
+    assert_eq!(decode_rgba(&jpg).unwrap().dimensions(), (900, 600));
+    assert_eq!(raster_resolution(&jpg), Some((150.0, 300.0)));
+    assert_eq!(natural_size(&jpg), Some((900.0 * 72.0 / 150.0, 600.0 * 72.0 / 300.0)));
+}
+
+#[test]
+fn png_from_rgba_parity_and_guards() {
+    let rgba = vec![200, 100, 50, 128, 0, 255, 10, 255];
+    let png = png_from_rgba(2, 1, rgba).expect("encodes");
+    let decoded = decode_rgba(&png).expect("decodes");
+    assert_eq!(decoded.dimensions(), (2, 1));
+    assert_eq!(decoded.get_pixel(0, 0).0, [200, 100, 50, 128]);
+    assert_eq!(decoded.get_pixel(1, 0).0, [0, 255, 10, 255]);
+    assert_eq!(embedded_icc(&png), None);
+    assert_eq!(raster_resolution(&png), None);
+    assert_eq!(natural_size(&png), Some((2.0, 1.0)));
+
+    assert_eq!(png_from_rgba(0, 2, vec![]), None);
+    assert_eq!(png_from_rgba(2, 0, vec![]), None);
+    assert_eq!(png_from_rgba(2, 2, vec![0; 12]), None);
+}
+
+#[test]
+fn tiff_exif_orientation_and_progressive_jpeg_probes() {
+    let tiff = tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6);
+    assert_eq!(raster_resolution(&tiff), Some((150.0, 300.0)));
+
+    let prog = progressive_jpeg(16, 8, 3);
+    assert_eq!(pixel_size(&prog), Some((16, 8)));
+    assert!(decode_bytes_per_pixel(&prog) >= 8);
+}
+
+#[test]
+fn jpeg_orientation_keeps_first_exif_app1_segment() {
+    let mut first_wins = exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6));
+    first_wins.extend_from_slice(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 1)));
+    assert_eq!(raster_resolution(&jpeg_with(&first_wins)), Some((150.0, 300.0)));
+
+    let mut upright_first = exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 1));
+    upright_first.extend_from_slice(&exif_app(&tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6)));
+    assert_eq!(raster_resolution(&jpeg_with(&upright_first)), Some((300.0, 150.0)));
+}
+
+#[test]
+fn jpeg_orientation_requires_exact_exif_prefix_and_complete_app1() {
+    let tiff_rot6 = tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6);
+
+    // Looser prefix ("Exif\0\x01" instead of "Exif\0\0") must not be treated as EXIF.
+    let mut looser_payload = b"Exif\0\x01".to_vec();
+    looser_payload.extend_from_slice(&tiff_rot6);
+    let mut looser_seg = vec![0xFF, 0xE1];
+    looser_seg.extend_from_slice(&((looser_payload.len() + 2) as u16).to_be_bytes());
+    looser_seg.extend_from_slice(&looser_payload);
+    let mut with_looser = jfif_app(1, 300, 150);
+    with_looser.extend_from_slice(&looser_seg);
+    assert_eq!(raster_resolution(&jpeg_with(&with_looser)), Some((300.0, 150.0)));
+
+    // Truncated APP1 segment (declared length past end of file) must be ignored.
+    let mut truncated = vec![0xFF, 0xD8];
+    truncated.extend_from_slice(&jfif_app(1, 300, 150));
+    truncated.extend_from_slice(&exif_app(&tiff_rot6));
+    truncated.pop();
+    assert_eq!(raster_resolution(&truncated), Some((300.0, 150.0)));
+}
+
+#[test]
+fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
+    fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc_input = kind.to_vec();
+        crc_input.extend_from_slice(data);
+        out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        out
+    }
+    fn png_with_chunks(width: u32, height: u32, extra: &[Vec<u8>]) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([0, 0, 0, 255]));
+        let mut base = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut base), image::ImageFormat::Png).unwrap();
+        let mut out = base[..33].to_vec();
+        for c in extra {
+            out.extend_from_slice(c);
+        }
+        out.extend_from_slice(&base[33..]);
+        out
+    }
+    fn phys_data(x: u32, y: u32, unit: u8) -> Vec<u8> {
+        let mut d = x.to_be_bytes().to_vec();
+        d.extend_from_slice(&y.to_be_bytes());
+        d.push(unit);
+        d
+    }
+
+    // Independent pHYs axes (144 x 72 ppi) and exact placement size (#1648 parity), plus exact unsnapped f64 DPI.
+    let asym = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &phys_data(5669, 2835, 1))]);
+    let (ax, ay) = raster_resolution(&asym).unwrap();
+    assert!((ax - 5669.0 * 0.0254).abs() < 1e-12 && (ay - 2835.0 * 0.0254).abs() < 1e-12, "{ax} x {ay}");
+    let (nw, nh) = natural_size(&asym).unwrap();
+    assert!((nw - 144.0 * 72.0 / (5669.0 * 0.0254)).abs() < 1e-9 && (nh - 72.0 * 72.0 / (2835.0 * 0.0254)).abs() < 1e-9, "{nw} x {nh}");
+
+    let exact_330 = png_with_chunks(330, 510, &[png_chunk(b"pHYs", &phys_data(1181, 1181, 1))]);
+    let (ew, eh) = natural_size(&exact_330).unwrap();
+    assert!((ew - 330.0 * 72.0 / (1181.0 * 0.0254)).abs() < 1e-9 && (eh - 510.0 * 72.0 / (1181.0 * 0.0254)).abs() < 1e-9, "{ew} x {eh}");
+
+    // Unitless or zero pHYs without eXIf falls back to 1 px = 1 pt.
+    for bad in [phys_data(5669, 5669, 0), phys_data(0, 5669, 1)] {
+        let png = png_with_chunks(144, 72, &[png_chunk(b"pHYs", &bad)]);
+        assert_eq!(raster_resolution(&png), None);
+        assert_eq!(natural_size(&png), Some((144.0, 72.0)));
+    }
+
+    // eXIf fallback when pHYs is absent or unusable; pHYs wins when valid.
+    let exif_300 = tiff_bytes((300, 1), (300, 1), Some(2));
+    let only_exif = png_with_chunks(4, 4, &[png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&only_exif), Some((300.0, 300.0)));
+    let unitless_plus_exif = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5669, 5669, 0)), png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&unitless_plus_exif), Some((300.0, 300.0)));
+    let phys_wins = png_with_chunks(4, 4, &[png_chunk(b"pHYs", &phys_data(5906, 5906, 1)), png_chunk(b"eXIf", &exif_300)]);
+    assert_eq!(raster_resolution(&phys_wins), Some((5906.0 * 0.0254, 5906.0 * 0.0254)));
+
+    // Orientation 6 swaps pHYs axes.
+    let rotated = png_with_chunks(
+        4,
+        4,
+        &[png_chunk(b"pHYs", &phys_data(11811, 5906, 1)), png_chunk(b"eXIf", &tiff_bytes_with_orientation((300, 1), (150, 1), 2, 6))],
+    );
+    assert_eq!(raster_resolution(&rotated), Some((5906.0 * 0.0254, 11811.0 * 0.0254)));
+
+    // Shared resolution_probe chunk limit (MAX_CHUNKS = 4096, counting IHDR as chunk 0).
+    let phys = png_chunk(b"pHYs", &phys_data(11811, 11811, 1));
+    let text = png_chunk(b"tEXt", b"k\x00v");
+    let mut at_limit = vec![text.clone(); 4094];
+    at_limit.push(phys.clone());
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &at_limit)), Some((11811.0 * 0.0254, 11811.0 * 0.0254)));
+
+    let mut past_limit = vec![text; 4095];
+    past_limit.push(phys);
+    assert_eq!(raster_resolution(&png_with_chunks(1, 1, &past_limit)), None);
 }

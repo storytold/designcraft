@@ -17,26 +17,110 @@ enum ThumbOf {
     Parent(SpreadId),
 }
 
-/// (document uid, revision, page or parent, thumbnail height).
-type ThumbKey = (u64, u64, ThumbOf, u32);
+/// (document uid, page or parent, thumbnail height).
+type ThumbKey = (u64, ThumbOf, u32);
 
-static THUMBS: Mutex<Option<HashMap<ThumbKey, egui::TextureHandle>>> = Mutex::new(None);
+/// The newest thumbnail of each page and parent, with the document revision it shows.
+static THUMBS: Mutex<Option<HashMap<ThumbKey, Thumb>>> = Mutex::new(None);
+
+/// A rendered thumbnail: the document revision, and, when it drew images still decoding in the
+/// background, the image generation and time (s) it was rendered at.
+type Thumb = (u64, Option<(u64, f64)>, egui::TextureHandle);
+
+/// How soon (s) a thumbnail drawn with images still decoding is rendered again once more have
+/// finished: a page of photos decoding one after another re-renders a few times, not once each.
+const THUMB_IMAGES_SECS: f64 = 0.25;
 
 /// Widest parent thumbnail, in pixels (a spread of many pages stays a small texture).
 const MAX_THUMB_W: f64 = 1024.0;
 
+/// Seconds the document stays unchanged before thumbnails of an older revision are drawn again.
+const THUMB_QUIET_SECS: f64 = 0.4;
+
+/// Thumbnails of an older revision drawn again in one frame.
+const THUMB_REFRESHES_PER_FRAME: usize = 1;
+
+/// When the active document's revision last changed, and how many thumbnails were drawn again in
+/// the current frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct ThumbClock {
+    doc: (u64, u64),
+    changed_at: f64,
+    frame: u64,
+    refreshed: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Thumbnails rendered on this thread.
+    static THUMB_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The thumbnail of `of`, `h` points high. A thumbnail of an older revision stays on screen until
+/// the document has been unchanged for [`THUMB_QUIET_SECS`]; after that, at most
+/// [`THUMB_REFRESHES_PER_FRAME`] of them are drawn again per frame.
 fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Option<egui::TextureHandle> {
     let st = app.session.active()?;
-    let key = (st.uid, st.revision, of, h.round() as u32);
+    let key = (st.uid, of, h.round() as u32);
+    let clock_id = egui::Id::unique("pages_thumb_clock");
+    let (now, frame) = (ctx.input(|i| i.time), ctx.cumulative_frame_nr());
+    let mut clock = ctx.data(|d| d.get_temp::<ThumbClock>(clock_id)).unwrap_or_default();
+    let changed = clock.doc != (st.uid, st.revision);
+    if changed {
+        clock = ThumbClock { doc: (st.uid, st.revision), changed_at: now, frame, refreshed: 0 };
+    }
+    if clock.frame != frame {
+        clock.frame = frame;
+        clock.refreshed = 0;
+    }
+    if now < clock.changed_at {
+        clock.changed_at = now;
+    }
     let mut g = THUMBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = g.get_or_insert_with(HashMap::new);
-    if let Some(t) = map.get(&key) {
-        return Some(t.clone());
+    if changed {
+        // Drop the thumbnails of pages and parents the document no longer has.
+        let pages = st.doc.page_count();
+        map.retain(|k, _| {
+            k.0 != st.uid
+                || match k.1 {
+                    ThumbOf::Page(abs) => abs < pages,
+                    ThumbOf::Parent(id) => st.doc.parent_index(id).is_some(),
+                }
+        });
     }
+    if let Some((rev, pending, t)) = map.get(&key) {
+        if *rev == st.revision {
+            // Images it drew as decoding have finished since: draw it again, in batches.
+            let stale = pending.and_then(|(images, at)| (images != designcraft_render::images::generation()).then_some(at + THUMB_IMAGES_SECS - now));
+            match stale {
+                Some(wait) if wait <= 0.0 && clock.refreshed < THUMB_REFRESHES_PER_FRAME => {}
+                _ => {
+                    if let Some(after) = stale.and_then(|w| std::time::Duration::try_from_secs_f64(w.max(0.0)).ok()) {
+                        ctx.request_repaint_after(after);
+                    }
+                    ctx.data_mut(|d| d.insert_temp(clock_id, clock));
+                    return Some(t.clone());
+                }
+            }
+        }
+        let wait = THUMB_QUIET_SECS - (now - clock.changed_at);
+        if wait > 0.0 || clock.refreshed >= THUMB_REFRESHES_PER_FRAME {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.0)));
+            ctx.data_mut(|d| d.insert_temp(clock_id, clock));
+            return Some(t.clone());
+        }
+        clock.refreshed += 1;
+    }
+    ctx.data_mut(|d| d.insert_temp(clock_id, clock));
+    #[cfg(test)]
+    THUMB_RENDERS.with(|n| n.set(n.get() + 1));
     let px = h as f64 * ctx.pixels_per_point() as f64;
     let mut r = designcraft_render::Renderer::new();
     r.threads = 0;
-    let opts = designcraft_render::RenderOptions { printing_only: true, ..Default::default() };
+    // Thumbnails don't wait for decodes: images still decoding are drawn when they finish.
+    let opts = designcraft_render::RenderOptions { printing_only: true, defer_images: true, ..Default::default() };
+    let images = designcraft_render::images::generation();
     let (img, name) = match of {
         ThumbOf::Page(abs) => {
             let page = st.doc.page(abs)?;
@@ -59,10 +143,7 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    // Drop thumbnails of older revisions.
-    let (uid, rev) = (st.uid, st.revision);
-    map.retain(|k, _| !(k.0 == uid && k.1 != rev));
-    map.insert(key, tex.clone());
+    map.insert(key, (st.revision, r.images_pending().then_some((images, now)), tex.clone()));
     Some(tex)
 }
 
@@ -212,8 +293,16 @@ const LAYOUT_COL_MIN: f32 = 96.0;
 /// A spread's label under its thumbnails, as InDesign's: one name for a single page, "2–3" for
 /// pages numbered on in one section (an en dash), and the names apart ("2, 1", "8, A") when a section starts
 /// inside the spread.
+/// The names read left to right as the thumbnails are drawn, so a spread bound right to left
+/// lists its second page first.
 pub(crate) fn spread_label(app: &DesignApp, doc: &designcraft_doc::Document, first: usize, n: usize) -> String {
-    let names: Vec<String> = (first..first + n).map(|abs| app.session.page_label(abs)).collect();
+    let mut order: Vec<usize> = (first..first + n).collect();
+    // In the order the thumbnails are drawn: by each page's x (a right-to-left pair shows its second page on the left).
+    if let Some(sp) = doc.page_loc(first).and_then(|(si, _)| doc.spreads.get(si)) {
+        let x = |abs: usize| sp.pages.get(abs.saturating_sub(first)).map_or(0.0, |p| p.x);
+        order.sort_by(|&a, &b| x(a).total_cmp(&x(b)));
+    }
+    let names: Vec<String> = order.into_iter().map(|abs| app.session.page_label(abs)).collect();
     let starts = |abs: usize| abs == 0 || doc.sections.iter().any(|s| s.start == abs);
     match (names.first(), names.last()) {
         (Some(a), Some(b)) if names.len() > 1 => {
@@ -268,7 +357,7 @@ impl ParentRow {
 /// `thumbnails`), or blank pages for [None] and when the spread can't be rendered.
 fn parent_icon(app: &mut DesignApp, ui: &egui::Ui, right: egui::Pos2, row: &ParentRow, h: f32, thumbnails: bool, t: &Tokens) {
     let area = egui::Rect::from_min_size(egui::pos2(right.x - row.unit_w * h, right.y - h / 2.0), vec2(row.unit_w * h, h));
-    let tex = if thumbnails { row.parent.and_then(|(_, id)| thumb(app, ui.ctx(), ThumbOf::Parent(id), h)) } else { None };
+    let tex = if thumbnails && ui.is_rect_visible(area) { row.parent.and_then(|(_, id)| thumb(app, ui.ctx(), ThumbOf::Parent(id), h)) } else { None };
     let p = ui.painter();
     match tex {
         Some(tex) => {
@@ -488,7 +577,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
                         egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Page {}", app.session.page_label(abs)))
                     });
                     let tint = if selected { SELECTED_TINT } else { Color32::WHITE };
-                    match thumbnails.then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
+                    match (thumbnails && ui.is_rect_visible(pr)).then(|| thumb(app, ui.ctx(), ThumbOf::Page(abs), th)).flatten() {
                         Some(tex) => {
                             ui.painter().image(tex.id(), pr, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
                         }
@@ -1223,6 +1312,26 @@ mod spread_label_tests {
         // Absolute numbering: positions, always a range.
         app.session.prefs.absolute_page_numbers = true;
         assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+    }
+
+    /// Bound right to left, a spread's label follows the document's reading order: the left
+    /// page first ("3–2", not "2–3"), and a section inside a spread lists its pages left to
+    /// right. Left-to-right labels are unchanged. A spread of more pages, drawn in document
+    /// order, lists its names in that order, apart while a section still starts inside it.
+    #[test]
+    fn rtl_binding_labels_spreads_in_visual_left_to_right_order() {
+        let mut app = app();
+        assert_eq!(labels(&app), ["1", "2–3", "4–5", "6–7", "8–9"]);
+        app.run("layout.documentSetup", json!({"binding": "rightToLeft"})).unwrap();
+        assert_eq!(labels(&app), ["1", "3–2", "5–4", "7–6", "9–8"]);
+        app.run("layout.section", json!({"page": 3, "startNumber": 1})).unwrap();
+        let got = labels(&app);
+        assert_eq!(got[1], "1, 2");
+        assert_eq!(got[2], "3–2");
+        app.run("layout.pages.toSpread", json!({"page": 4, "spread": 1})).unwrap();
+        // Three pages, drawn in document order: 2, 3 and 4 are numbered 2, 1 and 2, and the
+        // section that starts on page 3 stays inside the spread, so the names stay apart.
+        assert_eq!(labels(&app)[1], "2, 1, 2");
     }
 
     /// Labels navigate to document spreads, including when parent editing was active.

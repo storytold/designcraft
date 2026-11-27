@@ -43,7 +43,7 @@ pub(crate) fn open_sla(s: &mut Session, p: &Value) -> Result<Value> {
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            super::interchange::read_packaged_link(link, file.as_deref()).map(|(_, data)| data).or_else(|| {
+            super::interchange::read_packaged_link(link, file.as_deref()).map(|(_, data, _)| data).or_else(|| {
                 // A file that is there but holds no format DesignCraft places (GIMP's .xcf): its
                 // first bytes let the import say so instead of calling it missing. A graphic
                 // refused for its size is never handed over cut short.

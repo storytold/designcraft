@@ -16,6 +16,10 @@ use super::{DesignApp, Value, json};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type Then = Box<dyn FnOnce(&mut DesignApp, String) -> Result<Value, String>>;
 
+/// What runs with the files chosen in a dialog that takes several, in the order chosen.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type ThenMany = Box<dyn FnOnce(&mut DesignApp, Vec<String>) -> Result<Value, String>>;
+
 /// Whether an answer still needs the document that was active when the dialog was asked for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
@@ -64,6 +68,8 @@ pub(crate) struct Held {
 enum Step {
     /// Open (or a folder): run `then` with the file or folder chosen.
     Open(Then),
+    /// Open several: run `then` with the files chosen.
+    OpenMany(ThenMany),
     /// Save: `ext` is added to a name typed without it, then `then` runs, after the replace-file
     /// question when the added extension names a file that exists.
     Save { ext: Option<String>, then: Then },
@@ -109,6 +115,31 @@ impl DesignApp {
                 dialog = dialog.filter(filter.name, filter.extensions);
             }
             self.ask_file(dialog, bound, Step::Open(Box::new(then)));
+            Ok(Value::Null)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (purpose, bound, then);
+            Err(NO_PICKER.into())
+        }
+    }
+
+    /// [`Self::ask_open`] for a dialog that takes several files: `then` runs with their paths,
+    /// in the order chosen.
+    #[track_caller]
+    pub(crate) fn ask_open_many(
+        &mut self,
+        purpose: &str,
+        bound: Bound,
+        then: impl FnOnce(&mut DesignApp, Vec<String>) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut dialog = craft_dialogs::FileDialog::open_many();
+            for filter in open_filters(purpose) {
+                dialog = dialog.filter(filter.name, filter.extensions);
+            }
+            self.ask_file(dialog, bound, Step::OpenMany(Box::new(then)));
             Ok(Value::Null)
         }
         #[cfg(target_arch = "wasm32")]
@@ -255,6 +286,15 @@ impl DesignApp {
                 (Step::Open(then), Answer::Paths(paths)) => {
                     if let Some(path) = paths.into_iter().next() {
                         self.continue_in(Held { doc, dialog, then, path: path.to_string_lossy().to_string() });
+                    }
+                }
+                (Step::OpenMany(then), Answer::Paths(paths)) => {
+                    let paths: Vec<String> = paths.into_iter().map(|p| p.to_string_lossy().to_string()).collect();
+                    if let Some(first) = paths.first().cloned() {
+                        // Held as one answer: it waits for a dialog in its way and returns to its
+                        // document as a single file's does.
+                        let then: Then = Box::new(move |app, _| then(app, paths));
+                        self.continue_in(Held { doc, dialog, then, path: first });
                     }
                 }
                 (Step::Save { ext, then }, Answer::Paths(paths)) => {
@@ -432,14 +472,17 @@ fn suggested_extension(name: &str) -> Option<&str> {
 }
 
 /// The file a save dialog's answer writes: `picked` with the suggested extension added when it has
-/// none (Linux dialogs don't add it). A document always ends in `.designcraft`, as `file.save`
-/// writes it.
+/// none (Linux dialogs don't add it). A document keeps a typed `.idml` or `.designcraft` (its
+/// extension decides the format `file.save` writes) and otherwise gets the suggested one, so
+/// "Issue 3.1" saves as "Issue 3.1.idml" with IDML chosen (Preferences › Save documents as).
 #[cfg(not(target_arch = "wasm32"))]
 fn picked_save_path(picked: std::path::PathBuf, ext: Option<&str>) -> std::path::PathBuf {
     let Some(ext) = ext else { return picked };
-    if ext.eq_ignore_ascii_case("designcraft") {
-        let p = picked.to_string_lossy();
-        return designcraft_engine::cmd::with_document_extension(&p).into();
+    if ext.eq_ignore_ascii_case("designcraft") || ext.eq_ignore_ascii_case("idml") {
+        if picked.file_name().is_none() {
+            return picked;
+        }
+        return crate::menus::run::with_save_extension(&picked.to_string_lossy(), ext).into();
     }
     if picked.extension().is_some() || picked.file_name().is_none() {
         return picked;
@@ -548,7 +591,7 @@ mod tests {
     fn save_dialog_answers_get_the_suggested_extension() {
         let save = |picked: &str, name: &str| picked_save_path(PathBuf::from(picked), suggested_extension(name));
         assert_eq!(save("/d/Brochure", "Untitled.designcraft"), PathBuf::from("/d/Brochure.designcraft"));
-        assert_eq!(save("/d/Brochure.idml", "Untitled.designcraft"), PathBuf::from("/d/Brochure.idml.designcraft"));
+        assert_eq!(save("/d/Brochure.idml", "Untitled.designcraft"), PathBuf::from("/d/Brochure.idml"), "a typed .idml is written as IDML");
         assert_eq!(save("/d/Brochure.designcraft", "Untitled.designcraft"), PathBuf::from("/d/Brochure.designcraft"));
         assert_eq!(save("/d/Brochure", "Untitled.pdf"), PathBuf::from("/d/Brochure.pdf"));
         assert_eq!(save("/d/Brochure.txt", "Untitled.rtf"), PathBuf::from("/d/Brochure.txt"), "another export format is kept");

@@ -15,6 +15,60 @@ pub(crate) fn story_of(s: &Session, p: &Value) -> Option<StoryId> {
     st.selection.text.map(|t| t.story)
 }
 
+/// What a command that reads or edits a story was told to act on.
+pub(crate) enum StoryTarget {
+    /// A story: named directly, or the story of a frame that holds text.
+    Story(StoryId),
+    /// An explicit frame that holds no text yet. Only Fill with Placeholder Text converts it.
+    TextlessFrame(ItemId),
+}
+
+/// The `story` id `p` gives `cmd`, checked: it must be an unsigned integer naming a story.
+///
+/// Ids come from callers and are hostile, and a target the document doesn't have is an error
+/// rather than a quiet fall back to the selection, which read or edited another story (#1809).
+fn explicit_story(doc: &designcraft_doc::Document, p: &Value, cmd: &str) -> Result<Option<StoryId>> {
+    let Some(value) = p.get("story").filter(|v| !v.is_null()) else { return Ok(None) };
+    let id = value.as_u64().ok_or_else(|| bad(cmd, "`story` must be an unsigned integer"))?;
+    let sid = StoryId(id);
+    if doc.story(sid).is_none() {
+        return Err(bad(cmd, format!("no such story {id}")));
+    }
+    Ok(Some(sid))
+}
+
+/// The `frame` id `p` gives `cmd`, checked the same way, and what it holds: the story of a frame
+/// that has text, or the frame itself when it has none.
+fn explicit_frame(doc: &designcraft_doc::Document, p: &Value, cmd: &str) -> Result<Option<StoryTarget>> {
+    let Some(value) = p.get("frame").filter(|v| !v.is_null()) else { return Ok(None) };
+    let id = value.as_u64().ok_or_else(|| bad(cmd, "`frame` must be an unsigned integer"))?;
+    let item = doc.item(ItemId(id)).ok_or_else(|| bad(cmd, format!("no such frame {id}")))?;
+    Ok(Some(match item.text_frame() {
+        Some(t) => StoryTarget::Story(t.story),
+        None => StoryTarget::TextlessFrame(ItemId(id)),
+    }))
+}
+
+/// The target `p` names for `cmd`, or `None` when it names neither and the selection decides. Both
+/// ids are checked when both are given, even though `story` wins.
+pub(crate) fn story_target(s: &Session, p: &Value, cmd: &str) -> Result<Option<StoryTarget>> {
+    let doc = &s.doc()?.doc;
+    let story = explicit_story(doc, p, cmd)?;
+    let frame = explicit_frame(doc, p, cmd)?;
+    Ok(story.map(StoryTarget::Story).or(frame))
+}
+
+/// The story `cmd` acts on, from [`story_target`] or the selection. A frame that holds no text is
+/// refused: only Fill with Placeholder Text converts one.
+pub(crate) fn validated_story_of(s: &Session, p: &Value, cmd: &str) -> Result<Option<StoryId>> {
+    let doc = &s.doc()?.doc;
+    explicit_story(doc, p, cmd)?;
+    if let Some(StoryTarget::TextlessFrame(fid)) = explicit_frame(doc, p, cmd)? {
+        return Err(bad(cmd, format!("frame {} holds no text", fid.0)));
+    }
+    Ok(story_of(s, p))
+}
+
 /// Story byte at spread point `pt` in text frame `frame` (in a table cell's story when the point is in a cell).
 fn hit_byte(s: &Session, frame: ItemId, pt: Point) -> Option<(StoryId, usize, Option<CellAddr>)> {
     hit_byte_with(s, frame, pt, compose::hit)
@@ -215,18 +269,28 @@ pub(super) fn release(s: &mut Session, p: &Value) -> Result<Value> {
         return ok();
     }
     s.edit(|d, sel| {
-        let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-        let piece = st.extract(r.clone());
-        let mut at = b;
-        if !copy {
-            st.delete(r.clone());
-            if at > r.start {
-                at -= r.len().min(at - r.start);
+        let (piece_len, at, r) = {
+            let st = d.text_story_mut(sid, cell).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+            let piece = st.extract(r.clone());
+            let mut at = b;
+            if !copy {
+                st.delete(r.clone());
+                if at > r.start {
+                    at -= r.len().min(at - r.start);
+                }
+            }
+            let end = st.insert_story(at, &piece);
+            sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
+            (piece.text.len(), at, r)
+        };
+        if cell.is_none() {
+            if copy {
+                d.adjust_text_ranges(sid, at..at, piece_len);
+            } else {
+                d.move_text_ranges(sid, r, at);
             }
         }
-        let end = st.insert_story(at, &piece);
-        sel.text = Some(TextSel { story: sid, anchor: at, focus: end, frame: Some(frame), cell });
-        Ok(json!({"moved": piece.text.len(), "at": at}))
+        Ok(json!({"moved": piece_len, "at": at}))
     })
 }
 

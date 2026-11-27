@@ -5,7 +5,6 @@
 //! drawn. A page with a `/UserUnit` is sized in points, and so are its boxes. The function and mesh
 //! cases follow pdfcraft's tests in `crates/render/src/raster.rs`.
 
-use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
@@ -74,7 +73,13 @@ fn placed(size: f64, pdf: Vec<u8>) -> Rendered {
     std::thread::spawn(move || {
         let mut d = Document::new(&NewDocument { width: size, height: size, facing_pages: false, ..Default::default() });
         let id = AssetId(d.alloc());
-        let asset = d.add_asset(Asset { id, name: "art.pdf".into(), mime: "application/pdf".into(), data: Arc::new(pdf), ..Default::default() });
+        let asset = d.add_asset(Asset {
+            id,
+            name: "art.pdf".into(),
+            mime: "application/pdf".into(),
+            data: designcraft_doc::AssetData::embedded(pdf),
+            ..Default::default()
+        });
         let id = ItemId(d.alloc());
         let mut item = Item::new(id, d.default_layer(), Shape::Rectangle, shapes::rectangle(Rect::new(0.0, 0.0, size, size)));
         item.content = Content::Graphic(Graphic {

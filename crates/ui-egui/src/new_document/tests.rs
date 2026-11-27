@@ -440,3 +440,18 @@ fn presets_are_saved_by_name_and_recent_documents_once() {
     remember(&mut app, &p);
     assert_eq!(app.ui.recent_new_documents.len(), 1, "a repeat moves to the front");
 }
+
+/// A document made bound right to left is remembered that way: its Recent card makes another.
+#[test]
+fn a_recent_right_to_left_document_keeps_its_binding() {
+    let mut app = app();
+    let mut d = app.ui.dialog.clone().unwrap();
+    for (binding, rtl) in [("leftToRight", false), ("rightToLeft", true)] {
+        d.fields.insert("binding".into(), json!(binding));
+        remember(&mut app, &params(&d));
+        assert_eq!(app.ui.recent_new_documents[0].right_to_left_binding, rtl, "{binding}");
+    }
+    let card = cards(&app, "recent").into_iter().find(|c| c.nd.right_to_left_binding).expect("the right-to-left card");
+    select(&mut d, &card);
+    assert_eq!(params(&d)["binding"], "rightToLeft");
+}
