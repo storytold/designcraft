@@ -162,9 +162,10 @@ pub fn read_document(path: &str, cancel: &std::sync::atomic::AtomicBool) -> Resu
 #[cfg(not(target_arch = "wasm32"))]
 fn install_document(s: &mut Session, read: ReadDocument) -> Result<Value> {
     let ReadDocument { path, content } = read;
-    let r = match content {
-        ReadContent::Interchange(bytes) => crate::cmd::interchange::open_idml_file(s, bytes, &path)?,
-        ReadContent::Scribus(_) => crate::cmd::scribus::open_sla(s, &json!({"path": path}))?,
+    let (r, note_recent) = match content {
+        ReadContent::Interchange(bytes) => (crate::cmd::interchange::open_idml_file(s, bytes, &path)?, true),
+        // A Scribus file starts unsaved and is not entered as a recent native path.
+        ReadContent::Scribus(_) => (crate::cmd::scribus::open_sla(s, &json!({"path": path}))?, false),
         ReadContent::Native { doc, mut warnings, links } => {
             let mut d = *doc;
             let (fonts, faces, font_warnings) = load_document_fonts(&mut d, &path);
@@ -174,10 +175,12 @@ fn install_document(s: &mut Session, read: ReadDocument) -> Result<Value> {
             st.fonts = fonts;
             let checks = crate::cmd::native_links::start(&mut st, links);
             let i = s.add_document(st);
-            json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks})
+            (json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks}), true)
         }
     };
-    s.prefs.note_recent_file(&path);
+    if note_recent {
+        s.prefs.note_recent_file(&path);
+    }
     Ok(r)
 }
 
