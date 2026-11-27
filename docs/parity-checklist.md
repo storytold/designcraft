@@ -48,6 +48,8 @@ bound.
 
 Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print).
 
+**Headless ([RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md)): 0 yes, 0 no (window 0, os 0, engine-gap 0), 0 partial, 277 unknown.** The rows name no command ids yet, so none can be `yes`. A row may add a fifth `Headless` cell, `no (<reach>)` or `partial (<reach>)` with a reach of `window`, `os` or `engine-gap`; a row without one is `unknown`.
+
 ## Rows
 
 | Area | Feature | Priority | Status |
