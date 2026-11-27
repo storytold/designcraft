@@ -614,6 +614,42 @@ fn adjust_layout_dialog_previews_custom_page_zero_margins_and_allows_bleed_only_
 }
 
 #[test]
+fn adjust_layout_dialog_validates_only_edited_dimensions_and_margins() {
+    // Sub-1pt width (valid in layout.adjust) must not block a bleed-only edit.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 1, "facingPages": false, "width": 10.0, "height": 10.0, "margins": 0.0})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).unwrap();
+    app.run("layout.adjust", json!({"width": 0.5})).unwrap();
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"bleedTop": "9 pt"}));
+    confirm(&mut app).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    assert!((doc.settings.page_width - 0.5).abs() < 1e-6);
+    assert!((doc.settings.bleed[0] - 9.0).abs() < 1e-6);
+
+    // Unedited margin > 10000 pt (valid in layout.adjust up to 15552 pt) must not block a bleed-only edit.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"pages": 1, "facingPages": false, "width": 15000.0, "height": 15000.0, "margins": 0.0})).unwrap();
+    app.run("document.preferences", json!({"horizontalUnits": "points", "verticalUnits": "points"})).unwrap();
+    app.run("layout.adjust", json!({"margins": {"top": 0.0, "bottom": 0.0, "inside": 12000.0, "outside": 0.0}})).unwrap();
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"bleedTop": "12 pt"}));
+    confirm(&mut app).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    assert!((doc.page(0).unwrap().margins.inside - 12000.0).abs() < 1e-6);
+    assert!((doc.settings.bleed[0] - 12.0).abs() < 1e-6);
+
+    // Edited out-of-range values are still rejected and keep the dialog open.
+    open_adjust_layout(&mut app);
+    setup_fields(&mut app, json!({"width": "0 pt"}));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+    setup_fields(&mut app, json!({"width": "15000 pt", "marginTop": "-1 pt"}));
+    assert!(confirm(&mut app).is_err());
+    assert!(app.ui.dialog.is_some());
+}
+
+#[test]
 fn adjust_layout_dialog_exposes_accessible_names_on_size_margin_and_bleed_inputs() {
     use egui::accesskit::Role;
     use egui_kittest::{Harness, kittest::Queryable};

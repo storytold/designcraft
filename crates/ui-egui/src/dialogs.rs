@@ -2993,22 +2993,12 @@ fn confirm_adjust_layout(app: &mut DesignApp, d: &Dialog) -> Result<Value, Strin
         return Err("the document the dialog opened on is no longer the active one".into());
     }
     let measure = |key: &str| setup_measure(d, key).ok_or_else(|| format!("{key}: not a measure"));
-    let w = measure("width")?;
-    let h = measure("height")?;
-    if !(1.0..=15552.0).contains(&w) || !(1.0..=15552.0).contains(&h) {
-        return Err("page size out of range (1 pt to 216 in)".into());
-    }
-    let margins: Vec<f64> = SETUP_EDGES.iter().map(|e| measure(&format!("margin{e}"))).collect::<Result<_, _>>()?;
-    if margins.iter().any(|v| !(0.0..=10000.0).contains(v)) {
-        return Err("margins out of range".into());
-    }
     let width_edited = d.fields.get("widthShown") != d.fields.get("width");
     let height_edited = d.fields.get("heightShown") != d.fields.get("height");
     let auto_margins = d.b("autoAdjustMargins");
-    let bleed: Vec<f64> = SETUP_EDGES.iter().map(|e| measure(&format!("bleed{e}"))).collect::<Result<_, _>>()?;
-    if bleed.iter().any(|v| !(0.0..=720.0).contains(v)) {
-        return Err("bleed out of range".into());
-    }
+    let margins_shown = d.fields.get("marginsShown").and_then(Value::as_array);
+    let margins_edited =
+        !auto_margins && SETUP_EDGES.iter().enumerate().any(|(i, e)| margins_shown.and_then(|s| s.get(i)) != d.fields.get(&format!("margin{e}")));
     let bleed_shown = d.fields.get("bleedShown").and_then(Value::as_array);
     let bleed_edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| bleed_shown.and_then(|s| s.get(i)) != d.fields.get(&format!("bleed{e}")));
     let adjust_font_size = d.b("adjustFontSize");
@@ -3020,20 +3010,35 @@ fn confirm_adjust_layout(app: &mut DesignApp, d: &Dialog) -> Result<Value, Strin
         "adjustLockedContent": d.b("adjustLockedContent"),
     });
     if width_edited {
+        let w = measure("width")?;
+        if !(1.0..=15552.0).contains(&w) {
+            return Err("page size out of range (1 pt to 216 in)".into());
+        }
         p["width"] = json!(w);
     }
     if height_edited {
+        let h = measure("height")?;
+        if !(1.0..=15552.0).contains(&h) {
+            return Err("page size out of range (1 pt to 216 in)".into());
+        }
         p["height"] = json!(h);
     }
-    if bleed_edited {
-        p["bleed"] = json!(bleed);
-    }
-    if !auto_margins {
-        let shown = d.fields.get("marginsShown").and_then(Value::as_array);
-        let edited = SETUP_EDGES.iter().enumerate().any(|(i, e)| shown.and_then(|s| s.get(i)) != d.fields.get(&format!("margin{e}")));
-        if edited {
-            p["margins"] = json!({"top": margins[0], "bottom": margins[1], "inside": margins[2], "outside": margins[3]});
+    if margins_edited {
+        let top = measure("marginTop")?;
+        let bottom = measure("marginBottom")?;
+        let inside = measure("marginInside")?;
+        let outside = measure("marginOutside")?;
+        if [top, bottom, inside, outside].iter().any(|v| !(0.0..=15552.0).contains(v)) {
+            return Err("margins out of range".into());
         }
+        p["margins"] = json!({"top": top, "bottom": bottom, "inside": inside, "outside": outside});
+    }
+    if bleed_edited {
+        let bleed = [measure("bleedTop")?, measure("bleedBottom")?, measure("bleedInside")?, measure("bleedOutside")?];
+        if bleed.iter().any(|v| !(0.0..=720.0).contains(v)) {
+            return Err("bleed out of range".into());
+        }
+        p["bleed"] = json!(bleed);
     }
     if font_limits {
         let font = |key: &str, default: f64| match d.fields.get(key) {
