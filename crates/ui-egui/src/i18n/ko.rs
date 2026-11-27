@@ -1788,7 +1788,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("1-2-1 Aki", "1-2-1 간격"),
     ("1/2 Parent Character", "기본 문자 1/2자"),
     ("1/2 Ruby Character", "루비 문자 1/2자"),
-    ("A custom name", "사용자 지정 이름"),
     ("About", "정보"),
     ("Above/Right", "위/오른쪽"),
     ("Absorb Ideographic Space at Line End", "행 끝 전각 공백 흡수"),

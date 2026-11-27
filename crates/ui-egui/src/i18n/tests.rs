@@ -521,7 +521,7 @@ fn category_first_counts_put_the_category_before_every_number() {
 
 /// Every English string the interface passes to `tr`, as far as the command and tool tables and
 /// the list of UI-only labels know them.
-fn interface_strings() -> HashSet<&'static str> {
+pub(super) fn interface_strings() -> HashSet<&'static str> {
     let mut keys = HashSet::new();
     // Command labels and menu names reach `tr` from the engine and the UI command table.
     for spec in designcraft_engine::command_specs() {

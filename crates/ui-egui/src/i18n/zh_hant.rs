@@ -1773,7 +1773,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("1-2-1 Aki", "1-2-1 間距"),
     ("1/2 Parent Character", "1/2個基礎字元"),
     ("1/2 Ruby Character", "1/2個注音字元"),
-    ("A custom name", "自訂名稱"),
     ("About", "關於"),
     ("Above/Right", "上/右"),
     ("Absorb Ideographic Space at Line End", "行尾吸收全形空格"),

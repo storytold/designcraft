@@ -305,14 +305,28 @@ mod tests;
 mod swedish_tests {
     use super::*;
 
-    /// The Chinese and Korean tables have rows only for keys another catalog knows, and keep the
-    /// placeholders and ellipses. A new English string falls back to English until it is
-    /// translated, so it doesn't fail here.
+    /// The Chinese and Korean tables have rows only for keys the interface or another catalog
+    /// knows, and keep the placeholders and ellipses. A new English string falls back to English
+    /// until it is translated, so it doesn't fail here.
     #[test]
     fn chinese_and_korean_tables_have_no_stale_rows_and_keep_placeholders() {
-        let mut keys = std::collections::HashSet::new();
+        let mut keys = super::tests::interface_strings();
         keys.extend(TABLE.iter().map(|(key, _)| *key));
-        for table in [ar::TABLE, pt_br::TABLE, ja::TABLE, de::TABLE, fr::TABLE, it::TABLE, pl::TABLE, ka::TABLE, uk::TABLE, ru::TABLE, cs::TABLE] {
+        for table in [
+            ar::TABLE,
+            pt_br::TABLE,
+            ja::TABLE,
+            de::TABLE,
+            fr::TABLE,
+            it::TABLE,
+            pl::TABLE,
+            ka::TABLE,
+            uk::TABLE,
+            ru::TABLE,
+            cs::TABLE,
+            sv::TABLE,
+            hu::TABLE,
+        ] {
             keys.extend(table.iter().map(|(key, _)| *key));
         }
         let placeholders = |s: &str| {

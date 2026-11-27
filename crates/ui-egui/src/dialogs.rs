@@ -3207,7 +3207,7 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                     let current = crate::i18n::LANGUAGES.iter().find(|(code, _)| *code == app.ui.language).map_or("English", |(_, name)| *name);
                     craft_ui::ComboBox::from_id_salt("pref_language")
                         .width(180.0)
-                        .height(400.0)
+                        .height(480.0)
                         .selected_text(crate::rtl::widget(ui, current))
                         .show_ui(ui, |ui| {
                             let ctx = ui.ctx().clone();
