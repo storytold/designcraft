@@ -1,4 +1,4 @@
-//! Pure browser startup and download metadata policies.
+//! Browser startup, download metadata, and atomic import policies.
 
 /// Query flags are case-sensitive decoded keys. Values are ignored: `?sample=false`
 /// still enables sample startup, and repeated keys have the same presence semantics.
@@ -63,5 +63,42 @@ mod tests {
         ] {
             assert_eq!(mime_for(name), expected, "{name}");
         }
+    }
+}
+
+/// Read a drop in order, publishing nothing unless every file can be read.
+pub(crate) async fn read_batch<T, R, E, F, Fut>(files: impl IntoIterator<Item = T>, mut read: F) -> Result<Vec<R>, E>
+where
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = Result<R, E>>,
+{
+    let mut result = Vec::new();
+    for file in files {
+        result.push(read(file).await?);
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod batch_tests {
+    #[test]
+    fn failed_read_aborts_the_whole_batch() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+        let mut seen = Vec::new();
+        let result = {
+            let future = super::read_batch([1, 2, 3], |n| {
+                seen.push(n);
+                std::future::ready(if n == 2 { Err("read failed") } else { Ok(n) })
+            });
+            let mut future = std::pin::pin!(future);
+            future.as_mut().poll(&mut Context::from_waker(Waker::noop()))
+        };
+        assert_eq!(result, Poll::Ready(Err("read failed")));
+        assert_eq!(seen, [1, 2]);
+        let mut success = std::pin::pin!(super::read_batch([3, 1], |n| std::future::ready(Ok::<_, ()>(n))));
+        assert_eq!(success.as_mut().poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Ok(vec![3, 1])));
     }
 }

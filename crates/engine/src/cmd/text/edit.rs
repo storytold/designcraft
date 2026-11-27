@@ -1,6 +1,6 @@
-use super::caret::{next_char, next_word, prev_char, prev_word, story_of};
+use super::caret::{StoryTarget, next_char, next_word, prev_char, prev_word, story_of, story_target};
 use super::format::{apply_typing_format, format_targets, typing_format};
-use super::{Result, Session, TextSel, Value, bad, bool_or, compose, floor_char_boundary, id_param, json, ok, str_param};
+use super::{Result, Session, TextSel, Value, bad, bool_or, compose, floor_char_boundary, json, ok, str_param};
 #[cfg(test)]
 use designcraft_doc::StoryId;
 
@@ -381,15 +381,26 @@ dum sidera fulgent tacito per inane meatu. Arbore sub magna ludunt pueri, linquu
 Iamque tibi rursus ponet nova carmina vates, et longas umbras quaerit sub tegmine fagi. Omnia mutantur, nihil interit.";
 
 pub(super) fn fill_placeholder(s: &mut Session, p: &Value) -> Result<Value> {
-    let st = s.doc()?;
-    let frame = id_param(p, "frame").or_else(|| st.selection.items.first().copied()).or_else(|| st.selection.text.and_then(|t| t.frame));
-    let sid = match frame.and_then(|f| st.doc.item(f)).and_then(|i| i.text_frame()) {
-        Some(t) => t.story,
-        None => {
-            if let Some(f) = frame {
+    const CMD: &str = "type.fillWithPlaceholder";
+    // Every explicit id is checked before a frame is converted or a story filled (#1809).
+    let sid = match story_target(s, p, CMD)? {
+        Some(StoryTarget::Story(sid)) => sid,
+        target => {
+            // The frame the call names, else the selected frame: that order has always decided which
+            // story this command fills. A caret names no frame, only the story its text is in.
+            let frame = match target {
+                Some(StoryTarget::TextlessFrame(fid)) => Some(fid),
+                _ => {
+                    let st = s.doc()?;
+                    st.selection.items.first().copied().or_else(|| st.selection.text.and_then(|t| t.frame))
+                }
+            };
+            if let Some(f) = frame
+                && s.doc()?.doc.item(f).and_then(|i| i.text_frame()).is_none()
+            {
                 s.execute("object.content", &json!({"ids": [f.0], "type": "text"}))?;
             }
-            story_of(s, p).ok_or_else(|| bad("type.fillWithPlaceholder", "select a text frame"))?
+            story_of(s, p).ok_or_else(|| bad(CMD, "select a text frame"))?
         }
     };
     // Fill until overset with paragraphs of two to five sentences, as InDesign's placeholder text
@@ -487,12 +498,15 @@ pub(super) fn change_case(s: &mut Session, p: &Value) -> Result<Value> {
                 let mut changes = Vec::new();
                 for seg in segs.iter().rev() {
                     let old = st.slice(seg.clone()).to_string();
-                    let new: String = starts.iter().zip(&mapped).filter(|(b, _)| seg.contains(b)).map(|(_, m)| m.as_str()).collect();
+                    // The characters in this run: `starts` is sorted, so a search finds the slice.
+                    let (from, to) = (starts.partition_point(|b| *b < seg.start), starts.partition_point(|b| *b < seg.end));
+                    let new: String = mapped.get(from..to).unwrap_or_default().iter().map(String::as_str).collect();
                     if new != old {
                         delta += new.len() as isize - old.len() as isize;
                         st.replace(seg.clone(), &new);
                         // Per-character changes (back to front), so ranges inside the run keep their boundaries.
-                        for (i, (b, m)) in starts.iter().zip(&mapped).enumerate().rev().filter(|(_, (b, _))| seg.contains(b)) {
+                        for i in (from..to.min(mapped.len())).rev() {
+                            let (b, m) = (&starts[i], &mapped[i]);
                             let ce = starts.get(i + 1).copied().unwrap_or(r.end);
                             if m.len() != ce - b {
                                 changes.push((*b..ce, m.len()));

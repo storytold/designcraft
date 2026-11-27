@@ -1,13 +1,18 @@
 use super::{
-    Affine, Arc, AssetId, BookletOptions, Cache, Content, Document, Item, PdfOptions, Rect, SpreadRef, Standard, export_booklet, export_pdf,
-    merge_pdfs,
+    Affine, AssetId, BookletOptions, Cache, Content, Document, Item, PdfOptions, Rect, SpreadRef, Standard, export_booklet, export_pdf, merge_pdfs,
 };
 
 fn placed_document(source: Vec<u8>) -> Document {
     use designcraft_doc::{Asset, Graphic, ItemId, Shape};
     let mut doc = Document::new(&Default::default());
     let asset = AssetId(doc.alloc());
-    doc.add_asset(Asset { id: asset, name: "placed.pdf".into(), mime: "application/pdf".into(), data: Arc::new(source), ..Default::default() });
+    doc.add_asset(Asset {
+        id: asset,
+        name: "placed.pdf".into(),
+        mime: "application/pdf".into(),
+        data: designcraft_doc::AssetData::embedded(source),
+        ..Default::default()
+    });
     let mut item =
         Item::new(ItemId(doc.alloc()), doc.default_layer(), Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 100.0, 100.0)));
     item.content = Content::Graphic(Graphic {
@@ -76,8 +81,8 @@ fn registrations(action: impl FnOnce()) -> usize {
     REGISTRATIONS.get()
 }
 
-fn check_vector_artwork(pdf: &hayro_syntax::Pdf) {
-    use hayro_syntax::object::{Name, Object};
+fn check_vector_artwork(pdf: &craft_pdf::syntax::Pdf) {
+    use craft_pdf::syntax::object::{Name, Object};
 
     let mut found = false;
     for object in pdf.objects() {
@@ -94,9 +99,9 @@ fn check_vector_artwork(pdf: &hayro_syntax::Pdf) {
 }
 
 fn check_unlayered_pdf(bytes: &[u8], pages: usize, artwork: bool) {
-    use hayro_syntax::object::Dict;
+    use craft_pdf::syntax::object::Dict;
 
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     assert_eq!(pdf.pages().len(), pages);
     let catalog = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()).unwrap();
     assert!(!catalog.contains_key(b"OCProperties"), "unlayered output must not acquire optional content");
@@ -194,9 +199,9 @@ fn layered_and_resource_only_inputs_register_optional_content() {
 }
 
 fn check_registered(bytes: &[u8], hidden: bool) {
-    use hayro_syntax::object::{Array, Dict, Name, Object, ObjectIdentifier};
+    use craft_pdf::syntax::object::{Array, Dict, Name, Object, ObjectIdentifier};
 
-    let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).unwrap();
+    let pdf = craft_pdf::syntax::Pdf::new(bytes.to_vec()).unwrap();
     check_vector_artwork(&pdf);
     let xref = pdf.xref();
     let catalog = xref.get::<Dict<'_>>(xref.root_id()).unwrap();
@@ -206,7 +211,7 @@ fn check_registered(bytes: &[u8], hidden: bool) {
     let group_id: ObjectIdentifier = groups.raw_iter().next().unwrap().as_obj_ref().unwrap().into();
     let group = xref.get::<Dict<'_>>(group_id).unwrap();
     assert_eq!(group.get::<Name<'_>>(b"Type").unwrap().as_ref(), b"OCG");
-    assert_eq!(group.get::<hayro_syntax::object::String<'_>>(b"Name").unwrap().as_bytes(), b"Hidden");
+    assert_eq!(group.get::<craft_pdf::syntax::object::String<'_>>(b"Name").unwrap().as_bytes(), b"Hidden");
 
     let config = properties.get::<Dict<'_>>(b"D").unwrap();
     if hidden {

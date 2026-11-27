@@ -28,6 +28,22 @@ pub struct ItemLoc {
     pub path: ItemPath,
 }
 
+/// A gap between adjacent items (or between an item and the page edge) on a spread.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gap {
+    /// True for a vertical gap (between left and right neighbours, moving along X);
+    /// false for a horizontal gap (between top and bottom neighbours, moving along Y).
+    pub vertical: bool,
+    /// Leading edge of the gap along its movement axis.
+    pub a: f64,
+    /// Trailing edge of the gap along its movement axis.
+    pub z: f64,
+    /// Items ending at `a` that resize when the gap moves.
+    pub before: Vec<ItemId>,
+    /// Items starting at `z` that resize when the gap moves.
+    pub after: Vec<ItemId>,
+}
+
 impl ItemLoc {
     /// Top-level index in the spread.
     pub fn top(&self) -> usize {
@@ -227,23 +243,27 @@ impl Document {
         Ok(id)
     }
 
+    /// Remove an item (and its descendants) from its spread or group, leaving text frames in
+    /// their stories' threads. Anchoring a text frame needs its story to stay threaded to it
+    /// after the frame is no longer a spread item.
+    pub fn take_item(&mut self, id: ItemId) -> Result<Arc<Item>> {
+        let loc = self.find(id).ok_or(DocError::NoItem(id))?;
+        let sp = self.spread_mut(loc.spread).ok_or(DocError::NoItem(id))?;
+        if loc.path.len() == 1 {
+            return Ok(sp.items.remove(loc.path[0]));
+        }
+        let mut it: &mut Item = Arc::make_mut(&mut sp.items[loc.path[0]]);
+        for &i in &loc.path[1..loc.path.len() - 1] {
+            it = Arc::make_mut(&mut it.children_mut().ok_or(DocError::NoItem(id))?[i]);
+        }
+        let last = *loc.path.last().ok_or(DocError::NoItem(id))?;
+        Ok(it.children_mut().ok_or(DocError::NoItem(id))?.remove(last))
+    }
+
     /// Remove an item (and its descendants) from the document. Text frames leave their threads;
     /// stories that lose their last frame are deleted.
     pub fn remove_item(&mut self, id: ItemId) -> Result<Arc<Item>> {
-        let loc = self.find(id).ok_or(DocError::NoItem(id))?;
-        let removed = {
-            let sp = self.spread_mut(loc.spread).ok_or(DocError::NoItem(id))?;
-            if loc.path.len() == 1 {
-                sp.items.remove(loc.path[0])
-            } else {
-                let mut it: &mut Item = Arc::make_mut(&mut sp.items[loc.path[0]]);
-                for &i in &loc.path[1..loc.path.len() - 1] {
-                    it = Arc::make_mut(&mut it.children_mut().ok_or(DocError::NoItem(id))?[i]);
-                }
-                let last = *loc.path.last().ok_or(DocError::NoItem(id))?;
-                it.children_mut().ok_or(DocError::NoItem(id))?.remove(last)
-            }
-        };
+        let removed = self.take_item(id)?;
         let mut frames = Vec::new();
         removed.walk(&mut |i| {
             if let Some(t) = i.text_frame() {
@@ -646,6 +666,38 @@ impl Document {
                 !it.locked && !it.hidden && !layer.is_some_and(|l| !l.visible || l.locked) && item_hit(it, p, tol)
             })
             .map(|it| it.id)
+    }
+
+    /// The gap at `p` (spread space) on spread `sr`: between left and right neighbours (vertical
+    /// gap moving along X), or above and below (horizontal gap moving along Y).
+    pub fn find_gap(&self, sr: SpreadRef, p: Point) -> Option<Gap> {
+        let sp = self.spread(sr)?;
+        let page = sp.page_at_x(p.x).and_then(|i| sp.pages.get(i)).map(|pg| pg.bounds())?;
+        let items: Vec<(ItemId, Rect)> = sp
+            .items
+            .iter()
+            .filter(|it| !it.hidden && !it.locked && self.layer(it.layer).is_none_or(|l| !l.locked && l.visible))
+            .map(|it| (it.id, it.bounds()))
+            .collect();
+        if items.iter().any(|(_, b)| b.contains(p)) {
+            return None;
+        }
+        // Between left and right neighbours (a vertical gap), or above and below (horizontal).
+        let side = |vertical: bool| {
+            let (pos, lo, hi) = if vertical { (p.x, page.x0, page.x1) } else { (p.y, page.y0, page.y1) };
+            let across = |b: &Rect| if vertical { b.y0 <= p.y && p.y <= b.y1 } else { b.x0 <= p.x && p.x <= b.x1 };
+            let end = |b: &Rect| if vertical { b.x1 } else { b.y1 };
+            let start = |b: &Rect| if vertical { b.x0 } else { b.y0 };
+            let a = items.iter().filter(|(_, b)| across(b) && end(b) <= pos).map(|(_, b)| end(b)).fold(lo, f64::max);
+            let z = items.iter().filter(|(_, b)| across(b) && start(b) >= pos).map(|(_, b)| start(b)).fold(hi, f64::min);
+            let before: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (end(b) - a).abs() < 0.5).map(|(i, _)| *i).collect();
+            let after: Vec<ItemId> = items.iter().filter(|(_, b)| across(b) && (start(b) - z).abs() < 0.5).map(|(i, _)| *i).collect();
+            (!before.is_empty() || !after.is_empty()).then_some(Gap { vertical, a, z, before, after })
+        };
+        match (side(true), side(false)) {
+            (Some(v), Some(h)) => Some(if v.z - v.a <= h.z - h.a { v } else { h }),
+            (v, h) => v.or(h),
+        }
     }
 
     /// The first item on a document or parent spread whose geometry isn't finite

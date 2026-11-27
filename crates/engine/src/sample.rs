@@ -67,7 +67,14 @@ fn image(d: &mut Document, name: &str, w: u32, h: u32, hue: f32) -> AssetId {
     let data = art_png(w, h, hue);
     d.assets.insert(
         id,
-        Arc::new(Asset { id, name: name.into(), mime: "image/png".into(), data: Arc::new(data), pixels: Some((w, h)), ..Default::default() }),
+        Arc::new(Asset {
+            id,
+            name: name.into(),
+            mime: "image/png".into(),
+            data: designcraft_doc::AssetData::embedded(data),
+            pixels: Some((w, h)),
+            ..Default::default()
+        }),
     );
     id
 }

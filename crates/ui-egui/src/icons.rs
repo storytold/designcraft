@@ -798,6 +798,23 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
             pen.fcircle(13.0, 10.0, 1.8);
             pen.frect(5.0, 8.0, 9.0, 12.0);
         }
+        // Binding: a folded leaf leaning the way the pages turn, its back page showing behind the
+        // spine, and an arrow on it slanted with its top edge.
+        "bind-ltr" | "bind-rtl" => {
+            let rtl = name == "bind-rtl";
+            let m = |x: f32| if rtl { 20.0 - x } else { x };
+            pen.w = 1.3;
+            pen.closed(&[(m(5.6), 4.7), (m(14.7), 6.0), (m(14.7), 18.0), (m(5.6), 16.3)]);
+            pen.line(&[(m(5.6), 4.7), (m(12.5), 2.3), (m(12.5), 5.7)]);
+            pen.w = 1.8;
+            if rtl {
+                pen.line(&[(12.6, 11.29), (8.28, 11.85)]);
+                pen.line(&[(9.89, 8.8), (8.0, 11.86), (10.21, 14.3)]);
+            } else {
+                pen.line(&[(11.82, 11.85), (7.5, 11.29)]);
+                pen.line(&[(9.89, 14.3), (12.1, 11.86), (10.21, 8.8)]);
+            }
+        }
         "page-count" => {
             pen.closed(&[(10.0, 5.0), (3.0, 3.0), (3.0, 15.0), (10.0, 17.0)]);
             pen.closed(&[(10.0, 5.0), (17.0, 3.0), (17.0, 15.0), (10.0, 17.0)]);
@@ -978,6 +995,17 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
                 pen.line(&[(15.5, 2.0), (15.5, 18.0)]);
             }
         }
+        // Paragraph Direction: the pilcrow, with an arrow beside it at its middle pointing the way
+        // its lines run (on its right for left to right, on its left for right to left).
+        "pdir-ltr" | "pdir-rtl" => {
+            let rtl = name == "pdir-rtl";
+            // The pilcrow, drawn as text like the other ¶ icons; moved right for right to left.
+            pen.text(if rtl { 14.4 } else { 6.29 }, 9.25, "¶", 14.0);
+            pen.w = 1.5;
+            let m = |x: f32| if rtl { 20.0 - x } else { x };
+            pen.line(&[(m(11.1), 10.0), (m(16.6), 10.0)]);
+            pen.line(&[(m(14.4), 7.9), (m(16.6), 10.0), (m(14.4), 12.1)]);
+        }
         _ => return false,
     }
     true
@@ -996,6 +1024,19 @@ fn paint_text(pen: &mut Pen, name: &str) -> bool {
             pen.line(&[(8.0, 3.5), (8.0, 16.5)]);
             pen.line(&[(12.0, 3.5), (12.0, 16.5)]);
             pen.line(&[(9.0, 10.0), (11.0, 10.0)]);
+        }
+        "vjust-top" | "vjust-center" | "vjust-bottom" | "vjust-justify" => {
+            // A frame with three lines of text at its top, middle or bottom, or spread over it.
+            pen.rect(2.5, 2.5, 17.5, 17.5);
+            let ys = match name {
+                "vjust-top" => [5.5, 8.0, 10.5],
+                "vjust-center" => [7.5, 10.0, 12.5],
+                "vjust-bottom" => [9.5, 12.0, 14.5],
+                _ => [5.5, 10.0, 14.5],
+            };
+            for y in ys {
+                pen.line(&[(5.0, y), (15.0, y)]);
+            }
         }
         "small-caps" => {
             // Two original T shapes share a baseline; no phonetic small-cap glyph is required.
@@ -1373,6 +1414,20 @@ mod tests {
     #[test]
     fn align_to_glyphs_are_distinct() {
         let names = ["align-to", "align-to-key", "align-to-margins", "align-to-page", "align-to-spread"];
+        let unknown = drawing("no-such-icon");
+        let glyphs: Vec<String> = names.iter().map(|n| drawing(n)).collect();
+        for (k, g) in glyphs.iter().enumerate() {
+            assert_ne!(*g, unknown, "{} falls back to the placeholder", names[k]);
+            for (j, other) in glyphs.iter().enumerate().skip(k + 1) {
+                assert_ne!(g, other, "{} and {} draw alike", names[k], names[j]);
+            }
+        }
+    }
+
+    /// Each Vertical Justification button in Properties › Text Frame has its own glyph.
+    #[test]
+    fn vertical_justification_glyphs_are_distinct() {
+        let names = ["vjust-top", "vjust-center", "vjust-bottom", "vjust-justify"];
         let unknown = drawing("no-such-icon");
         let glyphs: Vec<String> = names.iter().map(|n| drawing(n)).collect();
         for (k, g) in glyphs.iter().enumerate() {

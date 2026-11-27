@@ -5,13 +5,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Dict, Name, Object};
 use designcraft_color::{Color, ColorType, Swatch, SwatchValue};
 use designcraft_compose::Cache;
 use designcraft_doc::build::NewDocument;
 use designcraft_doc::{Content, Document, Fill, Item, ItemId, ParaFormat, SpreadRef};
 use designcraft_geom::Rect;
-use hayro_syntax::Pdf;
-use hayro_syntax::object::{Dict, Name, Object};
 
 use crate::tests::extract_text;
 use crate::{PdfOptions, ShadowMask, Standard, check_pdfx1a, export_pdf_with_report};
@@ -114,8 +114,8 @@ fn x1a_export_flattens_transparency_into_inks() {
     // The default Coated FOGRA39 is a registered condition: no (ICC v4) profile in the file.
     let pdf = Pdf::new(bytes.to_vec()).unwrap();
     let oi = pdfx_intent(&pdf);
-    assert_eq!(oi.get::<hayro_syntax::object::String<'_>>(b"OutputConditionIdentifier").unwrap().as_bytes(), b"FOGRA39");
-    assert_eq!(oi.get::<hayro_syntax::object::String<'_>>(b"RegistryName").unwrap().as_bytes(), b"http://www.color.org");
+    assert_eq!(oi.get::<craft_pdf::syntax::object::String<'_>>(b"OutputConditionIdentifier").unwrap().as_bytes(), b"FOGRA39");
+    assert_eq!(oi.get::<craft_pdf::syntax::object::String<'_>>(b"RegistryName").unwrap().as_bytes(), b"http://www.color.org");
     assert!(!oi.contains_key(b"DestOutputProfile"), "no destination profile");
     let profiles = pdf.objects().into_iter().filter(|o| matches!(o, Object::Stream(s) if s.dict().get::<i32>(b"N") == Some(4))).count();
     assert_eq!(profiles, 0, "the profile is left out of the file");
@@ -144,7 +144,7 @@ fn x1a_export_flattens_transparency_into_inks() {
 fn pdfx_intent<'a>(pdf: &'a Pdf) -> Dict<'a> {
     let xref = pdf.xref();
     let catalog = xref.get::<Dict<'_>>(xref.root_id()).unwrap();
-    let intents = catalog.get::<hayro_syntax::object::Array<'_>>(b"OutputIntents").unwrap();
+    let intents = catalog.get::<craft_pdf::syntax::object::Array<'_>>(b"OutputIntents").unwrap();
     intents.iter::<Dict<'_>>().find(|oi| oi.get::<Name<'_>>(b"S").is_some_and(|s| s.as_ref() == b"GTS_PDFX")).unwrap()
 }
 
