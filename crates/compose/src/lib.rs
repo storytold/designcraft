@@ -165,6 +165,10 @@ pub struct PlacedGlyph {
     /// How far after its pen position the glyph is drawn (CJK aki, ruby parent spacing): its
     /// advance starts at `x - dx`.
     pub dx: f64,
+    /// Part of the bullet or number the paragraph's list adds (see [`shape::Glyph::list_label`]).
+    /// It carries the first character's offset and no length, so anything selecting glyphs by
+    /// byte range has to leave it out or it reaches text outside the range.
+    pub list_label: bool,
 }
 
 impl PlacedGlyph {
@@ -1046,6 +1050,8 @@ pub struct ComposeOptions {
     /// Where the story's anchored frames sit on their spreads; an anchored frame not listed is
     /// composed where it is stored, on no page.
     pub placed: Vec<(ItemId, Placement)>,
+    /// Where document-wide numbering starts in each story (built from the document when absent).
+    pub starts: Option<Arc<designcraft_doc::numbering::NumberStarts>>,
 }
 
 /// Nesting depth past which wrap obstacles inside groups are not collected.
@@ -1255,6 +1261,20 @@ pub fn compose_story(doc: &Document, sid: StoryId, opts: &ComposeOptions) -> Com
     compose_story_at(doc, sid, opts, 0, &mut HashMap::new())
 }
 
+/// Where the frame `fid` of story `sid` sits, when it is anchored in another story and not on a
+/// spread itself. `None` for a spread item or a frame no host places.
+pub fn frame_placement(doc: &Document, sid: StoryId, fid: ItemId) -> Option<Placement> {
+    frame_placement_with(doc, sid, fid, &mut |host| Arc::new(compose_story(doc, host, &ComposeOptions::default())))
+}
+
+/// [`frame_placement`] with the caller supplying (and caching) the composed host stories.
+pub fn frame_placement_with(doc: &Document, sid: StoryId, fid: ItemId, host: &mut dyn FnMut(StoryId) -> Arc<ComposedStory>) -> Option<Placement> {
+    if doc.find(fid).is_some() {
+        return None;
+    }
+    placed::placements(doc, sid, host).into_iter().find_map(|(id, placement)| (id == fid).then_some(placement))
+}
+
 /// [`compose_story`] for a story `depth` hosts down from the story asked for. `hosts` holds the
 /// hosts already composed (by story and depth) while composing the story asked for, so a host
 /// that many anchored frames lead to is composed once.
@@ -1303,6 +1323,8 @@ struct SubstitutionInput<'a> {
     notes: &'a mut Notes,
     /// The marks in the story before `range`.
     marks: MarkCounts,
+    /// Where the story's endnote numbering starts (read only when it has endnotes).
+    endnote_start: &'a dyn Fn() -> u32,
 }
 
 /// Endnote references, anchored-object marks and cross-reference marks in a stretch of story text.
@@ -1357,7 +1379,7 @@ impl MarkCounts {
 }
 
 fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
-    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes, marks } = input;
+    let SubstitutionInput { doc, story, range: prange, props: pp, frame: cur_frame, opts, var_story, var_cache, notes, marks, endnote_start } = input;
     let var_values = if var_story {
         let page = opts.page.or_else(|| cur_frame.and_then(|f| f.page));
         // A parent page itself (not composed for one of the pages it applies to).
@@ -1379,7 +1401,7 @@ fn paragraph_substitution(input: SubstitutionInput<'_>) -> SubstCtx {
     };
     if !story.endnotes.is_empty() {
         // Endnote reference numbers continue through the document.
-        let first = doc.endnote_start(story.id).saturating_add(u32::try_from(marks.endnotes).unwrap_or(u32::MAX));
+        let first = endnote_start().saturating_add(u32::try_from(marks.endnotes).unwrap_or(u32::MAX));
         for (k, (i, _)) in story.text[prange.clone()].match_indices(designcraft_doc::ENDNOTE_REF).enumerate() {
             sub.notes.insert(prange.start + i, doc.endnote_options.label(first.saturating_add(k as u32)));
         }
@@ -1443,7 +1465,16 @@ pub fn visible_break(doc: &Document, story: &Story, p: usize, at: usize) -> Opti
     (!gone).then_some(start)
 }
 
-fn named_list_labels(doc: &Document, story: &Story, ranges: &[Range<usize>], deleted: &[bool]) -> Vec<Option<String>> {
+fn named_list_labels<'s>(
+    doc: &Document,
+    story: &Story,
+    ranges: &[Range<usize>],
+    deleted: &[bool],
+    starts: &impl Fn() -> &'s designcraft_doc::numbering::NumberStarts,
+) -> Vec<Option<String>> {
+    // Only lists that continue across stories need the document-wide starts.
+    let continuing: std::collections::HashSet<&str> =
+        doc.settings.lists.iter().filter(|l| l.continue_across_stories).map(|l| l.name.as_str()).collect();
     let mut counters: std::collections::HashMap<String, ListCounter> = std::collections::HashMap::new();
     story
         .paras
@@ -1455,7 +1486,9 @@ fn named_list_labels(doc: &Document, story: &Story, ranges: &[Range<usize>], del
             if props.list_type != designcraft_doc::ListType::Numbers || props.list_name.is_empty() || range.is_empty() || *is_deleted {
                 return None;
             }
-            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| doc.list_start(story.id, &props.list_name));
+            let counter = counters.entry(props.list_name.clone()).or_insert_with(|| {
+                if continuing.contains(props.list_name.as_str()) { starts().list(story.id, &props.list_name) } else { ListCounter::default() }
+            });
             counter.advance(&props);
             Some(props.number_label_in(counter))
         })
@@ -1695,6 +1728,9 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
         for _ in 0..3 {
             // The same drop cap, spacing, hyphenation and breaker as the layout below.
             let mut gl = sp.glyphs.clone();
+            // Classified before the drop cap is split off: `split_drop_cap` takes those glyphs out
+            // of the vector, and the drop cap's character still votes (#1688).
+            let korean = hyphen::korean_paragraph(gl.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
             let dc = split_drop_cap(db, &mut gl, drop_end, pp.drop_cap_lines, base_leading, base_cap, drop_grid, drop_align, drop_tabs);
             let width = |j: usize| {
                 let ind = match &dc {
@@ -1706,7 +1742,7 @@ fn apply_nested_line_styles(input: NestedLineStyleInput<'_, '_, '_>) {
             };
             apply_desired_spacing(&mut gl, pp);
             mojikumi::apply(&mut gl, &doc.styles, &pp.mojikumi);
-            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+            let mut hy = hyphenation_points(&story.text, &gl, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
             suppress_hyphens(&mut hy, &gl, suppressed_hyphens);
             let breaks = if pp.composer.single_line() || gl.iter().any(|g| g.ch == '\t') || gl.len() > 4000 {
                 let tab = |j: usize, x: f64, i: usize| {
@@ -2857,6 +2893,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
         g.and_then(|g| table.styles.get(g.style as usize)).map_or((base_chars.fill.clone(), base_chars.fill_tint), |s| (s.fill.clone(), s.fill_tint))
     };
     let (above, below) = (text_color(sp.glyphs.iter().find(|g| g.len > 0)), text_color(sp.glyphs.iter().rev().find(|g| g.len > 0)));
+    // Classified before the drop cap is split off (see the same call in the measuring loop above).
+    let korean = hyphen::korean_paragraph(sp.glyphs.iter().map(|g| (g.byte, g.ch, g.list_label || g.generated_text.is_some())));
     let drop_cap = split_drop_cap(
         db,
         &mut sp.glyphs,
@@ -2946,7 +2984,8 @@ fn shape_paragraph(input: ParagraphShapeInput<'_, '_>) -> ShapedParagraph {
     );
     apply_desired_spacing(&mut glyphs, pp);
     mojikumi::apply(&mut glyphs, &doc.styles, &pp.mojikumi);
-    let mut hyph_after = hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars));
+    let mut hyph_after =
+        hyphenation_points(&story.text, &glyphs, pp, hyph_exceptions, &foreign_ranges(doc, story, prange.clone(), base_chars), korean);
     suppress_hyphens(&mut hyph_after, &glyphs, suppressed_hyphens);
     let base_size = base_chars.size;
     let spacing = spacing_for(pp, base_size, story, cjk);
@@ -3223,8 +3262,13 @@ fn compose_run(
     let deleted = deleted_paras(story, &para_ranges);
     let hyph_exceptions = doc.hyphenation_exception_map();
     let mut list_counter = ListCounter::default();
+    // Document-wide numbering starts: from the options, or built once when this story needs them.
+    let starts_cell = std::cell::OnceCell::new();
+    let starts = || -> &designcraft_doc::numbering::NumberStarts {
+        starts_cell.get_or_init(|| opts.starts.clone().unwrap_or_else(|| Arc::new(doc.number_starts())))
+    };
     // Named lists number independently of layout: one pass up front, for the labels.
-    let named_labels = named_list_labels(doc, story, &para_ranges, &deleted);
+    let named_labels = named_list_labels(doc, story, &para_ranges, &deleted, &starts);
     // Endnote, anchored-object and cross-reference marks before each paragraph, for their numbers.
     let marks_before = MarkCounts::before_paragraphs(story, &para_ranges);
     // Border and shading of each paragraph set, drawn once the lines are in place.
@@ -3244,7 +3288,7 @@ fn compose_run(
     let mut restores = 0usize;
     let mut pi = 0;
     let var_story = vars::has_vars(story);
-    let mut notes = Notes::new(doc, story);
+    let mut notes = Notes::new(doc, story, || starts().footnote(story.id));
     let mut note_snaps: Vec<(u32, Option<usize>, usize)> = Vec::with_capacity(np);
     let mut var_cache: std::collections::HashMap<(Option<usize>, bool), std::sync::Arc<Vec<String>>> = Default::default();
     // Column balancing above spanning paragraphs: settled and trial bottoms by band, the search
@@ -3387,6 +3431,7 @@ fn compose_run(
             var_cache: &mut var_cache,
             notes: &mut notes,
             marks: marks_before.get(pi).copied().unwrap_or_default(),
+            endnote_start: &|| starts().endnote(story.id),
         });
         #[cfg(test)]
         reuse::SHAPED.with(|n| n.set(n.get() + 1));
@@ -5474,6 +5519,12 @@ fn tab_leader(tab: &Glyph, leader: &str, x: f64, w: f64, origin: f64, out: &mut 
     while at + pw <= end + 0.01 && n < 2000 {
         for &(gid, adv) in &glyphs {
             out.push(PlacedGlyph {
+                // The leader fills a tab, so it belongs to whatever that tab belongs to. Saying
+                // `false` for the tab of a list label made the leader claim to be the
+                // paragraph's own text while carrying the paragraph-start byte, so a PDF link
+                // starting at the first text character swept the leader positions into its
+                // rectangle (noted in review).
+                list_label: tab.list_label,
                 rendered_char: '\t',
                 face: tab.face,
                 gid,
@@ -5638,6 +5689,7 @@ fn place(g: &Glyph, x: f64) -> PlacedGlyph {
         len: g.len,
         generated_text: g.generated_text.clone(),
         visible,
+        list_label: g.list_label,
         upright: g.upright,
         tcy: g.tcy,
         rtl: false,
@@ -5965,9 +6017,21 @@ fn hyphenation_points(
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
     foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
     if !pp.hyphenate {
+        return out;
+    }
+    // Korean is set word by word and is not hyphenated (KLREQ). An ordinary Korean document
+    // leaves the paragraph language at the default English, so the paragraph's own text decides
+    // rather than its language setting (#1688).
+    //
+    // Decided by the caller, from the paragraph's glyphs *before* its drop cap is split off:
+    // `split_drop_cap` takes those glyphs out of the vector, so classifying here lost the drop
+    // cap's character -- 15 Hangul against 15 Latin became 14 against 15, and the paragraph
+    // hyphenated its English. See `hyphen::korean_paragraph`.
+    if korean {
         return out;
     }
     let lim = hyphen::Limits {
@@ -5976,6 +6040,8 @@ fn hyphenation_points(
         before_last: pp.hyph_before_last as usize,
         capitalized: pp.hyph_capitalized,
     };
+    // The token the last word run sat in, and whether it is kept whole (see below).
+    let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
         if !glyphs[i].is_letter() || glyphs[i].len == 0 {
@@ -5996,6 +6062,24 @@ fn hyphenation_points(
         let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
+            // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
+            // on it ("News와") or inside an address is not a word to hyphenate (#1688). Found once
+            // per token and reused for the word runs inside it: unspaced CJK text is one token
+            // however many Latin words it holds, and scanning it again for each was quadratic.
+            let keep = match token {
+                Some((start, end, keep)) if start <= a && b <= end => keep,
+                _ => {
+                    let start = text[..a].rfind(char::is_whitespace).map_or(0, |i| i + text[i..].chars().next().map_or(1, char::len_utf8));
+                    let end = text[b..].find(char::is_whitespace).map_or(text.len(), |i| b + i);
+                    let keep = hyphen::keep_whole(&text[start..end]);
+                    token = Some((start, end, keep));
+                    keep
+                }
+            };
+            if keep {
+                i = j.max(i + 1);
+                continue;
+            }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
             let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);

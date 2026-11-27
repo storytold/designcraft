@@ -690,6 +690,37 @@ fn xlsx(parts: &[(&str, &str)]) -> String {
 }
 
 #[test]
+fn merged_spreadsheet_text_preserves_line_breaks_in_frames_and_cells() {
+    let book = xlsx(&[
+        (
+            "xl/workbook.xml",
+            r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="People" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+        ),
+        ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>"#),
+        ("xl/sharedStrings.xml", "<sst><si><t>Name</t></si><si><t>Ada_x000D__x000A_Grace_x000D_Katherine</t></si></sst>"),
+        (
+            "xl/worksheets/sheet1.xml",
+            r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c></row></sheetData></worksheet>"#,
+        ),
+    ]);
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    exec(&mut s, "data.source.select", json!({"bytes": book, "name": "people.xlsx"}));
+    let frame = text_frame(&mut s, [36.0, 36.0, 400.0, 200.0], " / <<Name>>", None);
+    exec(&mut s, "text.select", json!({"story": frame["story"], "anchor": 0, "focus": 0}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+    let table = "Label\t<<Name>>";
+    let frame = text_frame(&mut s, [36.0, 230.0, 400.0, 400.0], table, None);
+    exec(&mut s, "text.select", json!({"story": frame["story"], "anchor": 0, "focus": table.len()}));
+    exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
+
+    exec(&mut s, "data.merge", json!({}));
+    let text = "Ada\nGrace\nKatherine";
+    assert!(texts(&s).contains(&format!("{text} / {text}")), "merged frame: {:?}", texts(&s));
+    assert_eq!(cell_texts(&s), ["Label", text]);
+}
+
+#[test]
 fn excel_first_sheet_named_sheet_and_cached_values() {
     let first = xlsx(&[
         (
@@ -1894,8 +1925,10 @@ fn a_field_converted_into_a_table_is_filled_in_its_cell() {
     exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 13}));
     exec(&mut s, "table.convertFromText", json!({"columnSeparator": "tab"}));
     assert_eq!(cell_texts(&s), ["Name", "<<Name>>"]);
+    assert_eq!(exec(&mut s, "data.fields", json!({}))[0]["uses"], 1);
     exec(&mut s, "data.preview", json!({"record": 1}));
     assert_eq!(cell_texts(&s), ["Name", "Ada"], "the field is filled in its cell");
+    assert_eq!(exec(&mut s, "data.fields", json!({}))[0]["uses"], 1, "the count reads the unfilled template while previewing");
 }
 
 /// A table `Who⇥Where` with the caret in its second cell, and a source with `Name` and `City`.
@@ -1985,6 +2018,7 @@ fn a_field_in_an_endnote_is_filled() {
         s.documents()[s.active_index().unwrap()].doc.stories.values().flat_map(|st| st.endnotes.iter().map(|e| e.text.text.clone())).collect()
     };
     assert_eq!(endnotes(&s), ["From <<City>>"]);
+    assert_eq!(exec(&mut s, "data.fields", json!({}))[1]["uses"], 1);
     exec(&mut s, "data.preview", json!({"record": 1}));
     assert_eq!(endnotes(&s), ["From London"]);
 }
@@ -2038,4 +2072,51 @@ fn select_records_stops_expanding_once_the_limit_is_met_but_still_checks_every_r
     // A later token that is out of range is still an error.
     assert!(parse::select_records(10, "range", 1, "1-10,5-11", Some(2)).is_err());
     assert!(parse::select_records(10, "range", 1, "1-2,0", Some(2)).is_err());
+}
+
+#[test]
+fn idml_reopen_relink_counts_existing_text_field() {
+    let dir = scratch("idml-field-count");
+    let csv = dir.join("people.csv");
+    let idml = dir.join("template.idml");
+    write(&csv, "Name\nAda\n");
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "", None);
+    exec(&mut s, "data.source.select", json!({"path": csv}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+    assert_eq!(exec(&mut s, "data.fields", json!({}))[0]["uses"], 1);
+    exec(&mut s, "file.exportIdml", json!({"path": idml}));
+    let mut reopened = Session::new();
+    exec(&mut reopened, "file.openIdml", json!({"path": idml}));
+    exec(&mut reopened, "data.source.select", json!({"path": csv}));
+    let uses = exec(&mut reopened, "data.fields", json!({}))[0]["uses"].clone();
+    exec(&mut reopened, "data.merge", json!({}));
+    assert!(texts(&reopened).contains(&"Ada".to_string()));
+    assert_eq!(uses, 1);
+}
+
+#[test]
+fn fields_count_unbound_markers_without_double_counting_bound_placeholders() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name\nAda\n");
+    text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "<<Name>> <<Name>>", None);
+    text_frame(&mut s, [36.0, 100.0, 240.0, 150.0], "", None);
+    exec(&mut s, "data.placeholder.add", json!({"field": "Name"}));
+    assert_eq!(exec(&mut s, "data.fields", json!({}))[0]["uses"], 3);
+    assert_eq!(exec(&mut s, "data.fields", json!({"csv": "Name\nAda\n"}))[0]["uses"], 0);
+}
+
+#[test]
+fn hyperlink_over_marker_does_not_hide_its_field_usage() {
+    let mut s = Session::new();
+    new_doc(&mut s, 1);
+    select_csv(&mut s, "Name,Link\nAda,https://example.com\n");
+    let made = text_frame(&mut s, [36.0, 36.0, 240.0, 80.0], "<<Name>>", None);
+    exec(&mut s, "text.select", json!({"story": made["story"], "anchor": 0, "focus": 8}));
+    exec(&mut s, "data.placeholder.add", json!({"field": "Link", "role": "hyperlink"}));
+    let fields = exec(&mut s, "data.fields", json!({}));
+    assert_eq!(fields[0]["uses"], 1);
+    assert_eq!(fields[1]["uses"], 1);
 }

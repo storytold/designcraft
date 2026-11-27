@@ -39,6 +39,7 @@ pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, pre
     }
     let mut compact = doc.clone();
     compact.compact_assets();
+    check_document_readable(&compact)?;
     let mut owned_assets = Vec::new();
     let mut owned_proxies = Vec::new();
     for asset in compact.assets.values() {
@@ -57,6 +58,20 @@ pub fn write<W: std::io::Write + std::io::Seek>(out: &mut W, doc: &Document, pre
     let assets = owned_assets.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
     let proxies = owned_proxies.iter().map(|(id, mime, data)| craft_designcraft_format::Asset { id, mime, data }).collect::<Vec<_>>();
     craft_designcraft_format::write_to(out, &compact, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), preview, &assets, &proxies)
+}
+
+/// The shared writer accepts deeper JSON than its bounded reader. Check the actual encoding,
+/// not a group count: groups are only one of several sources of nested document data.
+///
+/// Leave asset payloads and previews out of this probe. They do not affect document decoding,
+/// and rereading them would duplicate potentially large image buffers and defeat streaming
+/// recovery writes. This adds one serialization/compression and bounded decode of document
+/// metadata only; those temporary buffers are dropped before the real archive is written.
+fn check_document_readable(doc: &Document) -> Result<(), FormatError> {
+    let probe = craft_designcraft_format::save(doc, concat!("DesignCraft ", env!("CARGO_PKG_VERSION")), None, &[], &[])?;
+    craft_designcraft_format::load::<Document>(&probe)
+        .map(drop)
+        .map_err(|error| FormatError::Unsaveable(format!("the document would not reopen: {error}")))
 }
 
 /// Required native format version for a document. Kept for app-side compatibility; inference is
