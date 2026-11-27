@@ -17,6 +17,7 @@ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
 
 pub mod about;
 pub mod canvas;
+pub mod channel;
 pub mod chrome;
 pub mod control;
 pub mod credits;
@@ -24,17 +25,22 @@ pub mod cursors;
 pub mod dialogs;
 pub mod dock;
 pub mod effects_dialog;
+pub mod export_batch_dialog;
 pub mod i18n;
 pub mod icons;
 pub mod keys;
+#[cfg(not(target_arch = "wasm32"))]
+mod links_worker;
 pub mod menus;
 mod modal_drag;
 mod new_document;
 mod object_control;
+pub mod object_style_dialog;
 pub mod package_dialog;
 mod page_history;
 mod panel_docking;
 pub mod panels;
+mod preflight_worker;
 mod prefs;
 pub mod render_worker;
 mod rtl;
@@ -71,7 +77,10 @@ use app::browser_import_tests;
 pub use app::opens_as_document;
 pub use clock::now_ms;
 pub use key_names::{drop_key_name_text, is_key_name};
-pub use services::{ClipboardFn, DownloadFn, Inbox, OpenAsyncFn, ReadFn, Services, WindowFrameFn, WriteFn};
+pub use services::{
+    ClipboardChangeFn, ClipboardFn, ClipboardImage, ClipboardImageFn, DownloadFn, Inbox, OpenAsyncFn, PointerFn, ReadFn, Services, WindowFrameFn,
+    WriteFn,
+};
 pub(crate) use state::second_window_viewport;
 pub use state::{CanvasCache, HiddenPanels, ImportRequest, ImportedFile, PdfExportSettings, Perf, SavedWorkspace, ScreenMode, Shown, UiState, View};
 
@@ -111,6 +120,13 @@ struct InputGeneration {
 struct PendingDrop {
     path: String,
     pointer: Option<egui::Pos2>,
+    /// Where the system said the pointer was in the window when this drop's raw input arrived,
+    /// for a drop that brought no pointer events ([`crate::Services::pointer`]). Each drop keeps
+    /// its own, converted with the window's place and the UI scale of that input.
+    system: Option<egui::Pos2>,
+    /// Which drop this file came with: files of one raw input share it, so drops that arrive
+    /// before the same UI pass stay separate.
+    batch: u64,
     generation: InputGeneration,
 }
 
@@ -128,8 +144,16 @@ struct ShotRequest {
     slot: Option<craft_ui::capture::CaptureSlot>,
 }
 
+/// A save that waits for the checks of document `uid`'s linked files ([`DesignApp::waiting_save`]).
+pub(crate) struct WaitingSave {
+    pub(crate) uid: u64,
+    pub(crate) save: Box<dyn FnOnce(&mut DesignApp) -> Result<Value, String>>,
+}
+
 pub struct DesignApp {
     pending_pdf: Option<ImportedFile>,
+    /// The files of the batch after `pending_pdf`, which wait for its Import Options.
+    pending_pdf_rest: Vec<ImportedFile>,
     /// File and message dialogs: asked for during a frame, shown by the host at its end, answered
     /// on a later frame (see `app/file_dialogs.rs`).
     #[cfg(not(target_arch = "wasm32"))]
@@ -151,6 +175,12 @@ pub struct DesignApp {
     pub(crate) page_history: HashMap<u64, page_history::PageHistory>,
     /// The canvas cache and rect of the pane in `pane` (the other pane's are in `other_pane`).
     pub canvas: CanvasCache,
+    /// Native link checks run separately because an unavailable network share may block for an
+    /// operating-system timeout.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) links_worker: links_worker::State,
+    /// Live preflight: the issues last found for the active document.
+    pub(crate) preflight: preflight_worker::State,
     pub canvas_rect: Option<egui::Rect>,
     /// Window › Arrange › Split Window: two views of the document side by side.
     pub split: bool,
@@ -241,6 +271,9 @@ pub struct DesignApp {
     last_time: f64,
     /// When recovery data was last written (seconds on the monotonic clock; see [`now_ms`]).
     pub last_recovery: f64,
+    /// Recovery data is being written in the background: poll for it, and keep repainting.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) recovery_writing: bool,
     /// The egui context (set by the first UI pass): copied text goes to the system clipboard through it.
     egui_ctx: Option<egui::Context>,
     /// A control-channel request is being handled: commands it runs never read or write the
@@ -250,6 +283,9 @@ pub struct DesignApp {
     /// (no native menu: without it the paste keys produce no paste event), or what it held then
     /// (native menu). It is never pasted as text: Paste with it pastes the copied objects.
     object_clip_text: Option<String>,
+    /// The clipboard's change count at the last object copy (native menu). While it is unchanged,
+    /// Paste pastes the copied objects rather than an image the clipboard held before the copy.
+    object_clip_change: Option<i64>,
     /// The marked text the system IME last sent (`None` once it commits or clears). When the
     /// composition ends some other way (a click, a tool switch), the IME is told to drop it.
     pub(crate) ime_marked: Option<String>,
@@ -277,6 +313,17 @@ pub struct DesignApp {
     pub(crate) quit_without_asking: bool,
     /// No document is discarded until every unsaved document has an up-to-date approval.
     quitting: Option<QuitState>,
+    /// A save waiting for the answer to "IDML can't keep all of this document" (`idmlLoss`).
+    pub(crate) lossy_save: Option<menus::LossySave>,
+    /// Documents (by uid) whose IDML losses were accepted with Don't ask again: for this session
+    /// only, never saved.
+    pub(crate) idml_loss_accepted: std::collections::HashSet<u64>,
+    /// A save asked for while the open-time checks of the document's linked files run: it runs
+    /// once they are done, so the first save already writes the links they confirm.
+    pub(crate) waiting_save: Option<WaitingSave>,
+    /// Document files being read on worker threads, in the order they were asked for.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) opening: Vec<app::opening::Opening>,
     /// The tool cursor bitmaps handed to the OS.
     pub cursors: cursors::Images,
     /// A panel's live preview (a slider being dragged), committed when it is let go.
@@ -309,6 +356,25 @@ struct QuitState {
 /// in both editions and stay outside it.
 pub fn cjk_features(app: &DesignApp) -> bool {
     app.session.prefs.cjk_features.unwrap_or_else(|| i18n::is_cjk(&app.ui.language))
+}
+
+/// Whether the right-to-left setup controls are shown (Preferences › Type › Show Right-to-Left
+/// Features): the explicit preference, else on for a right-to-left interface language.
+///
+/// It shows paragraph direction in the Control panel, the Paragraph panel, Properties and
+/// Paragraph Style Options, binding in New Document, Document Setup and Properties, and the Table
+/// panel's direction, so right-to-left setup doesn't weigh on every interface. Like
+/// [`cjk_features`] it hides interface only: the commands behind it run whatever it says. The
+/// Paragraph panel menu's direction items are shown either way, for the odd paragraph.
+pub fn rtl_features(app: &DesignApp) -> bool {
+    app.session.prefs.rtl_features.unwrap_or_else(|| i18n::is_rtl(&app.ui.language))
+}
+
+/// Whether a right-to-left control is shown: under [`rtl_features`], or when what it sets is
+/// already right to left (a right-to-left bound document, table or paragraph), so the preference
+/// never hides a setting the document uses.
+pub fn show_rtl_control(app: &DesignApp, already_right_to_left: bool) -> bool {
+    already_right_to_left || rtl_features(app)
 }
 
 #[cfg(test)]

@@ -317,6 +317,20 @@ impl StyleTable<'_> {
     }
 }
 
+/// What a substitute face's own name says about its style, for choosing a CJK fallback chain.
+///
+/// `None` for the bundled default and last-resort families: they stand in for a font that could
+/// not be resolved at all, so their names say nothing about what the document asked for. Without
+/// this, "Source Sans 3" made every unresolved family look like a sans one (#1692, noted in
+/// review).
+fn style_of_substitute(family: &str) -> Option<bool> {
+    let standin = [designcraft_fonts::DEFAULT_FAMILY, designcraft_fonts::FALLBACK_FAMILY];
+    if standin.iter().any(|s| s.eq_ignore_ascii_case(family)) {
+        return None;
+    }
+    designcraft_fonts::sans_by_name(family)
+}
+
 /// Resolve and shape one paragraph. Its drop cap ends at byte `drop.0` (`range.start` without
 /// one) and takes the character style `drop.1` ("" = none).
 pub(crate) struct ShapeInput<'a, 'font> {
@@ -385,6 +399,7 @@ fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Ve
         overlays.push((range.start..drop_cap.0, s.to_string()));
     }
     // Each run, cut where nested / GREP styles start and end.
+    let bands = overlay_bands(&overlays);
     let mut segments: Vec<(usize, usize, Option<&str>, &designcraft_doc::CharFormat)> = Vec::new();
     for (rr, fmt) in story.runs() {
         let a = rr.start.max(range.start);
@@ -396,14 +411,16 @@ fn resolve_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>) -> (Ve
             segments.push((a, b, None, fmt));
             continue;
         }
-        let mut cuts: Vec<usize> = overlays.iter().flat_map(|(r, _)| [r.start, r.end]).filter(|x| *x > a && *x < b).collect();
-        cuts.push(a);
-        cuts.push(b);
-        cuts.sort_unstable();
-        cuts.dedup();
-        for w in cuts.windows(2) {
-            let top = overlays.iter().rev().find(|(r, _)| r.start <= w[0] && w[0] < r.end).map(|(_, s)| s.as_str());
-            segments.push((w[0], w[1], top, fmt));
+        // The band holding `a`, then each following band up to `b`. Bands start at 0, so one
+        // holds `a`, and each ends where the next starts (the last one at `b`).
+        let mut k = bands.partition_point(|(at, _)| *at <= a).saturating_sub(1);
+        let mut at = a;
+        while at < b {
+            let to = bands.get(k + 1).map_or(b, |(next, _)| (*next).min(b));
+            let top = bands.get(k).and_then(|(_, top)| *top).map(|i| overlays[i].1.as_str());
+            segments.push((at, to, top, fmt));
+            at = to;
+            k += 1;
         }
     }
     // Resolve every segment, then shape runs of segments that differ only in how they are
@@ -810,8 +827,19 @@ fn shape_run_raw(
     // The language picks the fallback for CJK characters the primary font lacks. Without
     // fallback, the primary font sets them: the shaper gives its .notdef (glyph 0).
     let lang = designcraft_doc::language_tag(&p.language);
+    // A missing Korean face is replaced by one of its own style: the requested name says whether
+    // it was Dotum/Gothic or Batang/Myungjo, and if it does not, the substitute's own name does,
+    // which keeps today's chain (#1692).
+    // The substitute's own name is consulted only when it is a real substitute: a requested
+    // family that resolves to nothing comes back as the bundled default, whose name holds "Sans",
+    // and every unclassified missing font would then have taken the sans chain (noted in review).
+    let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&primary.family));
     let fallback = |c: char| {
-        if auto_leading.glyph_fallback { db.fallback_for(c, primary.id(), lang).unwrap_or_else(|| primary.clone()) } else { primary.clone() }
+        if auto_leading.glyph_fallback {
+            db.fallback_for_styled(c, primary.id(), lang, prefer_sans).unwrap_or_else(|| primary.clone())
+        } else {
+            primary.clone()
+        }
     };
     let strong = |c| match unicode_bidi::bidi_class(c) {
         unicode_bidi::BidiClass::AL => Some(true),
@@ -1141,8 +1169,11 @@ fn shape_segment(
     if let Some(label) = replacement.filter(|_| auto_leading.glyph_fallback) {
         let lang = designcraft_doc::language_tag(&p.language);
         let mut segments: Vec<(usize, usize, Arc<FontFace>)> = Vec::new();
+        // The same for every character of the label: worked out once, not per character.
+        let prefer_sans = designcraft_fonts::sans_by_name(&p.font_family).or_else(|| style_of_substitute(&face.family));
         for (at, c) in label.char_indices() {
-            let selected = if face.covers(c) { face.clone() } else { db.fallback_for(c, face.id(), lang).unwrap_or_else(|| face.clone()) };
+            let selected =
+                if face.covers(c) { face.clone() } else { db.fallback_for_styled(c, face.id(), lang, prefer_sans).unwrap_or_else(|| face.clone()) };
             if let Some((_, end, previous)) = segments.last_mut().filter(|(_, _, previous)| previous.id() == selected.id()) {
                 *end = at + c.len_utf8();
                 let _ = previous;
@@ -1424,5 +1455,91 @@ fn digit_mode(p: &designcraft_doc::CharProps, arabic_context: Option<bool>) -> d
         Some(false) => Digits::Arabic,
         Some(true) if Digits::Native.map('0', &p.language) == '0' => Digits::Hindi,
         _ => Digits::Native,
+    }
+}
+
+/// The stretches between `overlays`' boundaries, as `(start, overlay on top)` sorted by start:
+/// a stretch runs to the next one's start, and the one on top is the last overlay covering it
+/// (later ones win). One sweep over the boundaries; picking the top overlay by scanning them all
+/// for each stretch was quadratic when a GREP style matched every character.
+fn overlay_bands(overlays: &[(std::ops::Range<usize>, String)]) -> Vec<(usize, Option<usize>)> {
+    let mut starts: Vec<(usize, usize)> = Vec::new();
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    for (i, (r, _)) in overlays.iter().enumerate().filter(|(_, (r, _))| r.start < r.end) {
+        starts.push((r.start, i));
+        ends.push((r.end, i));
+    }
+    starts.sort_unstable();
+    ends.sort_unstable();
+    let mut cuts: Vec<usize> = starts.iter().chain(&ends).map(|x| x.0).collect();
+    cuts.push(0);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut active = std::collections::BTreeSet::new();
+    let (mut s, mut e) = (0, 0);
+    let mut out = Vec::with_capacity(cuts.len());
+    for at in cuts {
+        while e < ends.len() && ends[e].0 <= at {
+            active.remove(&ends[e].1);
+            e += 1;
+        }
+        while s < starts.len() && starts[s].0 <= at {
+            active.insert(starts[s].1);
+            s += 1;
+        }
+        out.push((at, active.last().copied()));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::overlay_bands;
+
+    /// The band sweep picks the same top overlay as checking every overlay at each boundary.
+    #[test]
+    fn overlay_bands_match_the_last_covering_overlay() {
+        let overlays: Vec<(std::ops::Range<usize>, String)> = [(2..9, "a"), (0..4, "b"), (4..4, "empty"), (3..6, "c"), (8..12, "d"), (5..7, "e")]
+            .into_iter()
+            .map(|(r, s)| (r, s.to_string()))
+            .collect();
+        let bands = overlay_bands(&overlays);
+        for at in 0..14 {
+            let k = bands.partition_point(|(start, _)| *start <= at) - 1;
+            let want = overlays.iter().rposition(|(r, _)| r.start <= at && at < r.end);
+            assert_eq!(bands[k].1, want, "at {at}");
+        }
+    }
+
+    /// One overlay per character (a GREP style matching every character) sweeps in one pass.
+    #[test]
+    fn many_overlays_are_banded_quickly() {
+        let n = 200_000;
+        let overlays: Vec<(std::ops::Range<usize>, String)> = (0..n).map(|i| (i..i + 1, "s".to_string())).collect();
+        let t = std::time::Instant::now();
+        let bands = overlay_bands(&overlays);
+        assert_eq!(bands.len(), n + 1);
+        assert_eq!(bands[n / 2], (n / 2, Some(n / 2)));
+        assert!(t.elapsed().as_secs() < 5);
+    }
+}
+
+#[cfg(test)]
+mod style_of_substitute_tests {
+    use super::style_of_substitute;
+
+    /// A face that stands in for a font that could not be resolved says nothing about the style
+    /// the document asked for. `FALLBACK_FAMILY` is "Source Sans 3" and `DEFAULT_FAMILY` is
+    /// "Source Serif 4", so reading their names would have forced the sans chain on every
+    /// unresolved family -- and the serif one on the other (#1692, noted in review).
+    #[test]
+    fn a_stand_in_face_says_nothing_about_the_requested_style() {
+        assert_eq!(style_of_substitute(designcraft_fonts::FALLBACK_FAMILY), None);
+        assert_eq!(style_of_substitute(designcraft_fonts::DEFAULT_FAMILY), None);
+        assert_eq!(style_of_substitute("source sans 3"), None, "however it is spelled");
+        // A real substitute still speaks for itself.
+        assert_eq!(style_of_substitute("Malgun Gothic"), Some(true));
+        assert_eq!(style_of_substitute("Batang"), Some(false));
+        assert_eq!(style_of_substitute("Helvetica"), None, "a name that says neither");
     }
 }

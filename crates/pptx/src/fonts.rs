@@ -15,10 +15,12 @@ pub struct RunFont {
     pub italic: bool,
 }
 
+/// Faces whose glyph-to-character map is kept at once.
+const MAX_REVERSE_MAPS: usize = 4;
+
 #[derive(Default)]
 pub struct Fonts {
     names: HashMap<u32, RunFont>,
-    cmaps: HashMap<u32, HashMap<char, u32>>,
     /// Glyph → the lowest character mapping to it.
     reverse: HashMap<u32, HashMap<u32, char>>,
     /// Faces the slides use, by (family, bold, italic), in first-use order.
@@ -106,15 +108,22 @@ impl Fonts {
     /// Nominal advance of `c` in font units (no kerning or features), as an application without
     /// the composer's spacing would set it.
     pub fn advance(&mut self, face: &FontFace, c: char) -> Option<f64> {
-        self.cmap(face).get(&c).map(|g| face.advance(*g))
+        self.glyph(face, c).map(|g| face.advance(g))
     }
 
+    /// The glyph for `c`, looked up in the face's character map directly: expanding the whole map
+    /// into a table made one lookup cost (and keep) every mapping of the font.
     pub fn glyph(&mut self, face: &FontFace, c: char) -> Option<u32> {
-        self.cmap(face).get(&c).copied()
+        Some(face.glyph_for(c)).filter(|g| *g != 0)
     }
 
     /// The character a glyph shows (the lowest code point mapping to it).
     pub fn char_of(&mut self, face: &FontFace, gid: u32) -> Option<char> {
+        // A face's reverse map can hold over a million entries; keeping one per face a bundle uses
+        // is unbounded, so only the last few stay (a rebuilt map answers the same).
+        if !self.reverse.contains_key(&face.id()) && self.reverse.len() >= MAX_REVERSE_MAPS {
+            self.reverse.clear();
+        }
         let map = self.reverse.entry(face.id()).or_insert_with(|| {
             let mut m = HashMap::new();
             for (c, g) in face.chars() {
@@ -123,10 +132,6 @@ impl Fonts {
             m
         });
         map.get(&gid).copied()
-    }
-
-    fn cmap(&mut self, face: &FontFace) -> &HashMap<char, u32> {
-        self.cmaps.entry(face.id()).or_insert_with(|| face.chars().into_iter().collect())
     }
 }
 
@@ -218,4 +223,27 @@ pub fn eot(face: &FontFace) -> Result<Vec<u8>, NoEmbed> {
     h[4..8].copy_from_slice(&(data.len() as u32).to_le_bytes());
     h.extend_from_slice(data);
     Ok(h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_few_reverse_maps_are_kept_and_answers_do_not_change() {
+        let db = designcraft_fonts::FontDb::global();
+        let mut fonts = Fonts::default();
+        let mut last = None;
+        for style in ["Regular", "Bold", "Italic", "Bold Italic", "Semibold", "Light", "Black", "ExtraLight", "Medium", "SemiBold Italic"] {
+            let face = db.face("Source Serif 4", style);
+            let gid = face.glyph_for('A');
+            assert_eq!(fonts.char_of(&face, gid), Some('A'), "{style}");
+            assert!(fonts.reverse.len() <= MAX_REVERSE_MAPS);
+            last = Some((face, gid));
+        }
+        // The map evicted earlier is rebuilt on demand with the same answer.
+        if let Some((face, gid)) = last {
+            assert_eq!(fonts.char_of(&face, gid), Some('A'));
+        }
+    }
 }

@@ -73,8 +73,13 @@ pub fn specs() -> Vec<CommandSpec> {
             let (a, b) = (p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize, p.get("end").and_then(Value::as_u64).unwrap_or(0) as usize);
             let to = str_param(p, "to").unwrap_or("").to_string();
             s.edit(|d, _| {
-                let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
-                st.replace(a.min(st.len())..b.min(st.len()), &to);
+                let r = {
+                    let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+                    let r = a.min(st.len())..b.min(st.len());
+                    st.replace(r.clone(), &to);
+                    r
+                };
+                d.adjust_text_ranges(sid, r, to.len());
                 Ok(Value::Null)
             })
         }),
@@ -156,6 +161,9 @@ const COMMON: &[&str] = &[
     "yay",
 ];
 
+/// Longest word [`suggest`] makes candidates for.
+pub const MAX_SUGGEST_CHARS: usize = 40;
+
 /// Is `w` (lowercase) a known word, allowing common inflections of dictionary stems?
 pub fn known(dict: &Dictionary, user: &[String], w: &str) -> bool {
     // A typographer's apostrophe (don’t, we’re) is the word list's straight one.
@@ -202,6 +210,11 @@ pub fn known(dict: &Dictionary, user: &[String], w: &str) -> bool {
 
 /// Up to 6 suggestions at edit distance 1, ranked: transpositions, replacements, deletions, insertions.
 pub fn suggest(dict: &Dictionary, w: &str) -> Vec<String> {
+    // Each candidate is a copy of the word: 53 per position, quadratic in its length. No word of
+    // a dictionary is this long, so no edit of such a "word" is one either. Checked before collecting.
+    if w.chars().take(MAX_SUGGEST_CHARS + 1).count() > MAX_SUGGEST_CHARS {
+        return Vec::new();
+    }
     let chars: Vec<char> = w.chars().collect();
     let mut out: Vec<String> = Vec::new();
     let mut push = |c: Vec<char>| {
@@ -318,6 +331,18 @@ mod tests {
         assert!(suggest(d, "typograpy").contains(&"typography".to_string()));
         assert!(suggest(d, "emial").contains(&"email".to_string()), "words in COMMON are suggested too");
         assert!(known(d, &["designcraft".into()], "designcraft"));
+    }
+
+    /// A "word" longer than any in the dictionary gets no candidates: there would be more than
+    /// fifty copies of it per character.
+    #[test]
+    fn very_long_words_get_no_suggestions() {
+        // The dictionary holds the longest allowed word, so deleting one letter of the 41-letter
+        // input would be a hit if the length cap were not applied.
+        let d = Dictionary::from_entries(vec![("a".repeat(MAX_SUGGEST_CHARS), 0)]);
+        assert_eq!(suggest(&d, &"a".repeat(MAX_SUGGEST_CHARS)), Vec::<String>::new());
+        assert_eq!(suggest(&d, &"a".repeat(MAX_SUGGEST_CHARS - 1)), vec!["a".repeat(MAX_SUGGEST_CHARS)]);
+        assert!(suggest(&d, &"a".repeat(MAX_SUGGEST_CHARS + 1)).is_empty());
     }
 
     #[test]

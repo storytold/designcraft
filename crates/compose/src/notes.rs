@@ -14,7 +14,7 @@
 //! With Span Footnotes Across Columns the notes of a frame share one area across all its columns,
 //! composed at the frame's text width: every column of the frame makes room for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -90,9 +90,9 @@ pub(crate) struct Notes {
 }
 
 impl Notes {
-    pub fn new(doc: &Document, story: &Story) -> Notes {
+    pub fn new(doc: &Document, story: &Story, starts: impl FnOnce() -> u32) -> Notes {
         let refs: Vec<usize> = if story.notes.is_empty() { Vec::new() } else { story.text.match_indices(FOOTNOTE_REF).map(|(i, _)| i).collect() };
-        let start = if refs.is_empty() { 1 } else { doc.footnote_start(story.id) };
+        let start = if refs.is_empty() { 1 } else { starts() };
         Notes {
             numbers: vec![start; refs.len()],
             refs,
@@ -146,11 +146,13 @@ impl Notes {
     }
 
     /// Footnote indices referenced by a line's glyphs.
+    /// In the order they first appear; a set keeps a line with many references linear.
     pub fn refs_in(&self, glyphs: &[Glyph]) -> Vec<usize> {
         let mut v: Vec<usize> = Vec::new();
+        let mut seen = HashSet::new();
         for g in glyphs.iter().filter(|g| g.ch == FOOTNOTE_REF && g.len > 0) {
             if let Ok(k) = self.refs.binary_search(&g.byte)
-                && !v.contains(&k)
+                && seen.insert(k)
             {
                 v.push(k);
             }
@@ -190,6 +192,7 @@ impl Notes {
             label: Some(label),
             xrefs: opts.xrefs.clone(),
             placed: Vec::new(),
+            starts: opts.starts.clone(),
         };
         let cs = crate::compose(doc, &self.notes[k].text, std::slice::from_ref(&spec), &nopts);
         let lines = cs.frames.first().map(|ft| ft.lines.as_slice()).unwrap_or_default();

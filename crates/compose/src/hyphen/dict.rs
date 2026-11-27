@@ -15,6 +15,9 @@ pub struct Dictionary {
 
 const MAGIC: &[u8] = b"DCHYPH1\n";
 
+/// Most bytes a serialized dictionary may inflate to (the bundled English one is far smaller).
+pub const MAX_INFLATED_BYTES: usize = 64 << 20;
+
 impl Dictionary {
     /// Build from `(lowercase word, break mask)` pairs (sorted and de-duplicated here; the first
     /// entry of a duplicate wins).
@@ -76,9 +79,11 @@ impl Dictionary {
         miniz_oxide::deflate::compress_to_vec(&raw, 10)
     }
 
-    /// Deserialize data written by [`Dictionary::to_bytes`].
+    /// Deserialize data written by [`Dictionary::to_bytes`]. At most [`MAX_INFLATED_BYTES`] are
+    /// inflated: a few compressed bytes can stand for gigabytes.
     pub fn from_bytes(data: &[u8]) -> Result<Dictionary, String> {
-        let raw = miniz_oxide::inflate::decompress_to_vec(data).map_err(|e| format!("hyphenation dictionary: inflate failed: {e:?}"))?;
+        let raw = miniz_oxide::inflate::decompress_to_vec_with_limit(data, MAX_INFLATED_BYTES)
+            .map_err(|e| format!("hyphenation dictionary: inflate failed (or over {} MB): {e:?}", MAX_INFLATED_BYTES >> 20))?;
         let body = raw.strip_prefix(MAGIC).ok_or("hyphenation dictionary: bad header")?;
         let mut d = Dictionary { words: String::with_capacity(body.len()), offs: vec![0], masks: Vec::new() };
         let mut cur: Vec<u8> = Vec::new();
@@ -146,5 +151,16 @@ mod tests {
         assert_eq!(back.get("cat"), Some(0));
         assert_eq!(back.get("naïveté").map(|m| hyphenated("naïveté", m)), Some("naïve-té".to_string()));
         assert!(back.get("dog").is_none());
+    }
+
+    /// Data that inflates past the limit is refused instead of being inflated to the end.
+    #[test]
+    fn an_inflation_bomb_is_refused() {
+        let mut raw = MAGIC.to_vec();
+        raw.resize(MAX_INFLATED_BYTES + 1, b'a');
+        let bomb = miniz_oxide::deflate::compress_to_vec(&raw, 10);
+        assert!(bomb.len() < 1 << 20, "{}", bomb.len());
+        let e = Dictionary::from_bytes(&bomb).err().unwrap_or_default();
+        assert!(e.contains("inflate failed"), "{e}");
     }
 }
