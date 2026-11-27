@@ -29,9 +29,11 @@ impl Drop for Opening {
 
 impl DesignApp {
     /// Read the file at `path` on a worker thread; [`Self::poll_opening`] opens it when it is in.
-    /// The same file asked for again while it is read opens once.
+    /// The same file asked for again while it is read opens once, moved to the end of the queue.
     pub(super) fn open_in_background(&mut self, path: String) -> Result<Value, String> {
-        if self.opening.iter().any(|o| o.path == path) {
+        if let Some(i) = self.opening.iter().position(|o| o.path == path) {
+            let queued = self.opening.remove(i);
+            self.opening.push(queued);
             return Ok(Value::Null);
         }
         let name = std::path::Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
@@ -84,10 +86,15 @@ impl DesignApp {
             return;
         }
         let mut done = Vec::new();
-        for o in std::mem::take(&mut self.opening) {
+        let mut pending = std::mem::take(&mut self.opening).into_iter();
+        while let Some(o) = pending.next() {
             match o.read.try_recv() {
                 Ok(read) => done.push((o, read)),
-                Err(TryRecvError::Empty) => self.opening.push(o),
+                Err(TryRecvError::Empty) => {
+                    self.opening.push(o);
+                    self.opening.extend(pending);
+                    break;
+                }
                 Err(TryRecvError::Disconnected) => {
                     let lost = format!("{}: the file could not be read", o.path);
                     done.push((o, Err(lost)));
@@ -117,5 +124,39 @@ impl DesignApp {
             self.show_opening();
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_opens_keep_request_order_when_later_reads_finish_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        let mut sends = Vec::new();
+        for title in ["First", "Second"] {
+            let path = dir.path().join(format!("{title}.designcraft")).to_string_lossy().into_owned();
+            let mut writer = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+            writer.run("file.new", json!({"title": title})).unwrap();
+            writer.run("file.saveAs", json!({"path": path})).unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let read_document = designcraft_engine::cmd::read_document(&path, &cancel).unwrap();
+            let (send, read) = std::sync::mpsc::channel();
+            app.opening.push(Opening { path, name: title.into(), cancel, read });
+            sends.push((send, read_document));
+        }
+        let (second, second_document) = sends.pop().unwrap();
+        assert!(second.send(Ok(second_document)).is_ok());
+        let ctx = egui::Context::default();
+        app.poll_opening(&ctx);
+        assert!(app.session.documents().is_empty(), "a later read waits for its predecessor");
+        let (first, first_document) = sends.pop().unwrap();
+        assert!(first.send(Ok(first_document)).is_ok());
+        app.poll_opening(&ctx);
+        let titles: Vec<_> = app.session.documents().iter().map(|document| document.doc.title.as_str()).collect();
+        assert_eq!(titles, ["First", "Second"]);
+        assert_eq!(app.session.active().unwrap().doc.title, "Second");
     }
 }

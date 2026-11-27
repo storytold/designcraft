@@ -36,6 +36,7 @@ impl UiState {
         let mut ui: UiState = serde_json::from_value(saved)?;
         ui.story_editor_style_width = crate::story_editor::style_column_width(ui.story_editor_style_width);
         clear_stale_open_panels(&mut ui);
+        migrate_pdf_export(&mut ui.pdf_export, &ui.flattener);
         intact &= migrate(&mut ui.docking, &mut ui.floating, &ui.docking_hidden, ui.dock_expanded, ui.icon_groups.as_deref());
         for workspace in &mut ui.custom_workspaces {
             let SavedWorkspace { docking, floating, docking_hidden, dock_expanded, icon_groups, .. } = workspace;
@@ -125,6 +126,25 @@ fn clear_stale_open_panels(ui: &mut UiState) {
     if ui.open_panel.as_deref() != own {
         ui.open_panel = None;
     }
+}
+
+/// Earlier versions seeded `"Screen and Email"` with `"low"` and left `flatten` untouched when
+/// switching to `"Desktop Printing"`, `"Commercial Printing"`, `"PDF/X-4"`, or `"PDF/A-2b"`, so
+/// a flattener active at the time was saved alongside those preset names. Align saved named
+/// presets with their preset flattener on load and mark it chosen while leaving `"Custom"`
+/// untouched (and keeping an explicit matching non-empty global flattener, such as `"high"` with
+/// `"PDF/X-1a:2003"`, active for scripted `app.exportPdf`).
+fn migrate_pdf_export(pdf: &mut crate::PdfExportSettings, global_flattener: &str) {
+    let flatten = match pdf.preset.as_str() {
+        "Desktop Printing" | "Commercial Printing" | "Screen and Email" | "PDF/X-4" | "PDF/A-2b" => "",
+        "PDF/X-1a:2003" => "high",
+        _ => return,
+    };
+    if pdf.uses_global_flatten() && !global_flattener.is_empty() && global_flattener == flatten {
+        return;
+    }
+    pdf.flatten = flatten.into();
+    pdf.flatten_chosen = true;
 }
 
 /// Drop docking data this version cannot read. True when nothing was dropped.
