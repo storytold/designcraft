@@ -31,8 +31,9 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
         // Story Direction, under Show Right-to-Left Features or for a right-to-left story: the
         // column order, the side the footnote rule starts on and where the frame ports sit.
-        // Stories that differ show neither selected.
-        let rtl = options["direction"] == "rightToLeft";
+        // Stories that differ show neither selected, and show the buttons when one of them is
+        // right to left.
+        let rtl = options["direction"] == "rightToLeft" || options["anyRightToLeft"] == true;
         if crate::show_rtl_control(app, rtl) {
             ui.horizontal(|ui| {
                 widgets::caption(ui, &tr("Story Direction:"));
@@ -143,6 +144,30 @@ mod tests {
         h.get_by_label("Left-to-Right Story Direction").click();
         h.run_steps(3);
         assert_eq!(direction(&h), TextDirection::LeftToRight);
+    }
+
+    /// With the preference off, frames whose stories differ show the direction buttons (neither
+    /// pressed) when one of them is right to left; a click sets it for all of them.
+    #[test]
+    fn story_panel_shows_direction_for_a_selection_with_a_right_to_left_story() {
+        use designcraft_doc::TextDirection;
+
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+        let a = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "One", "caret": false})).unwrap();
+        let b = app.run("frame.create", json!({"rect": [72, 300, 300, 400], "content": "text", "text": "Two", "caret": false})).unwrap();
+        app.run("story.options", json!({"story": b["story"], "direction": "rightToLeft"})).unwrap();
+        app.run("selection.set", json!({"ids": [a["id"], b["id"]]})).unwrap();
+        let mut h = harness(app);
+        assert_eq!(h.get_by_label("Right-to-Left Story Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::False));
+        h.get_by_label("Right-to-Left Story Direction").click();
+        h.run_steps(3);
+        let doc = h.state().session.active().unwrap().doc.clone();
+        for r in [&a, &b] {
+            let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+            assert_eq!(doc.story(sid).unwrap().direction, TextDirection::RightToLeft);
+        }
     }
 
     #[test]

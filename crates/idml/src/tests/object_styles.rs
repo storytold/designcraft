@@ -444,7 +444,11 @@ fn object_style_story_direction_round_trips() {
         story_direction: Some(TextDirection::RightToLeft),
         ..Default::default()
     });
+    // Optical margin only: the direction stays unset (`UnknownDirection`, as InDesign writes it).
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Hung Only".into(), optical_margin: Some(hung), ..Default::default() });
     let back = import_idml(&export_idml(&d)).unwrap();
+    let os = back.styles.object_style("Hung Only").unwrap();
+    assert_eq!((os.optical_margin, os.story_direction), (Some(hung), None));
     for (name, dir) in [("Hebrew Frame", Some(TextDirection::RightToLeft)), ("English Frame", Some(TextDirection::LeftToRight)), ("Plain", None)] {
         assert_eq!(back.styles.object_style(name).unwrap().story_direction, dir, "{name}");
     }

@@ -106,7 +106,8 @@ pub fn open_new(app: &mut DesignApp) {
         "inc": {"fill": from, "stroke": from, "corners": from, "paragraph": from, "textFrame": frame.is_some(), "story": false},
         "storyDirection": story_dir,
         "storyWasRtl": false,
-        "hadStoryDirection": false,
+        // A new style takes the selection's Story Options whole when they are included.
+        "omSet": true,
         "omOn": om.on,
         "omSize": om.size,
         "page": "general",
@@ -141,9 +142,14 @@ pub fn open_edit(app: &mut DesignApp, name: &str) -> Result<(), String> {
             "paragraph": os.paragraph_style.is_some(), "textFrame": os.text_frame.is_some(),
             "story": os.story_direction.is_some() || os.optical_margin.is_some(),
         },
-        "storyDirection": os.story_direction.unwrap_or_default(),
+        // null: the style sets no direction (no button pressed), as InDesign's UnknownDirection;
+        // it stays so until a direction is chosen.
+        "storyDirection": os.story_direction,
         "storyWasRtl": os.story_direction == Some(designcraft_doc::TextDirection::RightToLeft),
-        "hadStoryDirection": os.story_direction.is_some(),
+        // Whether the style sets optical margin: it does, or Story Options weren't in it (so
+        // including them sets it as shown, as in InDesign). A style with a direction only keeps
+        // optical margin unset until it is changed here.
+        "omSet": os.optical_margin.is_some() || os.story_direction.is_none(),
         "omOn": os.optical_margin.unwrap_or_default().on,
         "omSize": os.optical_margin.unwrap_or_default().size,
         "page": "general",
@@ -186,7 +192,7 @@ fn attrs(d: &Dialog) -> serde_json::Map<String, Value> {
     );
     p.insert(
         "opticalMargin".into(),
-        if included(d, "story") {
+        if included(d, "story") && d.b("omSet") {
             json!({"on": d.b("omOn"), "size": d.n("omSize").unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE)})
         } else {
             Value::Null
@@ -250,14 +256,10 @@ pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
         return Err(crate::i18n::tr(&app.ui.language, "Enter a style name.").to_string());
     }
     let mut p = attrs(d);
-    // Story Direction not shown (left to right setup, the preference off): the style keeps the
-    // direction it had, and a new one sets none.
-    if included(d, "story") && !story_direction_shown(app, d) {
-        if d.b("new") || !d.b("hadStoryDirection") {
-            p.insert("storyDirection".into(), Value::Null);
-        } else {
-            p.remove("storyDirection");
-        }
+    // Story Direction not shown (left to right setup, the preference off): a new style sets none
+    // (an edited one keeps the direction it had, which the dialog can't change).
+    if included(d, "story") && !story_direction_shown(app, d) && d.b("new") {
+        p.insert("storyDirection".into(), Value::Null);
     }
     p.insert("textFrame".into(), frame_options(d)?.map_or(Value::Null, |o| general_json(&o)));
     if d.b("new") {
@@ -422,10 +424,10 @@ fn settings(app: &DesignApp, d: &Dialog) -> Vec<String> {
     if included(d, "story") {
         // Optical Margin Alignment when it is on, and Story Direction where it shows.
         let mut parts = Vec::new();
-        if d.b("omOn") {
+        if d.b("omSet") && d.b("omOn") {
             parts.push(format!("{} {} pt", tr("Optical Margin Alignment"), d.s("omSize")));
         }
-        if story_direction_shown(app, d) {
+        if story_direction_shown(app, d) && !d.s("storyDirection").is_empty() {
             let rtl = d.s("storyDirection") == "rightToLeft";
             parts.push(format!("{} {}", tr("Story Direction:"), tr(if rtl { "Right to Left" } else { "Left to Right" })));
         }
@@ -568,12 +570,14 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                     let mut on = d.b("omOn");
                     if ui.checkbox(&mut on, crate::rtl::widget(ui, tr("Optical Margin Alignment"))).changed() {
                         d.fields.insert("omOn".into(), json!(on));
+                        d.fields.insert("omSet".into(), json!(true));
                     }
                     let field = crate::widgets::NumField::number("osOpticalMarginSize", d.n("omSize"), " pt", 2)
                         .width(72.0)
                         .range(designcraft_doc::OpticalMargin::MIN_SIZE, designcraft_doc::OpticalMargin::MAX_SIZE);
                     if let Some(size) = crate::chrome::icon_field(ui, "font-size", &tr("Optical Margin Size"), field) {
                         d.fields.insert("omSize".into(), json!(size));
+                        d.fields.insert("omSet".into(), json!(true));
                     }
                 });
                 if !direction {
@@ -582,13 +586,16 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                 ui.horizontal(|ui| {
                     crate::rtl::label(ui, tr("Story Direction:"));
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    let rtl = d.s("storyDirection") == "rightToLeft";
-                    for (direction, icon, tip, on) in [
-                        ("leftToRight", "story-dir-ltr", "Left-to-Right Story Direction", !rtl),
-                        ("rightToLeft", "story-dir-rtl", "Right-to-Left Story Direction", rtl),
+                    // Neither pressed: the style sets no direction. Pressing the pressed one again
+                    // goes back to that.
+                    let set = d.s("storyDirection");
+                    for (direction, icon, tip) in [
+                        ("leftToRight", "story-dir-ltr", "Left-to-Right Story Direction"),
+                        ("rightToLeft", "story-dir-rtl", "Right-to-Left Story Direction"),
                     ] {
-                        if crate::widgets::icon_toggle(ui, icon, on, &tr(tip)).clicked() && !on {
-                            d.fields.insert("storyDirection".into(), json!(direction));
+                        let on = set == direction;
+                        if crate::widgets::icon_toggle(ui, icon, on, &tr(tip)).clicked() {
+                            d.fields.insert("storyDirection".into(), if on { Value::Null } else { json!(direction) });
                         }
                     }
                 });
@@ -1118,5 +1125,49 @@ mod tests {
         crate::dialogs::confirm(&mut app).unwrap();
         let os = app.session.active().unwrap().doc.styles.object_style("Hebrew Frame").cloned().unwrap();
         assert_eq!(os.story_direction, Some(designcraft_doc::TextDirection::RightToLeft));
+    }
+
+    /// A Story Option the style doesn't set stays unset through OK when it wasn't touched, so its
+    /// frames' stories keep theirs: no direction (neither button pressed) for an optical-margin
+    /// style, no optical margin for a direction-only style.
+    #[test]
+    fn story_options_the_style_does_not_set_stay_unset_through_ok() {
+        use designcraft_doc::{OpticalMargin, TextDirection};
+        let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+        let r = app.run("frame.create", json!({"rect": [36, 36, 336, 336], "content": "text", "text": "Hebrew", "caret": false})).unwrap();
+        let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+        app.run("story.options", json!({"story": sid.0, "direction": "rightToLeft"})).unwrap();
+        app.run("style.object.create", json!({"name": "Hung", "opticalMargin": {"on": true, "size": 18}})).unwrap();
+        app.run("style.object.create", json!({"name": "Hebrew", "storyDirection": "rightToLeft"})).unwrap();
+        app.run("style.object.apply", json!({"name": "Hung", "ids": [r["id"]]})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let os = |app: &DesignApp, n: &str| app.session.active().unwrap().doc.styles.object_style(n).cloned().unwrap();
+        let story = |app: &DesignApp| app.session.active().unwrap().doc.story(sid).unwrap().clone();
+        open_edit(&mut app, "Hung").unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("page".into(), json!("story"));
+        }
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Story Direction:"), "{texts:?}");
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(os(&app, "Hung").story_direction, None);
+        assert_eq!(story(&app).direction, TextDirection::RightToLeft, "the story keeps its direction");
+        // Direction only: optical margin stays unset, and the story keeps its own.
+        app.run("style.object.apply", json!({"name": "Hebrew", "ids": [r["id"]]})).unwrap();
+        open_edit(&mut app, "Hebrew").unwrap();
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(os(&app, "Hebrew").optical_margin, None);
+        assert_eq!(story(&app).optical_margin, OpticalMargin { on: true, size: 18.0 });
+        // Changing it here sets it.
+        open_edit(&mut app, "Hebrew").unwrap();
+        if let Some(d) = app.ui.dialog.as_mut() {
+            d.fields.insert("omSet".into(), json!(true));
+            d.fields.insert("omOn".into(), json!(false));
+        }
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert_eq!(os(&app, "Hebrew").optical_margin.map(|o| o.on), Some(false));
     }
 }

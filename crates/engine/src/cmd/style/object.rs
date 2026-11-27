@@ -627,4 +627,23 @@ mod story_direction_tests {
         s.execute("style.object.apply", &json!({"name": "Hebrew Frame", "ids": [f["id"]]})).unwrap();
         assert_eq!(direction(&s, a), TextDirection::RightToLeft);
     }
+
+    /// A new text frame's story takes the default text frame style's Story Options, as in
+    /// InDesign; a part the style doesn't set stays as a new story has it.
+    #[test]
+    fn a_new_text_frame_takes_the_default_styles_story_options() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let basic = designcraft_doc::BASIC_TEXT_FRAME;
+        s.execute("style.object.edit", &json!({"name": basic, "storyDirection": "rightToLeft"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
+        let a = StoryId(f["story"].as_u64().unwrap());
+        assert_eq!(direction(&s, a), TextDirection::RightToLeft);
+        assert!(!s.doc().unwrap().doc.story(a).unwrap().optical_margin.on, "optical margin unset: as a new story has it");
+        s.execute("style.object.edit", &json!({"name": basic, "storyDirection": null, "opticalMargin": {"on": true, "size": 18}})).unwrap();
+        let g = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
+        let b = StoryId(g["story"].as_u64().unwrap());
+        let st = s.doc().unwrap().doc.story(b).unwrap().clone();
+        assert_eq!((st.direction, st.optical_margin.on, st.optical_margin.size), (TextDirection::LeftToRight, true, 18.0));
+    }
 }

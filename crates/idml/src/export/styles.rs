@@ -141,11 +141,12 @@ impl<'a> Ex<'a> {
             if let Some(tf) = &os.text_frame {
                 el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
             }
-            // Story Options: Optical Margin Alignment and its size, and Story Direction (a part
-            // the style doesn't set is written as a new story has it).
+            // Story Options: Optical Margin Alignment and its size (as a new story has them when
+            // the style doesn't set them), and Story Direction: `UnknownDirection` when the style
+            // sets none, as InDesign writes it.
             if os.story_direction.is_some() || os.optical_margin.is_some() {
                 let om = os.optical_margin.unwrap_or_default();
-                el.push(crate::xml::from_craft(
+                let mut pref = crate::xml::from_craft(
                     craft_idml::model::StoryPreference {
                         optical_margin_alignment: om.on,
                         optical_margin_size: designcraft_doc::OpticalMargin::clamp_size(om.size)
@@ -154,7 +155,11 @@ impl<'a> Ex<'a> {
                         right_to_left: os.story_direction == Some(designcraft_doc::TextDirection::RightToLeft),
                     }
                     .to_el(),
-                ));
+                );
+                if os.story_direction.is_none() {
+                    pref.set("StoryDirection", "UnknownDirection");
+                }
+                el.push(pref);
             }
             // Effects: a style with effects sets the drop shadow and feather, never blending.
             let has_fx = os.effects.is_some();
