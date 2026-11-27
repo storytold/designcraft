@@ -52,8 +52,8 @@ Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print)
 
 ## Rows
 
-| Area | Feature | Priority | Status |
-|---|---|---|---|
+| Area | Feature | Priority | Status | Headless |
+|---|---|---|---|---|
 | Application shell & workspace | Start/Home screen | P0 | D |
 | Application shell & workspace | Multiple documents in tabs | P0 | D |
 | Application shell & workspace | New Window for same document | P1 | D |
