@@ -71,9 +71,9 @@ separate Khmer words. There is no runtime pack downloader in this change.
 
 Embedding the data is disabled for now. `craft-khmer` classifies the pack Download-only until
 maintainers sign off on its licence classification and the policy for trained models and converted
-configuration; see [PROVENANCE.md](https://github.com/storytold/craft-libs/blob/4b1298c627bff72abfd707b9de1b20f8cd1588cd/crates/khmer/PROVENANCE.md). Until then a build that sets `CRAFT_KHMER_DIR` fails, with no bypass, so
+configuration; see [PROVENANCE.md](https://github.com/storytold/craft-libs/blob/314997691d8fe6bd05b892d6c654dfcdd6009396/crates/khmer/PROVENANCE.md). Until then a build that sets `CRAFT_KHMER_DIR` fails, with no bypass, so
 build and test with `CRAFT_KHMER_DIR` and `CRAFT_KHMER_REQUIRED` unset. Staging with craft-i18n's
-`language-packs` rejects the pack for the same reason. [`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/4b1298c627bff72abfd707b9de1b20f8cd1588cd/crates/khmer/DATA.md) describes the build for after that
+`language-packs` rejects the pack for the same reason. [`crates/khmer/DATA.md`](https://github.com/storytold/craft-libs/blob/314997691d8fe6bd05b892d6c654dfcdd6009396/crates/khmer/DATA.md) describes the build for after that
 approval, and the descriptions of data builds on this page apply from then on.
 
 Once enabled, `CRAFT_KHMER_DIR` must be an absolute path. Source
