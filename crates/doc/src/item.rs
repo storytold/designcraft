@@ -336,7 +336,7 @@ impl Item {
 
     /// How far a visible stroke reaches inside the path: half its weight centred, all of it inside,
     /// none outside.
-    fn stroke_inside(&self) -> f64 {
+    pub fn stroke_inside(&self) -> f64 {
         let w = self.stroke.weight;
         if self.stroke.is_none() || !w.is_finite() {
             return 0.0;

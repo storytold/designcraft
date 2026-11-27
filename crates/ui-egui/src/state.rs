@@ -7,6 +7,9 @@ use super::{Deserialize, Point, Serialize, SnapView, Unit, canvas, dialogs, page
 pub struct ImportRequest {
     pub purpose: String,
     pub target: Option<u64>,
+    /// File names wanted, lower case (Relink to Folder: the missing graphics' names), so the host
+    /// reads only those from a chosen folder. Empty: any.
+    pub wanted: Vec<String>,
     /// Which folder handed over the file ([`next_import_batch`]): files of a `folder:` purpose
     /// with the same batch are one folder. 0 for single files.
     pub batch: u64,
@@ -141,6 +144,10 @@ pub struct PdfExportSettings {
     pub compress_images: bool,
     /// Transparency flattener preset (`""` = none, `high`, `medium`, `low`).
     pub flatten: String,
+    /// Whether `flatten` was explicitly chosen (so `""` keeps live transparency rather than
+    /// falling back to `UiState.flattener`, while older builds still read `flatten = ""` cleanly).
+    #[serde(default)]
+    pub flatten_chosen: bool,
     pub spreads: bool,
     pub bleed: bool,
     pub marks_crop: bool,
@@ -159,6 +166,7 @@ impl Default for PdfExportSettings {
             standard: "none".into(),
             compress_images: false,
             flatten: "".into(),
+            flatten_chosen: false,
             spreads: false,
             bleed: true,
             marks_crop: false,
@@ -168,6 +176,23 @@ impl Default for PdfExportSettings {
             marks_offset: "6".into(),
             tagged: true,
         }
+    }
+}
+
+impl PdfExportSettings {
+    /// Whether the Export PDF dialog has not overridden the global flattener preset
+    /// (`UiState.flattener`).
+    pub fn uses_global_flatten(&self) -> bool {
+        !self.flatten_chosen && self.flatten.is_empty()
+    }
+
+    /// The flattener preset to seed the Export PDF dialog, Separations Preview, and the
+    /// `Edit › Transparency Flattener Presets` menu checkmark with (`""` = live transparency,
+    /// `"high"`, `"medium"`, or `"low"`). An unchosen empty value (`""` with
+    /// `flatten_chosen == false`) falls back to `global` (`UiState.flattener`); once explicitly
+    /// chosen (or non-empty), the saved `flatten` value is kept.
+    pub fn resolved_flatten<'a>(&'a self, global: &'a str) -> &'a str {
+        if self.uses_global_flatten() { global } else { &self.flatten }
     }
 }
 
@@ -199,6 +224,8 @@ pub struct UiState {
     pub baseline_grid: bool,
     pub document_grid: bool,
     pub text_threads: bool,
+    /// View › Extras › Show Link Badge: the chain on frames showing a linked file.
+    pub link_badge: bool,
     pub hidden_characters: bool,
     /// View › Structure › Show Tagged Frames.
     pub tagged_frames: bool,
@@ -247,6 +274,8 @@ pub struct UiState {
     /// Width of the Story Editor's style name column, in screen points (set by dragging its bar or by
     /// `view.storyEditorStyleColumn` `width`).
     pub story_editor_style_width: f32,
+    /// View › Story Editor › Show/Hide Paragraph Break Marks.
+    pub story_editor_paragraph_marks: bool,
     /// The Color Picker's component (its radio button, as `PickComp::key`: `h`, `s`, `b`, `l`,
     /// `la`, `lb`, `r`, `g`, `bl`), kept between openings and sessions, as Photoshop's picker is.
     pub color_picker_component: String,
@@ -419,6 +448,7 @@ impl Default for UiState {
             baseline_grid: false,
             document_grid: false,
             text_threads: false,
+            link_badge: true,
             hidden_characters: false,
             tagged_frames: false,
             hidden_menu_items: Vec::new(),
@@ -427,6 +457,7 @@ impl Default for UiState {
             story_editor_depth_ruler: true,
             story_editor_style_column: true,
             story_editor_style_width: story_editor::STYLE_COLUMN_WIDTH,
+            story_editor_paragraph_marks: false,
             color_picker_component: "r".into(),
             scripts: vec![
                 ("Number the pages".into(), "# A page-number frame at the bottom of the current page.\nframe.create {\"rect\": [288, 740, 324, 760], \"content\": \"text\", \"text\": \"\"}\ntext.select {\"story\": \"$0.story\", \"anchor\": 0, \"focus\": 0}\ntext.insert {\"text\": \"\\ue000\", \"raw\": true}".into()),
@@ -582,6 +613,8 @@ impl CanvasCache {
             patches: 0,
             separations: separations::Preview::default(),
             images: (0, f64::NEG_INFINITY),
+            pixels: None,
+            pixels_generation: 0,
         }
     }
 }
@@ -618,6 +651,10 @@ pub struct CanvasCache {
     /// The [`designcraft_render::images::generation`] the canvas renders with, and when it took
     /// it (ms): finished background decodes are taken up in batches, one render for many.
     pub images: (u64, f64),
+    /// The pixels the canvas texture shows (full resolution, as uploaded), and a counter that
+    /// changes with them: a text highlight inverts what it covers from these, without rendering.
+    pub pixels: Option<std::sync::Arc<designcraft_render::Rendered>>,
+    pub pixels_generation: u64,
 }
 
 #[derive(Default, Clone, Copy, Debug, Serialize)]

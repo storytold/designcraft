@@ -21,6 +21,8 @@ mod snippets;
 
 pub use bytes::{DOCUMENT_SNIFF_BYTES, base64_decode, base64_encode, from_bytes, is_document, to_bytes, with_document_extension};
 pub(crate) use open::load_document_fonts;
+#[cfg(not(target_arch = "wasm32"))]
+pub use open::{ReadDocument, read_document};
 pub use open::{RecentPreview, recent_preview};
 pub use package::is_zipped_package;
 pub(crate) use package::keep_font_scope;
@@ -36,3 +38,5 @@ thread_local! {
 
 #[cfg(test)]
 pub(crate) mod eps_place_tests;
+#[cfg(test)]
+mod save_format_tests;

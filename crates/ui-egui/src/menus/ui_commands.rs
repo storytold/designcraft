@@ -285,6 +285,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("view.baselineGrid", "Show/Hide Baseline Grid", Some("Cmd+Alt+'"), "{}"),
     ("view.documentGrid", "Show/Hide Document Grid", Some("Cmd+'"), "{}"),
     ("view.textThreads", "Show/Hide Text Threads", Some("Cmd+Alt+Y"), "{}"),
+    ("view.linkBadge", "Show/Hide Link Badge", None, "{}"),
     ("view.hiddenCharacters", "Show Hidden Characters", Some("Cmd+Alt+I"), "{}"),
     ("view.taggedFrames", "Show/Hide Tagged Frames", None, "{} — XML-tagged frames outlined in their tag colour"),
     (
@@ -298,6 +299,12 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
         "Show/Hide Depth Ruler",
         None,
         "{} — the Story Editor's vertical ruler of how deep the text reaches in its frames",
+    ),
+    (
+        "view.storyEditorParagraphMarks",
+        "Show/Hide Paragraph Break Marks",
+        None,
+        "{} — a ¶ after each paragraph that a paragraph break ends, in the Story Editor",
     ),
     ("window.hidePanels", "Show/Hide Panels", Some("Tab"), "{} — every panel, the Tools panel included"),
     ("window.hidePanelsExceptTools", "Show/Hide Panels Except Tools", Some("Shift+Tab"), "{}"),
