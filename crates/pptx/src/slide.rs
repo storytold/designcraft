@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use designcraft_color::swatch::resolve_gradient;
 use designcraft_color::{BlendMode, GradientKind};
 use designcraft_compose::Cache;
-use designcraft_doc::{Arrowhead, AssetId, Cap, Content, Document, Graphic, Item, Join, MAX_DASH_ENTRIES, Shape, Stroke, StrokeAlign, StrokeType};
+use designcraft_doc::{Arrowhead, AssetId, Cap, Content, Document, Graphic, Item, Join, Shape, Stroke, StrokeAlign, StrokeType};
 use designcraft_geom::kurbo::{PathEl, Shape as _};
 use designcraft_geom::{Affine, BezPath, Rect, Vec2, corners};
 
