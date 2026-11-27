@@ -116,6 +116,20 @@ list (author, source, license) is in ASSETS.md.
   with or without modification, is permitted in any medium without royalty provided the copyright
   notice and this notice are preserved (additionally distributed under the LaTeX Project Public
   License in CTAN distributions).
+- Danish hyphenation patterns, embedded through the hypher crate (feature "danish"):
+  hyph-da.tex 2011-01-11 from hyph-utf8, https://github.com/hyphenation/tex-hyphen.
+  Copyright (C) 1994 Frank Jensen. Available under LPPL 1.3 or later, or the MIT License, taken
+  under MIT: Permission is hereby granted, free of charge, to any person obtaining a copy of this
+  software and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions: The above copyright notice
+  and this permission notice shall be included in all copies or substantial portions of the
+  Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE
+  AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - German hyphenation patterns, embedded through the hypher crate (feature "german"):
   hyph-de-1996.tex 2024-02-28, German reformed orthography (2006), from hyph-utf8,
   https://github.com/typst/hypher/blob/d81cc506416bffef2a75ee2dc969d4b41bc36613/patterns/hyph-de-1996.tex.
@@ -132,6 +146,28 @@ list (author, source, license) is in ASSETS.md.
   AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- Croatian hyphenation patterns, embedded unmodified through the hypher crate (feature "croatian"):
+  hyph-hr.tex from hyph-utf8,
+  https://github.com/typst/hypher/blob/d81cc506416bffef2a75ee2dc969d4b41bc36613/patterns/hyph-hr.tex.
+  Copyright (C) 1994, 1996, 2011, 2015 Igor Marinović. Available under the LPPL (version 1 or
+  later) or the permissive licence below; taken here under the permissive licence:
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this file and
+  any associated documentation (the "Data Files") to deal in the Data Files without restriction,
+  including without limitation the rights to use, copy, modify, merge, publish, distribute, and/or
+  sell copies of the Data Files, and to permit persons to whom the Data Files are furnished to do
+  so, provided that (a) this copyright and permission notice appear with all copies of the Data
+  Files, (b) this copyright and permission notice appear in associated documentation, and
+  (c) there is clear notice in each modified Data File as well as in the documentation associated
+  with the Data File(s) that the data has been modified. THE DATA FILES ARE PROVIDED "AS IS",
+  WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS.
+  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE BE LIABLE FOR ANY
+  CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING
+  FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+  TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA FILES.
+  Except as contained in this notice, the name of a copyright holder shall not be used in
+  advertising or otherwise to promote the sale, use or other dealings in these Data Files without
+  prior written authorization of the copyright holder.
 - Japanese fonts (craft-fonts): builds made with craft-fonts (CRAFT_FONTS_DIR; all official
   releases) embed the fonts listed in
   https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (BIZ UDPGothic, BIZ UDMincho,
@@ -150,15 +186,18 @@ No Adobe icons, images or artwork are included.
 
 PDF backend source
 
-The patched hayro 0.7.1, hayro-interpret 0.7.0, hayro-syntax 0.7.2, hayro-jbig2 0.3.0 and
-hayro-cmap 0.1.0 are fetched from https://github.com/storytold/craft-libs at revision
-9f75d3dc19b4b514c4f3d4847ed1ec1b0e86b4ef. The first four source snapshots were transferred
+The patched hayro 0.7.1, hayro-interpret 0.7.0, hayro-syntax 0.7.2, hayro-jbig2 0.3.0,
+hayro-cmap 0.1.0 and hayro-postscript 0.1.0 are fetched from
+https://github.com/storytold/craft-libs at revision
+30a568b97fa2927d2217f98ba9c799bc76102144. The first four source snapshots were transferred
 from https://github.com/storytold/pdfcraft at revision
-7437bde378f43856eada40af25b983812e615e8a and hayro-cmap at revision
-a2ec27b4775f53c40cad3456936d9406611e3a8d, then patched in craft-libs. Their upstream project is
+7437bde378f43856eada40af25b983812e615e8a and re-synced to revision
+ec0a965074f376a5bf610435948e4e5184bf3299, and hayro-cmap at revision
+a2ec27b4775f53c40cad3456936d9406611e3a8d, then patched in craft-libs. hayro-postscript is the
+crates.io package, patched in craft-libs. Their upstream project is
 https://github.com/LaurenzV/hayro, licensed MIT OR Apache-2.0. The snapshot retains each
 crate's upstream licence files. The patch ledger is at
-https://github.com/storytold/craft-libs/blob/9f75d3dc19b4b514c4f3d4847ed1ec1b0e86b4ef/vendor/README.craft-reader.md.
+https://github.com/storytold/craft-libs/blob/30a568b97fa2927d2217f98ba9c799bc76102144/vendor/README.craft-reader.md.
 Per-crate vendor/SOURCE.json files record transferred and local source hashes; asset
 origins and unchanged per-file hashes are recorded separately in ASSETS.md.
 

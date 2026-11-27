@@ -191,6 +191,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "height": num("Page height (pt)"),
                     "pages": {"type": "integer", "minimum": 1, "description": "Number of pages"},
                     "facingPages": boolean("Facing pages (spreads)"),
+                    "binding": {"type": "string", "enum": ["leftToRight", "rightToLeft"], "description": "Binding: rightToLeft for Hebrew and Arabic books (page 1 a left page, spreads right to left)"},
                     "columns": {"type": "integer", "minimum": 1, "description": "Column count"},
                     "gutter": num("Column gutter (pt)"),
                     "margins": {"description": "Uniform margin (pt) or {top, bottom, inside, outside}", "anyOf": [{"type": "number"}, {"type": "object"}]},
@@ -406,7 +407,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "ui_set",
             "Set UI state",
             &app_only(
-                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/baselineGrid/documentGrid/textThreads, \
+                "Change UI state: panel to open or close, brightness, status text, rulers/guides/frameEdges/baselineGrid/documentGrid/textThreads/linkBadge, \
                  Control bar, dock expanded, screenMode, zoom, page (1-based), fit (page|spread).",
             ),
             obj(
@@ -415,6 +416,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "brightness": {"type": "string", "enum": ["dark", "mediumDark", "mediumLight", "light"]},
                     "rulers": {"type": "boolean"}, "guides": {"type": "boolean"}, "frameEdges": {"type": "boolean"},
                     "baselineGrid": {"type": "boolean"}, "documentGrid": {"type": "boolean"}, "textThreads": {"type": "boolean"},
+                    "linkBadge": boolean("Show the badge on linked graphics' frames (View › Extras › Show/Hide Link Badge)"),
                     "status": string("Status bar text"),
                     "controlBar": boolean("Show the Control bar"),
                     "closePanel": boolean("Close the panel that is showing"),
@@ -538,19 +540,44 @@ fn screenshot(b: &mut dyn Backend, a: &Args) -> Result<ToolResult, String> {
     need_ui(b, "screenshot")?;
     // The app writes the capture to disk (loopback: same machine), then we read it back.
     let keep = a.get("path").and_then(Value::as_str);
-    let target = match keep {
-        Some(p) => p.to_string(),
-        None => std::env::temp_dir()
-            .join(format!("designcraft-mcp-{}-{}.png", std::process::id(), std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_millis())))
-            .to_string_lossy()
-            .to_string(),
+    // Without a path of the caller's, the capture goes through a folder of our own that nobody
+    // else can read (the temporary folder may be shared with other users).
+    let private = match keep {
+        Some(_) => None,
+        None => Some(private_temp_dir("designcraft-mcp")?),
     };
-    let r = b.call("ui.screenshot", json!({"path": target}))?;
-    let png = std::fs::read(&target).map_err(|e| format!("read {target}: {e}"))?;
-    if keep.is_none() {
+    let target = match (keep, &private) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(dir)) => dir.join("screenshot.png").to_string_lossy().to_string(),
+        (None, None) => return Err("no screenshot folder".into()),
+    };
+    let r = b.call("ui.screenshot", json!({"path": target}));
+    let png = r.as_ref().ok().map(|_| std::fs::read(&target).map_err(|e| format!("read {target}: {e}")));
+    if let Some(dir) = private {
         std::fs::remove_file(&target).ok();
+        std::fs::remove_dir(dir).ok();
     }
+    let (r, png) = (r?, png.transpose()?.unwrap_or_default());
     Ok(ToolResult::image(designcraft_engine::cmd::base64_encode(&png), &json!({"width": r.get("width"), "height": r.get("height"), "path": keep})))
+}
+
+/// A new folder under the temporary folder that only this user can read, named after `prefix`.
+/// Made with `create_dir` (never an existing folder, so never one someone else made) and, on
+/// Unix, mode 0700.
+fn private_temp_dir(prefix: &str) -> Result<std::path::PathBuf, String> {
+    let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+    #[cfg(unix)]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 fn pointer(b: &mut dyn Backend, a: &Args) -> Result<Value, String> {

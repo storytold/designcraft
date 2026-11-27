@@ -9,7 +9,8 @@ fn placed_pdf(s: &Session, id: designcraft_doc::ItemId) -> Option<std::sync::Arc
     let d = &s.active()?.doc;
     let g = d.item(id)?.graphic()?;
     let a = d.assets.get(&g.asset)?;
-    designcraft_render::is_pdf(&a.data).then(|| a.data.clone())
+    let bytes = a.data.load().ok()?;
+    designcraft_render::is_pdf(&bytes).then_some(bytes)
 }
 
 pub fn specs() -> Vec<CommandSpec> {

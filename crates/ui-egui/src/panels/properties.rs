@@ -38,12 +38,13 @@ pub use object_panels::{align_panel, attributes_panel, effects_panel, pathfinder
 use object_panels::{anchor_point_sections, pathfinder_row};
 pub(crate) use text::{LANGUAGES, kerning_control, language_menu};
 use text::{
-    bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_style_section,
+    bullets_section, character_section, paragraph_section, quick_actions_text, text_appearance_section, text_frame_section, text_frame_target,
+    text_style_section,
 };
 pub use typography::{DIGIT_OPTIONS, character_panel, digit_label, paragraph_panel, show_typography_panel};
 #[cfg(test)]
 use typography::{axis_step, usable_axes, variable_font_style};
-pub(crate) use typography::{composer_choice, para_field_min};
+pub(crate) use typography::{composer_choice, direction_attrs, direction_icon, mirrored_align, para_field_min};
 
 /// A link to another panel: `window.panel` shows it in the docking layout. An open flyout of
 /// that panel stays: `window.panel` would close it.
@@ -137,6 +138,12 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         section(ui, crate::i18n::tr(&app.ui.language, "Bullets and Numbering"), true);
         bullets_section(app, ui);
         divider(ui);
+        // The frame that shows the caret, as with the frame selected.
+        if text_frame_target(app).is_some() {
+            section(ui, crate::i18n::tr(&app.ui.language, "Text Frame"), true);
+            text_frame_section(app, ui);
+            divider(ui);
+        }
         section(ui, crate::i18n::tr(&app.ui.language, "Quick Actions"), true);
         quick_actions_text(app, ui);
         return;

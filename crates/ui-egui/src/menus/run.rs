@@ -6,11 +6,30 @@ use super::tree::recent_label;
 use super::{DesignApp, ScreenMode, Value, json};
 use crate::app::file_dialogs::{Bound, with_path};
 
+/// A path the save dialog returned, with `ext` (the Save documents as format) added unless the name
+/// already ends in `.idml` or `.designcraft`: "Brochure" and "Issue 3.1" save as "Brochure.idml"
+/// and "Issue 3.1.idml". A name with one of those is kept as typed; its extension decides the
+/// format (see `file.save`).
+pub(crate) fn with_save_extension(path: &str, ext: &str) -> String {
+    // Only the two save extensions count as typed: "Issue 3.1" is a name with a dot in it.
+    let typed = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("idml") || e.eq_ignore_ascii_case(designcraft_engine::SaveFormat::Designcraft.extension()));
+    if typed { path.to_string() } else { format!("{path}.{ext}") }
+}
+
 /// Type › Tabs: float the Tabs panel (placed above the selected text frame) or close it.
 fn toggle_tabs_panel(app: &mut DesignApp) {
     if app.ui.floating.iter().any(|(p, _)| p == "tabs") {
-        app.ui.floating.retain(|(p, _)| p != "tabs");
+        if app.ui.hidden_panels != 0 {
+            app.ui.hidden_panels = 0;
+            app.ui.tabs_panel.snap_request = 2;
+        } else {
+            app.ui.floating.retain(|(p, _)| p != "tabs");
+        }
     } else {
+        app.ui.hidden_panels = 0;
         let at = app.canvas_rect.map_or(egui::pos2(300.0, 140.0), |r| r.min + egui::vec2(80.0, 60.0));
         app.ui.floating.push(("tabs".into(), [at.x, at.y]));
         app.ui.tabs_panel.snap_request = 2;
@@ -25,14 +44,123 @@ fn rerun_with_path(app: &mut DesignApp, purpose: &str, id: &str, p: &Value, key:
     app.ask_open(purpose, Bound::Document, move |app, path| run_ui(app, &id, &with_path(&p, key, path)).unwrap_or(Ok(Value::Null)))
 }
 
-/// File › Save As: asks where, saves there, then runs `after`.
+/// What runs once a save has happened (or was cancelled: it checks the document's state).
+pub(crate) type After = Box<dyn FnOnce(&mut DesignApp) -> Result<Value, String>>;
+
+/// The answer to "IDML can't keep all of this document".
+pub(crate) enum LossyAnswer {
+    /// Save as IDML all the same (also the answer when there is nothing to lose).
+    SaveAnyway,
+    /// Save in DesignCraft's own format instead, which keeps everything.
+    SaveAsDesigncraft,
+    Cancel,
+}
+
+/// The continuation of a save waiting for the IDML loss question.
+pub(crate) type LossySave = Box<dyn FnOnce(&mut DesignApp, LossyAnswer) -> Result<Value, String>>;
+
+/// A save as IDML (`idml`) that would lose part of the active document (editorial notes,
+/// endnotes: `file.idmlLosses`) asks first, and `then` runs with the answer once it is given.
+/// Otherwise `then` runs now, as Save Anyway: there is nothing to lose, or the losses were
+/// accepted for this document with Don't ask again (this session only). The engine refuses such
+/// a save without `allowLoss`, so nothing is lost without this question (CodeRabbit on #1105).
+pub(super) fn guard_idml_loss(
+    app: &mut DesignApp,
+    idml: bool,
+    then: impl FnOnce(&mut DesignApp, LossyAnswer) -> Result<Value, String> + 'static,
+) -> Result<Value, String> {
+    let uid = app.session.active().map(|d| d.uid);
+    if idml && !uid.is_some_and(|uid| app.idml_loss_accepted.contains(&uid)) {
+        let mut lost = app.run("file.idmlLosses", json!({}))?;
+        let count = |k: &str| lost.get(k).and_then(Value::as_u64).unwrap_or(0);
+        if count("editorialNotes") > 0 || count("endnotes") > 0 {
+            lost["uid"] = json!(uid);
+            lost["dontAskAgain"] = json!(false);
+            app.ui.dialog = Some(crate::dialogs::Dialog::new("idmlLoss", lost));
+            app.lossy_save = Some(Box::new(move |app, answer| {
+                if !matches!(&answer, LossyAnswer::Cancel) {
+                    let index =
+                        app.session.documents().iter().position(|document| Some(document.uid) == uid).ok_or("The document to save is closed")?;
+                    app.run("file.activate", json!({"index": index}))?;
+                }
+                then(app, answer)
+            }));
+            return Ok(Value::Null);
+        }
+    }
+    then(app, LossyAnswer::SaveAnyway)
+}
+
+/// Whether a save to `path` writes IDML.
+fn is_idml_path(path: &str) -> bool {
+    designcraft_engine::SaveFormat::of_path(path) == designcraft_engine::SaveFormat::Idml
+}
+
+/// File › Save As: asks where (suggesting the `ext` format), saves there, then runs `after`.
 #[track_caller]
-fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
-    let name = app.session.active().map(|d| format!("{}.designcraft", d.doc.title)).unwrap_or_default();
-    app.ask_save(&name, Bound::Document, move |app, path| {
-        app.run("file.saveAs", json!({"path": path}))?;
-        after(app)
+fn save_as_dialog(app: &mut DesignApp, ext: &str, after: After) -> Result<Value, String> {
+    let name = app.session.active().map(|d| format!("{}.{ext}", d.doc.title)).unwrap_or_default();
+    app.ask_save(&name, Bound::Document, move |app, path| save_as_checked(app, path, after))
+}
+
+/// Save As to `path`, asking first when that is an IDML save that would lose content.
+fn save_as_checked(app: &mut DesignApp, path: String, after: After) -> Result<Value, String> {
+    guard_idml_loss(app, is_idml_path(&path), move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => save_when_checked(app, move |app| {
+            app.run("file.saveAs", json!({"path": path, "allowLoss": true}))?;
+            after(app)
+        }),
+        LossyAnswer::SaveAsDesigncraft => save_as_dialog(app, designcraft_engine::SaveFormat::Designcraft.extension(), after),
+        LossyAnswer::Cancel => after(app),
     })
+}
+
+/// Save the active document to its own file, asking first when that is an IDML file and the save
+/// would lose content.
+fn save_to_own_file(app: &mut DesignApp, after: After) -> Result<Value, String> {
+    let idml = app.session.active().and_then(|d| d.path.as_deref()).is_some_and(is_idml_path);
+    guard_idml_loss(app, idml, move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => save_when_checked(app, move |app| {
+            app.run("file.save", json!({"allowLoss": true}))?;
+            after(app)
+        }),
+        LossyAnswer::SaveAsDesigncraft => save_as_dialog(app, designcraft_engine::SaveFormat::Designcraft.extension(), after),
+        LossyAnswer::Cancel => after(app),
+    })
+}
+
+/// Save a Copy to `path`, asking first when that is an IDML save that would lose content.
+fn save_copy_checked(app: &mut DesignApp, path: String) -> Result<Value, String> {
+    guard_idml_loss(app, is_idml_path(&path), move |app, answer| match answer {
+        LossyAnswer::SaveAnyway => save_when_checked(app, move |app| app.run("file.saveACopy", json!({"path": path, "allowLoss": true}))),
+        LossyAnswer::SaveAsDesigncraft => {
+            let ext = designcraft_engine::SaveFormat::Designcraft.extension();
+            let name = app.session.active().map(|d| format!("{} copy.{ext}", d.doc.title)).unwrap_or_default();
+            app.ask_save(&name, Bound::Document, save_copy_checked)
+        }
+        LossyAnswer::Cancel => Ok(Value::Null),
+    })
+}
+
+/// The IDML loss question was answered: run the save that was waiting for it.
+pub(crate) fn answer_idml_loss(app: &mut DesignApp, answer: LossyAnswer) -> Result<Value, String> {
+    match app.lossy_save.take() {
+        Some(then) => then(app, answer),
+        None => Ok(Value::Null),
+    }
+}
+
+/// Run `save` (a save of the active document) now, or, while the open-time checks of its linked
+/// files run, once they are done ([`DesignApp::run_waiting_save`]): a document saved before
+/// linked storage then writes the links the checks confirm in its first save, not a copy of every
+/// image. The status line counts the files left; Esc saves at once. A later save replaces one
+/// still waiting.
+pub(crate) fn save_when_checked(app: &mut DesignApp, save: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
+    let Some(st) = app.session.active().filter(|st| st.links.checking()) else { return save(app) };
+    let (uid, remaining) = (st.uid, st.links.remaining());
+    app.waiting_save = Some(crate::WaitingSave { uid, save: Box::new(save) });
+    app.show_save_wait(remaining);
+    Ok(json!({"waiting": true}))
 }
 
 /// Save the active document (a download in a browser; Save As for one never saved), then run
@@ -40,14 +168,13 @@ fn save_as_dialog(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Res
 #[track_caller]
 pub(crate) fn save_then(app: &mut DesignApp, after: impl FnOnce(&mut DesignApp) -> Result<Value, String> + 'static) -> Result<Value, String> {
     if app.services.download.is_some() {
-        download_document(app)?;
-        return after(app);
+        return download_document(app, Box::new(after));
     }
     if app.session.active().is_some_and(|d| d.path.is_some()) {
-        app.run("file.save", json!({}))?;
-        return after(app);
+        return save_to_own_file(app, Box::new(after));
     }
-    save_as_dialog(app, after)
+    let ext = app.session.prefs.save_format.extension();
+    save_as_dialog(app, ext, Box::new(after))
 }
 
 /// Run a UI command; `None` if `id` isn't one.
@@ -127,23 +254,39 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         },
         "app.openRecent" => {
             let index = p.get("index").cloned().unwrap_or(Value::Null);
-            let name = index
-                .as_u64()
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| app.session.prefs.recent_files.get(i))
-                .map(|path| recent_label(path))
-                .unwrap_or_default();
+            let path = index.as_u64().and_then(|i| usize::try_from(i).ok()).and_then(|i| app.session.prefs.recent_files.get(i)).cloned();
+            // Read in the background, a file still there opens as File › Open opens it;
+            // `file.openRecent` explains a missing one.
+            #[cfg(not(target_arch = "wasm32"))]
+            if app.opens_in_background()
+                && let Some(path) = path.as_ref().filter(|p| designcraft_engine::io::is_file(p))
+            {
+                return Some(app.open_document(path.clone()));
+            }
+            let name = path.as_deref().map(recent_label).unwrap_or_default();
             app.open_named_file("file.openRecent", json!({"index": index}), name)
         }
-        "app.placeDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.open_picked("place", path.to_string()),
-            None => app.pick_and_open("place"),
+        "app.placeDialog" => match (p.get("path").and_then(Value::as_str), p.get("paths").and_then(Value::as_array)) {
+            (Some(path), _) => app.open_picked("place", path.to_string()),
+            // Several files, as chosen together in the dialog: in their order. One is placed as the
+            // dialog places one (filling the selected frame). Every entry must be a path.
+            (None, Some(paths)) => match paths.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>() {
+                None => Err("app.placeDialog: every entry of paths must be a string".into()),
+                Some(paths) => match <[String; 1]>::try_from(paths) {
+                    Ok([path]) => app.open_picked("place", path),
+                    Err(paths) => app.place_paths(paths).map(|()| Value::Null),
+                },
+            },
+            (None, None) => app.pick_and_open("place"),
         },
+        "app.contactSheetDialog" => {
+            crate::dialogs::open_contact_sheet(app);
+            Ok(Value::Null)
+        }
         "app.placeWithOptions" => {
             // Word/RTF Import Options: style mapping and conflicts before the text lands.
             let Some(path) = p.get("path").and_then(Value::as_str) else { return Some(rerun_with_path(app, "place", id, p, "path")) };
-            let l = path.to_lowercase();
-            if !(l.ends_with(".docx") || l.ends_with(".rtf")) {
+            if !matches!(craft_file_formats::detect(path, &[]), Some(craft_file_formats::Format::Docx | craft_file_formats::Format::Rtf)) {
                 return Some(app.place_file(json!({"path": path})));
             }
             let info = match app.run("place.styles", json!({"path": path})) {
@@ -156,26 +299,30 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             ));
             Ok(Value::Null)
         }
-        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app),
+        "app.save" | "app.saveDialog" if app.services.download.is_some() => download_document(app, Box::new(|_| Ok(Value::Null))),
         "app.save" => {
             if app.session.active().is_some_and(|d| d.path.is_some()) {
-                return Some(app.run("file.save", json!({})));
+                return Some(save_to_own_file(app, Box::new(|_| Ok(Value::Null))));
             }
             return run_ui(app, "app.saveDialog", p);
         }
         "app.saveDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveAs", json!({"path": path})),
-            None => save_as_dialog(app, |_| Ok(Value::Null)),
+            Some(path) => save_as_checked(app, path.to_string(), Box::new(|_| Ok(Value::Null))),
+            None => {
+                let ext = app.session.prefs.save_format.extension();
+                save_as_dialog(app, ext, Box::new(|_| Ok(Value::Null)))
+            }
         },
         "app.quit" => {
             app.request_quit();
             Ok(Value::Null)
         }
         "app.saveCopyDialog" => match p.get("path").and_then(Value::as_str) {
-            Some(path) => app.run("file.saveACopy", json!({"path": path})),
+            Some(path) => save_copy_checked(app, path.to_string()),
             None => {
-                let name = app.session.active().map(|d| format!("{} copy.designcraft", d.doc.title)).unwrap_or_default();
-                app.ask_save(&name, Bound::Document, |app, path| app.run("file.saveACopy", json!({"path": path})))
+                let ext = app.session.prefs.save_format.extension();
+                let name = app.session.active().map(|d| format!("{} copy.{ext}", d.doc.title)).unwrap_or_default();
+                app.ask_save(&name, Bound::Document, save_copy_checked)
             }
         },
         "app.exportPng" => export_png(app, p),
@@ -188,8 +335,17 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         "app.exportInteractivePdf" => {
             let mut q = if p.is_object() { p.clone() } else { json!({}) };
-            for (k, v) in [("pageLayout", json!("single")), ("view", json!("fitPage")), ("bookmarksPanel", json!(true)), ("media", json!(true))] {
-                q.as_object_mut().map(|o| o.entry(k).or_insert(v));
+            // Interactive PDF keeps transparency live unless a caller explicitly requests flattening.
+            if let Some(o) = q.as_object_mut() {
+                for (k, v) in [
+                    ("pageLayout", json!("single")),
+                    ("view", json!("fitPage")),
+                    ("bookmarksPanel", json!(true)),
+                    ("media", json!(true)),
+                    ("flatten", json!(false)),
+                ] {
+                    o.entry(k).or_insert(v);
+                }
             }
             export_pdf(app, &q)
         }
@@ -203,6 +359,7 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Ok(Value::Null)
         }
         "app.cellOptionsDialog" => crate::dialogs::open_cell_options(app),
+        "app.diagonalLinesDialog" => crate::dialogs::open_diagonal_lines(app),
         "window.hideMenuItem" => {
             let Some(item) = p.get("item").and_then(Value::as_str) else { return Some(Err("missing item".into())) };
             let hide = p.get("hidden").and_then(Value::as_bool).unwrap_or(true);
@@ -228,13 +385,17 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "app.fittingOptions" => {
             let g = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).and_then(|it| it.graphic().cloned()));
             let Some(g) = g else { return Some(Err("select a frame with a placed graphic".into())) };
+            let unit = app.session.active().map(|d| d.doc.settings.horizontal_units).unwrap_or(designcraft_geom::Unit::Picas);
             let fitting = serde_json::to_value(g.auto_fit).unwrap_or(json!("none"));
-            let c = |v: f64| json!(designcraft_geom::format_measure(v, designcraft_geom::Unit::Points));
-            app.ui.dialog = Some(crate::dialogs::Dialog::new(
+            let c = |v: f64| json!(designcraft_geom::format_measure(v, unit));
+            let mut dialog = crate::dialogs::Dialog::new(
                 "fittingOptions",
                 json!({"autoFit": g.auto_fit != designcraft_doc::Fitting::None, "fitting": fitting, "align": g.fit_align,
                     "cropTop": c(g.crop[0]), "cropLeft": c(g.crop[1]), "cropBottom": c(g.crop[2]), "cropRight": c(g.crop[3])}),
-            ));
+            );
+            dialog.unit = unit;
+            dialog.vertical_unit = Some(unit);
+            app.ui.dialog = Some(dialog);
             Ok(Value::Null)
         }
         "app.userDictionary" => {
@@ -274,7 +435,12 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             if !["", "high", "medium", "low"].contains(&v) {
                 return Some(Err(format!("unknown preset `{v}`")));
             }
+            if app.ui.pdf_export.resolved_flatten(&app.ui.flattener) != v {
+                app.ui.pdf_export.preset = "Custom".into();
+            }
             app.ui.flattener = v.to_string();
+            app.ui.pdf_export.flatten.clear();
+            app.ui.pdf_export.flatten_chosen = false;
             Ok(json!(v))
         }
         "app.graphicCell" => match p.get("path").and_then(Value::as_str) {
@@ -285,6 +451,13 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             crate::effects_dialog::open(app, p.get("page").and_then(Value::as_str).unwrap_or("transparency"));
             Ok(Value::Null)
         }
+        "objectStyle.dialog" => match p.get("name").and_then(Value::as_str) {
+            Some(n) => crate::object_style_dialog::open_edit(app, n).map(|()| Value::Null),
+            None => {
+                crate::object_style_dialog::open_new(app);
+                Ok(Value::Null)
+            }
+        },
         "app.loadSwatches" => {
             if let Some(path) = p.get("path").and_then(Value::as_str) {
                 return Some(app.run("swatch.load", json!({"path": path})));
@@ -298,6 +471,33 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         }
         _ => return None,
     })
+}
+
+/// File › Export Layouts and Versions…: the dialog, on `layouts` when given.
+fn open_export_batch(app: &mut DesignApp, p: &Value) -> Result<Value, String> {
+    if app.session.active().is_none() {
+        return Err("no document open".into());
+    }
+    let layouts = p.get("layouts").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
+    crate::export_batch_dialog::open(app, layouts);
+    Ok(Value::Null)
+}
+
+/// Layout › Parent Options… (the parent selected in the Pages panel or shown, else the first) and
+/// Layout › Alternate Layout Options… (the layout of the page in view).
+fn open_layout_options(app: &mut DesignApp, id: &str) -> Result<Value, String> {
+    let Some(st) = app.session.active() else { return Err("no document open".into()) };
+    let doc = st.doc.clone();
+    if id == "app.parentOptions" {
+        let target = crate::panels::pages::target_parent(app, &doc).or_else(|| doc.parents.first().map(|p| p.id));
+        let Some(target) = target else { return Err("the document has no parents".into()) };
+        crate::panels::pages::open_parent_options(app, &doc, target);
+    } else {
+        let layouts = doc.layouts();
+        let k = crate::panels::pages::layout_index(&layouts, crate::canvas::current_page(app).unwrap_or(0));
+        crate::panels::pages::open_layout_options(app, &doc, &layouts, k);
+    }
+    Ok(Value::Null)
 }
 
 /// One slice of the UI commands: `None` if `id` isn't one of them.
@@ -475,6 +675,8 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             };
             return Some(r);
         }
+        "app.exportBatch" => return Some(open_export_batch(app, p)),
+        "app.parentOptions" | "app.alternateLayoutOptions" => return Some(open_layout_options(app, id)),
         "app.tabsPanel" => {
             toggle_tabs_panel(app);
             Ok(Value::Null)
@@ -563,6 +765,9 @@ fn run_ui_part2(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             let cjk = crate::cjk_features(app);
             f["cjkFeatures"] = json!(cjk);
             f["cjkFeatures.initial"] = json!(cjk);
+            let rtl = crate::rtl_features(app);
+            f["rtlFeatures"] = json!(rtl);
+            f["rtlFeatures.initial"] = json!(rtl);
             f["section"] = json!("general");
             // The language previews as it changes; Cancel goes back to this one.
             f["openedLanguage"] = json!(app.ui.language);
@@ -684,9 +889,29 @@ fn run_ui_part3(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             flag(&mut app.ui.document_grid)
         }
         "view.textThreads" => flag(&mut app.ui.text_threads),
+        "view.linkBadge" => flag(&mut app.ui.link_badge),
         "view.hiddenCharacters" => flag(&mut app.ui.hidden_characters),
         "view.taggedFrames" => flag(&mut app.ui.tagged_frames),
+        "view.storyEditorStyleColumn" => {
+            let on = p.get("on");
+            let width = p.get("width");
+            if on.is_some_and(|v| !v.is_boolean()) || width.is_some_and(|v| !v.is_number()) {
+                return Some(Err(format!("{id}: `on` is a bool and `width` a number")));
+            }
+            match (on.and_then(Value::as_bool), width.and_then(Value::as_f64)) {
+                (None, None) => app.ui.story_editor_style_column = !app.ui.story_editor_style_column,
+                (on, width) => {
+                    app.ui.story_editor_style_column = on.unwrap_or(app.ui.story_editor_style_column);
+                    if let Some(w) = width {
+                        app.ui.story_editor_style_width =
+                            crate::story_editor::style_column_width(w.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32);
+                    }
+                }
+            }
+            Ok(json!({"on": app.ui.story_editor_style_column, "width": app.ui.story_editor_style_width}))
+        }
         "view.storyEditorDepthRuler" => flag(&mut app.ui.story_editor_depth_ruler),
+        "view.storyEditorParagraphMarks" => flag(&mut app.ui.story_editor_paragraph_marks),
         "window.hidePanels" | "window.hidePanelsExceptTools" => {
             let mode = if id == "window.hidePanels" { 1 } else { 2 };
             app.ui.hidden_panels = if app.ui.hidden_panels == mode { 0 } else { mode };
@@ -815,6 +1040,13 @@ fn run_ui_part4(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             run_ui(app, "window.panel", &json!({"panel": panel})).unwrap_or(Ok(Value::Null))
         }
         "app.insertCurrentPageNumber" => app.run("text.insert", json!({"text": "\u{e000}", "raw": true})),
+        "app.insertEmSpace" | "app.insertEnSpace" => {
+            if !menu_enabled(app, id) {
+                return Some(Err("place the insertion point in text to insert a space".into()));
+            }
+            let space = if id == "app.insertEmSpace" { "\u{2003}" } else { "\u{2002}" };
+            app.run("text.insert", json!({"text": space, "raw": true}))
+        }
         // `panel_docking::command` takes the dock panels (and the Window › Styles group) first.
         "window.panel" => {
             let panel = p.get("panel").and_then(Value::as_str).unwrap_or("properties");
@@ -941,7 +1173,15 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             app.ui.ui_scale = v.clamp(0.5, 3.0);
             Ok(json!({"scale": app.ui.ui_scale}))
         }
-        "window.controlBar" => flag(&mut app.ui.control_bar),
+        "window.controlBar" => {
+            app.ui.control_bar = if app.ui.hidden_panels != 0 {
+                app.ui.hidden_panels = 0;
+                true
+            } else {
+                !app.ui.control_bar
+            };
+            Ok(json!(app.ui.control_bar))
+        }
         "view.flattenerPreview" => flag(&mut app.ui.flattener_preview),
         "view.tagMarkers" => {
             app.canvas.shown = None;
@@ -1072,6 +1312,7 @@ fn run_ui_part5(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
         "window.workspace" => {
             app.ui.docking_generation = app.ui.docking_generation.wrapping_add(1);
             crate::panel_docking::forget_panels(app);
+            app.ui.hidden_panels = 0;
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Essentials");
             if let Some(w) = app.ui.custom_workspaces.iter().find(|w| w.name == name).cloned() {
                 if let Some(hidden) = w.hidden_menu_items {
