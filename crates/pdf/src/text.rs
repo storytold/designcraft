@@ -345,7 +345,7 @@ impl Exporter<'_> {
                 s.pop();
             }
         } else if let Some(cft) = c.text.frames.first() {
-            s.push_transform(&tf(Affine::translate(c.origin.to_vec2())));
+            s.push_transform(&tf(c.text_xf()));
             let area = std::mem::replace(&mut self.text_area, lines_area(cft));
             self.frame_text(s, &c.text, cft, &c.source, None);
             self.text_area = area;

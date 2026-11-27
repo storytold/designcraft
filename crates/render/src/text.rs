@@ -508,7 +508,7 @@ impl Renderer {
                     ctx.set_transform(f.view * xf);
                     ctx.pop_layer();
                 } else if let Some(cft) = c.text.frames.first() {
-                    self.draw_text(ctx, f, &c.text, cft, xf * Affine::translate(c.origin.to_vec2()));
+                    self.draw_text(ctx, f, &c.text, cft, xf * c.text_xf());
                 }
                 if c.diagonals_in_front {
                     draw_cell_diagonals(ctx, f, xf, c);

@@ -428,7 +428,7 @@ impl Exporter<'_> {
             }
             for cell in frame.tables.iter().flat_map(|t| &t.cells) {
                 if let Some(frame) = cell.text.frames.first() {
-                    pending.push((frame, transform * Affine::translate(cell.origin.to_vec2())));
+                    pending.push((frame, transform * cell.text_xf()));
                 }
             }
         }

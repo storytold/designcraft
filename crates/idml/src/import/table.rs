@@ -212,9 +212,6 @@ impl<'r> Importer<'r> {
             cell.first_baseline_min = min.clamp(0.0, 8640.0);
         }
         cell.rotation = options.rotation_angle.unwrap_or(cell.rotation);
-        if cell.rotation != 0.0 {
-            self.rotated_cells += 1;
-        }
         for (i, values) in options.edge_strokes.iter().cloned().enumerate() {
             let attrs = self.map_stroke_values(values);
             attrs.apply_to(&mut cell.strokes[i]);

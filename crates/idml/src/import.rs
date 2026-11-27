@@ -189,10 +189,6 @@ struct Importer<'r> {
     parents: Vec<Spread>,
     /// Things read but not kept as they were, for the import report.
     warnings: Vec<String>,
-    /// Cells whose text is rotated (Cell Options › Text › Rotation): the angle is kept and
-    /// written back, but only 0 is composed, so a narrow header column of vertical labels comes
-    /// in horizontal and wraps mid-word (#1468).
-    rotated_cells: usize,
     parent_ids: HashMap<String, SpreadId>,
     spreads: Vec<Spread>,
     page_index: HashMap<String, usize>,
@@ -294,7 +290,6 @@ impl<'r> Importer<'r> {
             story_ids: HashMap::new(),
             parents: Vec::new(),
             warnings: Vec::new(),
-            rotated_cells: 0,
             parent_ids: HashMap::new(),
             spreads: Vec::new(),
             page_index: HashMap::new(),
@@ -599,12 +594,6 @@ impl<'r> Importer<'r> {
                 include_prefix: e.get("IncludeSectionPrefix") == Some("true"),
                 layout: starts_layout,
             });
-        }
-        if self.rotated_cells > 0 {
-            let n = self.rotated_cells;
-            self.warnings.push(format!(
-                "{n} table cell(s) have rotated text (Cell Options › Text › Rotation): the angle is kept and written back, but the text is composed horizontally"
-            ));
         }
         self.sections.sort_by_key(|s| s.start);
         self.sections.dedup_by_key(|s| s.start);

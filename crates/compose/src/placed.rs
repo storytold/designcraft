@@ -84,12 +84,7 @@ fn in_frame(ft: &FrameText, xf: Affine, fid: ItemId, depth: usize) -> Option<Aff
     let objects = ft.objects.iter().find_map(|o| in_item(&o.object.item, xf * Affine::translate(o.origin.to_vec2()), fid, 0));
     objects
         .or_else(|| ft.notes.iter().find_map(|n| in_frame(n.text.frames.first()?, xf * Affine::translate(n.origin.to_vec2()), fid, depth + 1)))
-        .or_else(|| {
-            ft.tables
-                .iter()
-                .flat_map(|t| &t.cells)
-                .find_map(|c| in_frame(c.text.frames.first()?, xf * Affine::translate(c.origin.to_vec2()), fid, depth + 1))
-        })
+        .or_else(|| ft.tables.iter().flat_map(|t| &t.cells).find_map(|c| in_frame(c.text.frames.first()?, xf * c.text_xf(), fid, depth + 1)))
 }
 
 /// The parent space of `fid` in `it` (it or a group member), `it`'s parent space mapping to the
