@@ -870,4 +870,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("−Bin", "−二进制"),
     ("−LOC", "−代码行"),
     ("⚠ {chord} is used by {label}", "⚠ {chord} 已被 {label} 使用"),
+    ("Get Cell Diagonal Lines", "获取单元格对角线"),
+    ("IDML Losses", "IDML 丢失项"),
+    ("IT", "IT"),
+    ("Relink to Files", "重新链接到文件"),
 ];
