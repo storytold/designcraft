@@ -103,8 +103,12 @@ impl Story {
 
     /// Insert empty endnotes for `n` new reference characters before which `k` references sit.
     pub(crate) fn endnotes_inserted(&mut self, k: usize, n: usize) {
+        // As for footnotes: the largest id kept as ids are given out, and the free-id search past
+        // the largest one (`+ 1` overflowed there).
+        let mut max = self.endnotes.iter().map(|x| x.id).max().unwrap_or(0);
         for i in 0..n {
-            let id = self.endnotes.iter().map(|x| x.id).max().unwrap_or(0) + 1;
+            let id = max.checked_add(1).unwrap_or_else(|| crate::ids::next_local_id(self.endnotes.iter().map(|x| x.id)));
+            max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
             self.endnotes.insert((k + i).min(self.endnotes.len()), Arc::new(Footnote { id, text }));
@@ -132,24 +136,9 @@ impl Story {
 }
 
 impl crate::Document {
-    /// Stories with endnotes in numbering order (page of their first frame, then id).
-    fn endnote_order(&self) -> Vec<&Story> {
-        let key = |st: &Story| -> (usize, u64) { (st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX), st.id.0) };
-        let mut v: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|s| !s.endnotes.is_empty()).collect();
-        v.sort_by_key(|s| key(s));
-        v
-    }
-
     /// Number of the first endnote of story `sid`.
     pub fn endnote_start(&self, sid: StoryId) -> u32 {
-        let mut n = self.endnote_options.start_at;
-        for st in self.endnote_order() {
-            if st.id == sid {
-                break;
-            }
-            n += st.endnotes.len() as u32;
-        }
-        n
+        self.number_starts().endnote(sid)
     }
 
     /// The endnote frame's text: the heading, then "number separator text" per endnote, in order.
@@ -158,7 +147,7 @@ impl crate::Document {
         let para = |style: &str| ParaFormat { style: style.to_string(), ..Default::default() };
         let mut out = Story::with_text(id, &o.heading, para(&o.heading_style));
         let mut n = o.start_at;
-        for st in self.endnote_order() {
+        for st in self.stories_in_page_order() {
             for note in &st.endnotes {
                 let at = out.len();
                 let first = at == 0 && o.heading.is_empty();
@@ -173,7 +162,7 @@ impl crate::Document {
                     let at = out.len();
                     out.insert_with(at, &note.text.text[r].replace('\n', " "), f.clone());
                 }
-                n += 1;
+                n = n.saturating_add(1);
             }
         }
         out

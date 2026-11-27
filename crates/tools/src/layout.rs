@@ -1,9 +1,10 @@
 //! Where spreads sit on the canvas (the pasteboard): stacked vertically, spines aligned at x = 0,
 //! parents shown on their own canvas when a parent spread is being edited.
 
-use designcraft_doc::{Document, SpreadRef};
+use designcraft_doc::{Document, Selection, SpreadRef};
 use designcraft_geom::{Affine, Point, Rect, Vec2};
 use serde::Serialize;
+use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct SpreadSlot {
@@ -100,11 +101,54 @@ impl CanvasLayout {
         (m * Point::new(d.x, d.y)) - (m * Point::ORIGIN)
     }
 
+    /// The Page tool selection on the canvas currently shown.
+    pub fn selected_page(&self, doc: &Document, selection: &Selection) -> Option<(SpreadRef, usize)> {
+        let (sr, pi) = if self.slots.first().is_some_and(|s| matches!(s.spread, SpreadRef::Parent(_))) {
+            let (id, pi) = selection.parent_page?;
+            (SpreadRef::Parent(doc.parent_index(id)?), pi)
+        } else {
+            let (si, pi) = doc.page_loc(selection.page?)?;
+            (SpreadRef::Doc(si), pi)
+        };
+        self.slot(sr)?;
+        doc.spread(sr)?.pages.get(pi)?;
+        Some((sr, pi))
+    }
+
+    /// A page on the visible canvas, including parent pages.
+    pub fn page_at(&self, doc: &Document, p: Point) -> Option<(SpreadRef, usize)> {
+        self.slots
+            .iter()
+            .find_map(|slot| doc.spread(slot.spread)?.pages.iter().position(|pg| pg.bounds().contains(slot.to_spread(p))).map(|pi| (slot.spread, pi)))
+    }
+
+    pub fn spread_page_rect(&self, doc: &Document, sr: SpreadRef, pi: usize) -> Option<Rect> {
+        Some(self.slot(sr)?.xf.transform_rect_bbox(doc.spread(sr)?.pages.get(pi)?.bounds()))
+    }
+
     /// Canvas rect of a document page.
     pub fn page_rect(&self, doc: &Document, abs: usize) -> Option<Rect> {
         let (si, pi) = doc.page_loc(abs)?;
         Some(self.xf(SpreadRef::Doc(si)).transform_rect_bbox(doc.spreads[si].pages[pi].bounds()))
     }
+}
+
+/// The same resize contract for panels, handles and the exact-size dialog.
+pub fn page_size_command(doc: &Document, sr: SpreadRef, page: usize, mut params: Value) -> Option<(&'static str, Value)> {
+    let sp = doc.spread(sr)?;
+    sp.pages.get(page)?;
+    let command = match sr {
+        SpreadRef::Doc(si) => {
+            params["pages"] = json!([doc.first_page_of_spread(si) + page + 1]);
+            "layout.pageSize"
+        }
+        SpreadRef::Parent(_) => {
+            params["parent"] = json!(sp.id.0);
+            params["page"] = json!(page);
+            "layout.parentPageSize"
+        }
+    };
+    Some((command, params))
 }
 
 fn dist_y(r: Rect, y: f64) -> f64 {

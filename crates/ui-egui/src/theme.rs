@@ -83,6 +83,10 @@ pub struct Tokens {
     /// Measurement labels on the canvas (smart dimensions, gaps).
     pub measure_bg: Color32,
     pub measure_text: Color32,
+    /// The readout beside the cursor while drawing, moving or measuring ("W: 3.13 cm"): InDesign's
+    /// light grey box, with dark text in every brightness but High Contrast.
+    pub readout_bg: Color32,
+    pub readout_text: Color32,
     /// Live-corner widget and corner diamonds.
     pub live_corner: Color32,
     /// The Windows caption Close button when hovered, and its glyph.
@@ -130,6 +134,8 @@ impl Tokens {
             smart_guide: hex(0x00c853),
             measure_bg: Color32::from_rgba_unmultiplied(70, 70, 70, 230),
             measure_text: Color32::WHITE,
+            readout_bg: hex(0xa8a8a8),
+            readout_text: hex(0x1e1e1e),
             live_corner: hex(0xffe500),
             caption_close: hex(0xc42b1c),
             caption_close_text: Color32::WHITE,
@@ -255,6 +261,9 @@ impl Tokens {
                 ruler_text: hex(0xffffff),
                 section_divider: hex(0xffffff),
                 tab_strip: hex(0x000000),
+                // White on InDesign's grey is too faint here: black, as the rest of the chrome.
+                readout_bg: hex(0x000000),
+                readout_text: Color32::WHITE,
                 ..dark
             },
         }
@@ -269,11 +278,12 @@ pub fn install_fonts(ctx: &egui::Context, lang: &str) -> bool {
     let craft = designcraft_fonts::CRAFT_FONTS;
     let mut defs = font_definitions(craft, lang);
     let system = system_ui_fonts(craft);
-    if let Some(system) = system {
+    let found = system.is_some();
+    if let Some(system) = &system {
         add_system_fallbacks(&mut defs, system, lang);
     }
     ctx.set_fonts(defs);
-    system.is_some()
+    found
 }
 
 /// Whether [`install_fonts`] would find the installed fonts cataloged.
@@ -282,9 +292,12 @@ pub fn system_fonts_ready() -> bool {
 }
 
 /// An installed font the UI falls back to for a script the built-in faces lack.
+#[derive(Clone)]
 pub(crate) struct SystemFont {
     /// The ISO 15924 code of the script it is for ("Jpan", "Kore", "Taml"…).
     script: &'static str,
+    /// Also selected for Arabic, even if this family was first found for another script.
+    arabic: bool,
     family: String,
     /// The face as egui takes it, on the UI face's baseline. Shared: installing the fonts again
     /// (another interface language) doesn't copy the file.
@@ -294,7 +307,7 @@ pub(crate) struct SystemFont {
 impl SystemFont {
     pub(crate) fn new(script: &'static str, family: String, bytes: Vec<u8>, index: u32) -> Self {
         let tweak = baseline_tweak(&bytes, index);
-        SystemFont { script, family, data: Arc::new(FontData { index, tweak, ..FontData::from_owned(bytes) }) }
+        SystemFont { script, arabic: script == "Arab", family, data: Arc::new(FontData { index, tweak, ..FontData::from_owned(bytes) }) }
     }
 }
 
@@ -339,6 +352,8 @@ const SYSTEM_UI_FONTS: &[(&str, char, &[&str])] = &[
     ("Khmr", 'ក', &["Khmer Sangam MN", "Leelawadee UI", "Khmer UI", "Noto Sans Khmer", "Khmer OS"]),
     ("Laoo", 'ກ', &["Lao Sangam MN", "Leelawadee UI", "Lao UI", "Noto Sans Lao", "Phetsarath OT"]),
     ("Mymr", 'က', &["Myanmar Sangam MN", "Myanmar Text", "Noto Sans Myanmar", "Padauk"]),
+    // Arabic UI runs need a real face even when the optional craft-fonts input is absent.
+    ("Arab", '\u{0645}', &["Geeza Pro", "Al Bayan", "Segoe UI", "Tahoma", "Noto Sans Arabic", "Noto Naskh Arabic", "DejaVu Sans"]),
     ("Hebr", 'א', &["Arial Hebrew", "Segoe UI", "Noto Sans Hebrew", "DejaVu Sans"]),
     ("Armn", 'Ա', &["Mshtakan", "Segoe UI", "Sylfaen", "Noto Sans Armenian", "DejaVu Sans"]),
     ("Geor", 'ა', &["Segoe UI", "Sylfaen", "Noto Sans Georgian", "DejaVu Sans"]),
@@ -350,17 +365,25 @@ const SYSTEM_UI_FONTS: &[(&str, char, &[&str])] = &[
 /// Traditional Chinese (font names in the font menus), Indic, Southeast Asian and other scripts
 /// in any build. egui can't find system fonts itself; the document font scan (not on the web)
 /// does.
-fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Option<&'static [SystemFont]> {
+fn system_ui_fonts(craft: &[designcraft_fonts::CraftFont]) -> Option<Vec<SystemFont>> {
     static FACES: std::sync::OnceLock<Vec<SystemFont>> = std::sync::OnceLock::new();
     let db = designcraft_fonts::FontDb::global();
     // Never wait for the font scan here (the first frame): it runs in the background, and the
     // faces are read once, when it is done.
-    // (Tests wait instead, so that the fonts don't change in the middle of one.)
     if !db.system_fonts_cataloged() && !cfg!(test) {
         db.scan_in_background();
         return None;
     }
-    Some(FACES.get_or_init(|| installed_ui_fonts(db, craft)))
+    if cfg!(test) {
+        // Tests install controlled faces in the process-wide database (`testing::font_with`),
+        // so the set cannot be cached across them; a cached empty first call would otherwise
+        // hide every face a later test adds. Cataloging here is a no-op once it is done (the
+        // web has no system fonts).
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = db.load_system_fonts();
+        return Some(installed_ui_fonts(db, craft));
+    }
+    Some(FACES.get_or_init(|| installed_ui_fonts(db, craft)).to_vec())
 }
 
 /// The faces of [`SYSTEM_UI_FONTS`] that `db` has, for the scripts `craft` doesn't cover.
@@ -375,11 +398,19 @@ fn installed_ui_fonts(db: &designcraft_fonts::FontDb, craft: &[designcraft_fonts
                 return None;
             }
             let face = db.face(family, "Regular");
-            // `face` falls back to another family when this one can't be read: keep only the real one.
-            (face.family.eq_ignore_ascii_case(family) && !face.data().is_empty() && face.covers(*sample)).then_some((family, face))
+            // Keep the requested family, and leave bundled document faces to the craft UI stack.
+            (face.family.eq_ignore_ascii_case(family)
+                && !matches!(&face.source, designcraft_fonts::FontSource::Bundled)
+                && !face.data().is_empty()
+                && face.covers(*sample))
+            .then_some((family, face))
         });
         let Some((family, face)) = found else { continue };
-        if !faces.iter().any(|f| f.family.eq_ignore_ascii_case(family)) {
+        if let Some(existing) = faces.iter_mut().find(|f| f.family.eq_ignore_ascii_case(family)) {
+            // A shared face retains its first script's ordering and its one allocation.
+            // Record Arabic separately so its shaping families can still prefer the face.
+            existing.arabic |= *script == "Arab";
+        } else {
             faces.push(SystemFont::new(script, (*family).to_string(), face.data().to_vec(), face.index()));
         }
     }
@@ -441,19 +472,31 @@ pub(crate) fn add_system_fallbacks(fonts: &mut FontDefinitions, system: &[System
         let at = if arabic { stack.len() } else { stack.iter().position(|n| n.starts_with("craft-")).unwrap_or(stack.len()) };
         stack.splice(at..at, preferred.iter().cloned());
         stack.extend(rest.iter().cloned());
+        if arabic {
+            // Keep Arabic letters and spaces in one face for shaping, as the craft stack does.
+            // Discovery omits scripts supplied by craft-fonts, so their precedence is unchanged.
+            let arabic_faces: Vec<_> = system.iter().filter(|f| f.arabic).map(name).collect();
+            stack.retain(|n| !arabic_faces.contains(n));
+            stack.splice(0..0, arabic_faces);
+        }
     }
 }
 
 /// The UI fonts: the app's own, then the craft-fonts faces from `craft` (empty without
 /// `CRAFT_FONTS_DIR`) as fallbacks at the end of every family: Japanese (BIZ UDPGothic first) and
-/// Simplified Chinese, in the interface language's order, then Arabic. The `arabic` families
+/// Simplified Chinese, in the interface language's order, then Arabic and Georgian. The `arabic` families
 /// put the Arabic face first for right-to-left runs. egui has no system-font discovery, so
-/// without craft-fonts CJK and Arabic UI text has no glyphs.
+/// without craft-fonts CJK, Arabic and Georgian UI text has no glyphs.
 pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], lang: &str) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, data: &'static [u8]| {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(data)));
     };
+    // egui's last-resort faces (Ubuntu-Light, egui-icons and, with `monochrome_emoji_fonts`,
+    // NotoEmoji-Regular and emoji-icon-font): every family ends with them so a glyph outside
+    // the requested face and the script faces (☰, ⚠, 📋) is not tofu. Captured before the
+    // interface face is added.
+    let last_resort: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     add(&mut fonts, "ui", include_bytes!("../../../assets/fonts/SourceSans3-Regular.ttf"));
     add(&mut fonts, "ui-semibold", include_bytes!("../../../assets/fonts/SourceSans3-Semibold.ttf"));
     add(&mut fonts, "mono", include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf"));
@@ -466,12 +509,16 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
     japanese.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Regular"));
     let chinese = pick("Hans");
     let arabic = pick("Arab");
+    let georgian = pick("Geor");
+    // The manifest can add scripts without a special UI preference order (Hebrew, Devanagari,
+    // ...). They still need installing: system fallback discovery skips scripts supplied here.
+    let other: Vec<_> = craft.iter().filter(|f| !["Jpan", "Hans", "Arab", "Geor"].iter().any(|s| f.scripts.contains(s))).collect();
     let name = |f: &designcraft_fonts::CraftFont| format!("craft-{}-{}", f.family, f.style);
     for f in japanese.iter().chain(&chinese) {
         // CJK faces sit on the Latin baseline (see `baseline_tweak`).
         fonts.font_data.insert(name(f), Arc::new(FontData { tweak: baseline_tweak(f.bytes, 0), ..FontData::from_static(f.bytes) }));
     }
-    for f in &arabic {
+    for f in arabic.iter().chain(&georgian).chain(&other) {
         add(&mut fonts, &name(f), f.bytes);
     }
     // Han characters take the forms of the interface language: Chinese faces first for Chinese.
@@ -483,12 +530,25 @@ pub(crate) fn font_definitions(craft: &'static [designcraft_fonts::CraftFont], l
             ja.sort_by_key(|f| (f.family != "BIZ UDPGothic", f.style != "Bold"));
         }
         let (first, second) = if zh { (&chinese, &ja) } else { (&ja, &chinese) };
-        stack.extend(first.iter().chain(second).chain(&arabic).map(|f| name(f)));
+        stack.extend(first.iter().chain(second).chain(&arabic).chain(&georgian).chain(&other).map(|f| name(f)));
     }
-    // Arabic runs (rtl.rs): the Arabic face first, so letters and spaces shape as one run.
+    // A bold label keeps every icon/emoji glyph the regular one has: the semibold family ends
+    // with the same last-resort faces, after the script faces.
+    if let Some(stack) = fonts.families.get_mut(&FontFamily::Name("semibold".into())) {
+        stack.extend(last_resort.iter().cloned());
+    }
+    // Arabic runs: the Arabic face first, so letters and spaces shape as one run. These families
+    // keep every other family's fallbacks (the interface faces, the CJK, Arabic and Georgian
+    // script faces, then egui's last-resort icon/emoji faces) so Latin, symbols and emoji inside
+    // Arabic text are not tofu.
     for family in ["arabic", "arabic-semibold"] {
         let ui = if family == "arabic" { "ui" } else { "ui-semibold" };
-        let stack = arabic.iter().map(|f| name(f)).chain([ui.to_string(), "ui".to_string()]).chain(japanese.iter().chain(&chinese).map(|f| name(f)));
+        let stack = arabic
+            .iter()
+            .map(|f| name(f))
+            .chain([ui.to_string(), "ui".to_string()])
+            .chain(japanese.iter().chain(&chinese).chain(&georgian).chain(&other).map(|f| name(f)))
+            .chain(last_resort.iter().cloned());
         let mut seen = std::collections::HashSet::new();
         fonts.families.insert(FontFamily::Name(family.into()), stack.filter(|n| seen.insert(n.clone())).collect());
     }
@@ -565,6 +625,26 @@ mod japanese_font_tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
         output.textures_delta.clear();
         ctx
+    }
+
+    /// A newly supplied script must remain usable without any matching installed system font.
+    /// Previously craft's script coverage suppressed system discovery while these faces were
+    /// omitted from the actual UI font definitions, so a Hebrew tab panicked on its first glyph.
+    #[test]
+    fn additional_craft_scripts_render_in_every_ui_family() {
+        let bytes = Box::leak(designcraft_fonts::testing::font_with("DC extra scripts", &['ד', 'क']).unwrap().into_boxed_slice());
+        let craft = Box::leak(
+            vec![designcraft_fonts::CraftFont { family: "DC extra scripts", style: "Regular", scripts: &["Hebr", "Deva"], bytes }].into_boxed_slice(),
+        );
+        let ctx = ctx_with(craft);
+        ctx.fonts_mut(|fonts| {
+            for family in families().into_iter().chain([egui::FontFamily::Name("arabic".into()), egui::FontFamily::Name("arabic-semibold".into())]) {
+                let font = egui::FontId::new(13.0, family);
+                assert!(fonts.has_glyph(&font, 'ד') && fonts.has_glyph(&font, 'क'), "missing supplied script in {font:?}");
+                let galley = fonts.layout_no_wrap("דक".into(), font, egui::Color32::WHITE);
+                assert!(galley.size().x > 0.0 && galley.rect.is_finite());
+            }
+        });
     }
 
     #[test]
@@ -724,6 +804,87 @@ mod japanese_font_tests {
         });
     }
 
+    /// Discover Arabic from a controlled font directory, reject a named face without its
+    /// glyphs, and keep letters and spaces together in the Arabic-specific families.
+    #[test]
+    fn installed_arabic_fonts_cover_every_ui_family_without_craft_fonts() {
+        let dir = std::env::temp_dir().join(format!("dc-ui-arabic-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let chars = [' ', '\u{0627}', '\u{062e}', '\u{0645}'];
+        for (i, (family, glyphs)) in [("Geeza Pro", &['a'][..]), ("Noto Sans Arabic", &chars[..])].iter().enumerate() {
+            std::fs::write(dir.join(format!("font{i}.ttf")), designcraft_fonts::testing::font_with(family, glyphs).unwrap()).unwrap();
+        }
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let system = super::installed_ui_fonts(&db, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(system.len(), 1);
+        assert_eq!((system[0].script, system[0].family.as_str()), ("Arab", "Noto Sans Arabic"));
+        for lang in ["ar", "en"] {
+            let mut defs = super::font_definitions(&[], lang);
+            super::add_system_fallbacks(&mut defs, &system, lang);
+            for family in ["arabic", "arabic-semibold"] {
+                assert_eq!(defs.families[&egui::FontFamily::Name(family.into())][0], "system-Noto Sans Arabic");
+            }
+            assert_eq!(defs.families[&egui::FontFamily::Proportional][0], "ui");
+            assert_eq!(defs.families[&egui::FontFamily::Name("semibold".into())][0], "ui-semibold");
+            let ctx = egui::Context::default();
+            ctx.set_fonts(defs);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+            output.textures_delta.clear();
+            ctx.fonts_mut(|fonts| {
+                for family in
+                    families().into_iter().chain([egui::FontFamily::Name("arabic".into()), egui::FontFamily::Name("arabic-semibold".into())])
+                {
+                    let font = egui::FontId::new(13.0, family);
+                    for ch in chars {
+                        assert!(fonts.has_glyph(&font, ch), "missing {ch} in {font:?}");
+                    }
+                    let galley = fonts.layout_no_wrap("\u{0627}\u{062e} \u{0645}".into(), font, egui::Color32::WHITE);
+                    assert!(galley.size().x > 0.0);
+                }
+            });
+        }
+    }
+
+    /// One family can serve an earlier script and Arabic: its bytes stay shared, but Arabic
+    /// still needs that face before Latin spaces in its dedicated shaping families.
+    #[test]
+    fn shared_system_face_keeps_arabic_shaping_priority() {
+        let dir = std::env::temp_dir().join(format!("dc-ui-shared-arabic-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = designcraft_fonts::testing::font_with("Tahoma", &[' ', '\u{0e01}', '\u{0645}']).unwrap();
+        std::fs::write(dir.join("shared.ttf"), bytes).unwrap();
+        let db = designcraft_fonts::FontDb::with_font_dirs(vec![dir.clone()]);
+        let system = super::installed_ui_fonts(&db, &[]);
+        let craft = Box::leak(
+            vec![designcraft_fonts::CraftFont {
+                family: "Craft Arabic",
+                style: "Regular",
+                scripts: &["Arab"],
+                bytes: Box::leak(designcraft_fonts::testing::font_with("Craft Arabic", &[' ', '\u{0645}']).unwrap().into_boxed_slice()),
+            }]
+            .into_boxed_slice(),
+        );
+        let with_craft = super::installed_ui_fonts(&db, craft);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(system.len(), 1, "one font allocation for both scripts");
+        assert_eq!(system[0].script, "Thai", "the earlier script keeps its ordering");
+        let mut defs = super::font_definitions(&[], "ar");
+        super::add_system_fallbacks(&mut defs, &system, "ar");
+        for family in ["arabic", "arabic-semibold"] {
+            let stack = &defs.families[&egui::FontFamily::Name(family.into())];
+            assert_eq!(stack[0], "system-Tahoma");
+            assert_eq!(stack.iter().filter(|n| *n == "system-Tahoma").count(), 1);
+        }
+        assert!(std::sync::Arc::ptr_eq(&defs.font_data["system-Tahoma"], &system[0].data));
+        assert_eq!(defs.families[&egui::FontFamily::Proportional][0], "ui");
+        let mut defs = super::font_definitions(craft, "ar");
+        super::add_system_fallbacks(&mut defs, &with_craft, "ar");
+        for family in ["arabic", "arabic-semibold"] {
+            assert_eq!(defs.families[&egui::FontFamily::Name(family.into())][0], "craft-Craft Arabic-Regular");
+        }
+    }
+
     #[test]
     fn ui_works_without_craft_fonts() {
         let ctx = ctx_with(&[]);
@@ -761,9 +922,9 @@ mod ukrainian_font_tests {
         for (name, family, style) in
             [("ui", "Source Sans 3", "Regular"), ("ui-semibold", "Source Sans 3", "Semibold"), ("mono", "JetBrains Mono", "Regular")]
         {
-            let data = &definitions.font_data[name].font;
+            let data = definitions.font_data[name].bytes();
             let face = db.face(family, style);
-            assert_eq!(face.data(), data.as_ref(), "configured UI face {name}");
+            assert_eq!(face.data(), data, "configured UI face {name}");
             for character in &characters {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
@@ -788,12 +949,45 @@ mod russian_font_tests {
         for (name, family, style) in
             [("ui", "Source Sans 3", "Regular"), ("ui-semibold", "Source Sans 3", "Semibold"), ("mono", "JetBrains Mono", "Regular")]
         {
-            let data = &definitions.font_data[name].font;
+            let data = definitions.font_data[name].bytes();
             let face = db.face(family, style);
-            assert_eq!(face.data(), data.as_ref(), "configured UI face {name}");
+            assert_eq!(face.data(), data, "configured UI face {name}");
             for character in &characters {
                 assert_ne!(face.glyph_for(*character), 0, "missing {character} in {name}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod readout_tests {
+    use super::{Brightness, Tokens};
+
+    fn luminance(c: egui::Color32) -> f32 {
+        let lin = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// The readout beside the cursor ("W: 3.13 cm" while drawing a frame) is InDesign's light
+    /// grey box in every brightness, with text that stays readable on it; High Contrast keeps
+    /// it black.
+    #[test]
+    fn the_cursor_readout_is_indesigns_light_grey_with_readable_text() {
+        for b in [Brightness::Dark, Brightness::MediumDark, Brightness::MediumLight, Brightness::Light] {
+            let t = Tokens::for_brightness(b);
+            assert_eq!(t.readout_bg, egui::Color32::from_rgb(0xa8, 0xa8, 0xa8), "{b:?}");
+            assert!(contrast(t.readout_text, t.readout_bg) >= 4.5, "{b:?}");
+        }
+        let hc = Tokens::for_brightness(Brightness::HighContrast);
+        assert_eq!(hc.readout_bg, egui::Color32::BLACK);
+        assert!(contrast(hc.readout_text, hc.readout_bg) >= 4.5);
     }
 }

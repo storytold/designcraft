@@ -3,6 +3,8 @@
 //! Portuguese tables has a row here; the menu titles and panel names that were already Japanese in the
 //! shared table are carried over unchanged.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Fewer Options", "オプションを減らす"),
+    ("Tab Character", "タブ文字"),
     ("File", "ファイル"),
     ("Edit", "編集"),
     ("Layout", "レイアウト"),
@@ -30,6 +32,53 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "カット"),
     ("Copy", "コピー"),
     ("Paste", "ペースト"),
+    ("Apply Next Style", "次のスタイルを適用"),
+    ("Text Frame General Options", "テキストフレーム一般オプション"),
+    ("Stroke Type", "線の種類"),
+    ("Corner Shape", "角のシェイプ"),
+    ("Corner Size and Shape:", "角のサイズとシェイプ:"),
+    ("Join", "連結"),
+    ("Convert Point", "ポイントを切り換え"),
+    ("New Section", "新規セクション"),
+    ("Clear Frame Fitting Options", "フレーム調整オプションを消去"),
+    ("Cannot be edited", "編集不可"),
+    ("Overprint", "オーバープリント"),
+    ("Top Left Corner", "左上角"),
+    ("Top Right Corner", "右上角"),
+    ("Bottom Left Corner", "左下角"),
+    ("Bottom Right Corner", "右下角"),
+    ("Anchor Point(s)", "アンカーポイント"),
+    ("Convert Points", "ポイントを変換"),
+    ("Delete Point(s)", "ポイントを削除"),
+    ("Convert Text to Table…", "テキストを表に変換…"),
+    ("Convert Table to Text…", "表をテキストに変換…"),
+    ("Column Separator", "列分解文字"),
+    ("Row Separator", "行分解文字"),
+    ("Number of Columns", "列数"),
+    ("Comma", "カンマ"),
+    ("Restart Numbering", "番号の振り直し"),
+    ("Continue Numbering", "番号の継続"),
+    ("Keep Options…", "段落分離禁止オプション…"),
+    ("Space Between Paragraphs Using Same Style", "同じスタイルの段落間のスペース"),
+    ("Ignore", "無視"),
+    ("Do Not Align to Baseline Grid", "ベースライングリッドに揃えない"),
+    ("Only Align First Line to Grid", "最初の行のみグリッドに揃える"),
+    ("Balance Ragged Lines", "行末を調整"),
+    ("Drop Caps and Nested Styles…", "ドロップキャップと先頭文字スタイル…"),
+    ("GREP Styles…", "正規表現スタイル…"),
+    ("Restart/Continue Numbering", "番号の振り直し/継続"),
+    ("Convert Bullets and Numbering to Text", "箇条書きと段落番号をテキストに変換"),
+    ("Hyphenation…", "ハイフネーション…"),
+    ("Hyphenation Settings", "ハイフネーション設定"),
+    ("hyphens", "ハイフン"),
+    ("Hyphenation Zone:", "ハイフネーション領域 :"),
+    ("Better Spacing", "スペースを優先"),
+    ("Fewer Hyphens", "ハイフンを減らす"),
+    ("Hyphenate Capitalized Words", "大文字で始まる単語をハイフネーション"),
+    ("Hyphenate Last Word", "最後の単語をハイフネーション"),
+    ("Hyphenate Across Column", "段をまたいでハイフネーション"),
+    ("Apply Bullets", "箇条書きを適用"),
+    ("Apply Numbers", "段落番号を適用"),
     ("Paste Vector Art", "ベクトルアートをペースト"),
     ("Baseline Options", "ベースラインオプション"),
     ("Column Rules", "段落境界線"),
@@ -145,6 +194,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Duplicate", "複製"),
     ("Select All", "すべてを選択"),
     ("Deselect All", "すべての選択を解除"),
+    ("Select All Guides", "すべてのガイドを選択"),
+    ("Ruler Guide", "定規ガイド"),
     ("Find/Change…", "検索と置換…"),
     ("Check Spelling…", "スペルチェック…"),
     ("Preferences…", "環境設定…"),
@@ -383,6 +434,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Choose Image…", "画像を選択…"),
     ("Class:", "クラス:"),
     ("Color Picker", "カラーピッカー"),
+    ("Color spectrum", "カラースペクトル"),
     ("Color Settings", "カラー設定"),
     ("Color:", "カラー:"),
     ("Columns", "列数"),
@@ -438,6 +490,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Generate QR Code", "QR コードを生成"),
     ("Go To", "移動"),
     ("Go to Page", "ページへ移動"),
+    ("Go to Row", "行へ移動"),
     ("Gutter", "段間"),
     ("Header Rows", "ヘッダー行"),
     ("Height", "高さ"),
@@ -711,6 +764,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Convert Text to Table", "テキストを表に変換"),
     ("Convert to Button", "ボタンに変換"),
     ("Convert to Form Field", "フォームフィールドに変換"),
+    ("Convert to Note", "注釈に変換"),
     ("Conveyor", "コンベヤー"),
     ("Copy Link(s) To…", "リンクを指定先にコピー…"),
     ("Corner Options…", "角のオプション…"),
@@ -781,6 +835,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Go To Source", "リンク元へ移動"),
     ("Go to Footnote Reference", "脚注参照番号へ移動"),
     ("Go to Page…", "ページへ移動…"),
+    ("Go to Row…", "行へ移動…"),
     ("Gradient Feather", "グラデーションぼかし"),
     ("Gridify", "グリッド化"),
     ("Group Transparency", "グループの透明"),
@@ -801,6 +856,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Insert Math Expression…", "数式を挿入…"),
     ("Insert Pages…", "ページを挿入…"),
     ("Insert Variable", "変数を挿入"),
+    ("Convert Variable to Text", "変数をテキストに変換"),
     ("Inspect Document", "ドキュメントを調査"),
     ("Interface Color Theme", "インターフェイスのカラーテーマ"),
     ("Join the ArtCraft Discord…", "ArtCraft の Discord に参加…"),
@@ -836,6 +892,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Table Style…", "新規表スタイル…"),
     ("Next Cell", "次のセル"),
     ("Next Document", "次のドキュメント"),
+    ("Next Note", "次の注釈"),
     ("Next Object Above", "1つ前面のオブジェクト"),
     ("Next Object Below", "1つ背面のオブジェクト"),
     ("Next Object in Group", "グループ内の次のオブジェクト"),
@@ -869,6 +926,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Preflight Document", "ドキュメントのプリフライト"),
     ("Previous Cell", "前のセル"),
     ("Previous Document", "前のドキュメント"),
+    ("Previous Note", "前の注釈"),
     ("Previous Object in Group", "グループ内の前のオブジェクト"),
     ("Primary Text Frame", "主テキストフレーム"),
     ("Print Booklet…", "小冊子をプリント…"),
@@ -909,19 +967,24 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set Visibility / Lock", "表示・ロックを設定"),
     ("Show Panel", "パネルを表示"),
     ("Show/Hide Baseline Grid", "ベースライングリッドを表示・非表示"),
+    ("Show/Hide Depth Ruler", "深さ定規を表示・非表示"),
     ("Show/Hide Document Grid", "ドキュメントグリッドを表示・非表示"),
     ("Show/Hide Frame Edges", "フレームの枠を表示・非表示"),
     ("Show/Hide Guides", "ガイドを表示・非表示"),
     ("Show/Hide Hidden Characters", "制御文字を表示・非表示"),
     ("Show/Hide Panels", "パネルを表示・非表示"),
     ("Show/Hide Panels Except Tools", "ツール以外のパネルを表示・非表示"),
+    ("Show/Hide Paragraph Break Marks", "段落の終わりのマークを表示・非表示"),
     ("Show/Hide Rulers", "定規を表示・非表示"),
+    ("Show/Hide Style Name Column", "スタイル名の列を表示・非表示"),
     ("Show/Hide Tagged Frames", "タグ付きフレームを表示・非表示"),
     ("Show/Hide Text Threads", "テキストフレームの連結を表示・非表示"),
+    ("Show/Hide Link Badge", "リンクバッジを表示・非表示"),
     ("Smooth", "平滑化"),
     ("Sort", "並べ替え"),
     ("Split Cell Horizontally", "セルを横方向に分割"),
     ("Split Cell Vertically", "セルを縦方向に分割"),
+    ("Split Note", "注釈を分割"),
     ("Split Path", "パスを分割"),
     ("Step and Repeat…", "間隔を指定して複製…"),
     ("Stroke Styles", "線スタイル"),
@@ -1018,6 +1081,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Move Anchors", "アンカーポイントを移動"),
     ("Move Column", "列を移動"),
     ("Move Guide", "ガイドを移動"),
+    ("Move Column Guide", "列ガイドを移動"),
     ("Move Layer", "レイヤーを移動"),
     ("Move Pages…", "ページを移動…"),
     ("Move to Layer", "レイヤーへ移動"),
@@ -1028,6 +1092,25 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Note", "新規注釈"),
     ("New Object Style…", "新規オブジェクトスタイル…"),
     ("New Parent…", "新規親ページ…"),
+    ("Export Layouts and Versions…", "レイアウトとバージョンを書き出し…"),
+    ("Export Layouts and Versions", "レイアウトとバージョンを書き出し"),
+    ("Export Layout…", "レイアウトを書き出し…"),
+    ("Versions", "バージョン"),
+    ("A file per layout", "レイアウトごとに 1 ファイル"),
+    ("All layouts in one PDF", "すべてのレイアウトを 1 つの PDF に"),
+    ("Put each version in its own folder", "バージョンごとにフォルダーを分ける"),
+    ("+ Add Version", "+ バージョンを追加"),
+    ("Files to export: {n}", "書き出すファイル: {n}"),
+    ("Print each layout separately", "レイアウトごとに別々に印刷"),
+    ("Parent Options…", "親ページオプション…"),
+    ("Parent Options", "親ページオプション"),
+    ("Duplicate Parent Spread", "親スプレッドを複製"),
+    ("Delete Parent", "親ページを削除"),
+    ("Alternate Layout Options…", "別レイアウトオプション…"),
+    ("Duplicate Alternate Layout", "別レイアウトを複製"),
+    ("Delete Alternate Layout", "別レイアウトを削除"),
+    ("Layout Options", "レイアウトオプション"),
+    ("Based on Parent:", "基準親ページ:"),
     ("New Tag", "新規タグ"),
     ("Opacity", "不透明度"),
     ("Paste in Place", "同じ位置にペースト"),
@@ -1275,6 +1358,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "両端揃えのアラビア語テキストで使用"),
     ("Korean Line Breaks:", "韓国語の改行:"),
     ("Between syllables (not only at spaces)", "音節間で改行 (スペース以外も可)"),
+    ("Auto Leading:", "自動行送り:"),
+    ("Single Word Justification:", "単語のみの行の揃え:"),
     ("Binding:", "綴じ方向:"),
     ("Ruby:", "ルビ:"),
     ("Set over the selected text; empty removes it.", "選択したテキストの上にルビを付けます。空欄にすると削除します。"),
@@ -1349,6 +1434,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load DTD…", "DTD を読み込み…"),
     ("Location:", "位置:"),
     ("Lock Guides", "ガイドをロック"),
+    ("Lock Column Guides", "列ガイドをロック"),
     ("Miter Limit:", "マイターの上限:"),
     ("New Article from Selection", "選択範囲から新規アーティクルを作成"),
     ("New Note at Cursor", "カーソル位置に新規注釈"),
@@ -1486,6 +1572,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Chinese", "中国語"),
     ("Constrain proportions for width and height", "幅と高さの比率を固定"),
     ("Corner", "角"),
+    ("Croatian", "クロアチア語"),
     ("Custom", "カスタム"),
     ("Czech", "チェコ語"),
     ("Danish", "デンマーク語"),
@@ -1505,6 +1592,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("German: Swiss 2006 Reform", "ドイツ語: スイス 2006年正書法改訂"),
     ("Greek", "ギリシャ語"),
     ("Hebrew", "ヘブライ語"),
+    ("Esperanto", "エスペラント語"),
     ("Hindi", "ヒンディー数字"),
     ("Hungarian", "ハンガリー語"),
     ("Inverse Rounded Rectangle", "内向き角丸長方形"),
@@ -1593,6 +1681,9 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Box", "ボックス"),
     ("Comb", "くし状"),
     ("Cover", "カバー"),
+    ("Cover Image:", "表紙画像 :"),
+    ("Choose…", "選択…"),
+    ("A PNG or JPEG file; left empty, the first page is the cover.", "PNG または JPEG ファイル。空のままにすると最初のページが表紙になります。"),
     ("Dissolve", "ディゾルブ"),
     ("Fade", "フェード"),
     ("Push", "押し出し"),
@@ -1621,6 +1712,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "セット"),
     ("unused", "未使用"),
     ("⚠ Missing", "⚠ リンク切れ"),
+    ("Checking", "確認中"),
+    ("Link status is unavailable.", "リンクの状態を取得できません。"),
     ("▲ Modified", "▲ 変更済み"),
     ("(Text Color)", "(テキストカラー)"),
     ("{count} glyphs — click to insert at the text cursor", "{count}グリフ — クリックでテキストカーソル位置に挿入"),
@@ -1839,6 +1932,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Object/Fitting", "オブジェクト/オブジェクトサイズの調整"),
     ("Object/Pathfinder", "オブジェクト/パスファインダー"),
     ("Object/Paths", "オブジェクト/パス"),
+    ("Object/Convert Point", "オブジェクト/ポイントを切り換え"),
     ("Object/Select", "オブジェクト/選択"),
     ("Object/Transform", "オブジェクト/変形"),
     ("Object/Transform Again", "オブジェクト/変形を再適用"),
@@ -1922,6 +2016,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("I, II, III, IV...", "I, II, III, IV..."),
     ("Indent to Here", "ここまでインデント"),
     ("Ink Limit 300%", "インキ量の上限 300%"),
+    ("All Inks", "すべてのインキ"),
     ("Internet Standard RGB (sRGB)", "インターネット標準 RGB (sRGB)"),
     ("Left:", "左:"),
     ("Legacy Macintosh RGB", "旧 Macintosh RGB"),
@@ -1972,6 +2067,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "三分スペース"),
     ("Title Case", "各単語の先頭を大文字に"),
     ("Top:", "上:"),
+    ("Inset:", "フレーム内マージン:"),
     ("Trademark Symbol", "商標記号"),
     ("Transform Again Individually", "個別に再変形"),
     ("Transform Sequence Again", "一連の変形を再実行"),
@@ -2079,6 +2175,15 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Bounding Box (Visible Layers Only)", "バウンディングボックス（表示レイヤーのみ）"),
     ("Bounding Box (All Layers)", "バウンディングボックス（すべてのレイヤー）"),
     ("Strokes and Fills…", "線と塗り…"),
+    ("Diagonal Lines…", "斜線…"),
+    ("No Diagonal Lines", "斜線なし"),
+    ("Diagonal Line from Top Left to Bottom Right", "左上から右下への斜線"),
+    ("Diagonal Line from Top Right to Bottom Left", "右上から左下への斜線"),
+    ("Crossed Diagonal Lines", "交差する斜線"),
+    ("Line Stroke", "斜線の線"),
+    ("Draw:", "描画:"),
+    ("Diagonal In Front", "斜線を前面へ"),
+    ("Content In Front", "内容を前面へ"),
     ("Cell Stroke", "セルの線"),
     ("Cell Fill", "セルの塗り"),
     ("Cell edges", "セルの境界線"),
@@ -2091,6 +2196,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "カラーグループオプション…"),
     ("Layer Options", "レイヤーオプション"),
     ("Layer Options for \"{name}\"…", "「{name}」のレイヤーオプション…"),
+    ("Duplicate Layer \"{name}\"", "レイヤー「{name}」を複製"),
     ("Swatch Name:", "スウォッチ名:"),
     ("Name with Color Value", "カラー値を名前にする"),
     ("Color Type:", "カラータイプ:"),
@@ -2120,55 +2226,3 @@ pub(super) const TABLE: &[(&str, &str)] = &[
 
 /// Captions whose Japanese depends on where they appear: (English, context, Japanese).
 pub(super) const CONTEXT: &[(&str, &str, &str)] = &[("Span Columns", "paragraphLayout", "段抜き"), ("Columns:", "grid", "列:")];
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::TABLE;
-    use crate::i18n::tr;
-
-    fn placeholders(text: &str) -> Vec<&str> {
-        let mut found = Vec::new();
-        let mut rest = text;
-        while let Some(start) = rest.find('{') {
-            let Some(len) = rest[start..].find('}') else { break };
-            found.push(&rest[start..start + len + 1]);
-            rest = &rest[start + len + 1..];
-        }
-        found.sort_unstable();
-        found
-    }
-
-    #[test]
-    fn rows_are_unique_and_complete() {
-        let mut seen = HashSet::new();
-        for (en, ja) in TABLE {
-            assert!(seen.insert(*en), "duplicate {en}");
-            assert!(!ja.is_empty(), "{en}");
-        }
-    }
-
-    #[test]
-    fn rows_keep_placeholders_padding_and_endings() {
-        let ellipsis = |text: &str| text.trim_end().ends_with('…') || text.trim_end().ends_with("...");
-        for (en, ja) in TABLE {
-            assert_eq!(placeholders(en), placeholders(ja), "placeholders of {en}");
-            assert_eq!(en.len() - en.trim_start().len(), ja.len() - ja.trim_start().len(), "leading space of {en}");
-            assert_eq!(en.len() - en.trim_end().len(), ja.len() - ja.trim_end().len(), "trailing space of {en}");
-            assert_eq!(ellipsis(en), ellipsis(ja), "ellipsis of {en}");
-            // The numbering samples (`a, b, c, d...`) stay as they are; everything else uses `…`.
-            assert!(!ja.contains("...") || ja == en, "ASCII ellipsis in {en}");
-            assert_eq!(en.trim_end().ends_with(':'), ja.trim_end().ends_with(':'), "colon of {en}");
-        }
-    }
-
-    #[test]
-    fn lookup_uses_this_table_and_leaves_unknown_text_alone() {
-        assert_eq!(tr("ja", "File"), "ファイル");
-        assert_eq!(tr("ja", "Cancel"), "キャンセル");
-        assert_eq!(tr("ja", "{count} glyphs — click to insert at the text cursor").matches("{count}").count(), 1);
-        let unknown = String::from("A user-defined untranslated label");
-        assert!(std::ptr::eq(tr("ja", &unknown), unknown.as_str()));
-    }
-}

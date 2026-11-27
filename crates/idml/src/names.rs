@@ -120,10 +120,10 @@ pub fn liquid_rule_in(s: &str) -> designcraft_doc::LiquidRule {
 }
 
 pub fn escape_id(s: &str) -> String {
-    s.replace('%', "%25").replace(':', "%3a")
+    craft_idml::value::escape_id(s)
 }
 pub fn unescape_id(s: &str) -> String {
-    s.replace("%3a", ":").replace("%3A", ":").replace("%25", "%")
+    craft_idml::value::unescape_id(s)
 }
 
 /// An `AppliedFont` value → font family. InDesign can write the family with its `$ID/` prefix
@@ -144,20 +144,18 @@ pub const TABLE_BUILTINS: &[(&str, &str)] = &[("[Basic Table]", "$ID/[Basic Tabl
 pub const OBJECT_BUILTINS: &[(&str, &str)] =
     &[("[None]", "$ID/[None]"), ("[Basic Graphics Frame]", "$ID/[Normal Graphics Frame]"), ("[Basic Text Frame]", "$ID/[Normal Text Frame]")];
 
-/// Our style name → IDML `Name` (groups: `A/B` → `A:B`).
+/// Our style name → IDML `Name` (groups: `A/B` → `A:B`; a literal `:` or `\` is escaped as `\:`
+/// or `\\`, so it is not read back as a group separator).
 pub fn style_name_out(builtins: &[(&str, &str)], name: &str) -> String {
-    builtins.iter().find(|(o, _)| *o == name).map(|(_, i)| i.to_string()).unwrap_or_else(|| name.replace('/', ":"))
+    craft_idml::value::style_name_out(builtins, name)
 }
 /// IDML `Name` → our style name.
 pub fn style_name_in(builtins: &[(&str, &str)], name: &str) -> String {
-    if let Some((o, _)) = builtins.iter().find(|(_, i)| *i == name) {
-        return o.to_string();
-    }
-    name.strip_prefix("$ID/").unwrap_or(name).replace(':', "/")
+    craft_idml::value::style_name_in(builtins, name)
 }
 /// `ParagraphStyle/…` Self id for one of our names.
 pub fn style_self(kind: &str, builtins: &[(&str, &str)], name: &str) -> String {
-    format!("{kind}/{}", escape_id(&style_name_out(builtins, name)))
+    craft_idml::value::style_self(kind, builtins, name)
 }
 
 pub fn align_out(a: Align) -> &'static str {
@@ -263,7 +261,7 @@ pub fn leading_out(l: Leading) -> (String, &'static str) {
     }
 }
 pub fn leading_in(s: &str) -> Option<Leading> {
-    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse().ok().map(Leading::Points) }
+    if s == "Auto" { Some(Leading::Auto) } else { s.trim().parse::<f64>().ok().filter(|v| v.is_finite()).map(Leading::Points) }
 }
 
 pub fn stroke_align_out(a: StrokeAlign) -> &'static str {
@@ -634,6 +632,8 @@ pub fn number_style_in(s: &str) -> NumberStyle {
     }
 }
 
+/// IDML `MeasurementUnits` of a unit. Q is `Q`; `U` is a different unit, which DesignCraft
+/// doesn't have.
 pub fn unit_out(u: Unit) -> &'static str {
     match u {
         Unit::Points => "Points",
@@ -645,27 +645,14 @@ pub fn unit_out(u: Unit) -> &'static str {
         Unit::Ciceros => "Ciceros",
         Unit::Agates => "Agates",
         Unit::Pixels => "Pixels",
-        Unit::Q => "U",
+        Unit::Q => "Q",
         Unit::Ha => "Ha",
     }
 }
-pub fn unit_in(s: &str) -> Unit {
-    [
-        Unit::Points,
-        Unit::Picas,
-        Unit::Inches,
-        Unit::InchesDecimal,
-        Unit::Millimeters,
-        Unit::Centimeters,
-        Unit::Ciceros,
-        Unit::Agates,
-        Unit::Pixels,
-        Unit::Q,
-        Unit::Ha,
-    ]
-    .into_iter()
-    .find(|u| unit_out(*u) == s)
-    .unwrap_or(Unit::Points)
+/// The unit an IDML `MeasurementUnits` value names, if DesignCraft has it (not `U`, `Bai`,
+/// `Mils`, `AmericanPoints` or `Custom`).
+pub fn unit_in(s: &str) -> Option<Unit> {
+    Unit::ALL.into_iter().find(|u| unit_out(*u) == s)
 }
 
 /// IDML layer colour enumeration names for our layer colour table.
@@ -837,28 +824,25 @@ pub fn digits_in(s: &str) -> Option<designcraft_doc::Digits> {
     [Digits::Default, Digits::Arabic, Digits::Hindi, Digits::Farsi, Digits::Native].into_iter().find(|d| digits_out(*d) == s)
 }
 
-/// A TOC separator in IDML's special-character notation: `^t` is a tab, `^^` a caret.
+/// A TOC separator in IDML's special-character notation.
 pub fn toc_separator_out(s: &str) -> String {
-    s.replace('^', "^^").replace('\t', "^t")
+    designcraft_doc::story::toc_separator_notation(s)
 }
-/// IDML TOC separator → text (`^t` and `^y`, the right indent tab, are tabs; other codes stay).
+/// IDML may prefix a separator with its localized-string marker.
 pub fn toc_separator_in(s: &str) -> String {
-    let mut out = String::new();
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c != '^' {
-            out.push(c);
-            continue;
-        }
-        match it.next() {
-            Some('t' | 'y') => out.push('\t'),
-            Some('^') => out.push('^'),
-            Some(o) => {
-                out.push('^');
-                out.push(o);
-            }
-            None => out.push('^'),
-        }
+    designcraft_doc::story::toc_separator_text(s.strip_prefix("$ID/").unwrap_or(s))
+}
+
+#[cfg(test)]
+mod toc_separator_tests {
+    use super::*;
+
+    #[test]
+    fn localized_right_indent_tab_is_not_an_ordinary_tab() {
+        assert_eq!(toc_separator_in("$ID/^y"), "\u{E006}");
+        assert_eq!(toc_separator_in("$ID/ ^y "), " \u{E006} ");
+        assert_eq!(toc_separator_in("^t"), "\t");
+        assert_eq!(toc_separator_out("\u{E006}"), "^y");
+        assert_eq!(toc_separator_in("^^y ^q ^"), "^y ^q ^");
     }
-    out
 }

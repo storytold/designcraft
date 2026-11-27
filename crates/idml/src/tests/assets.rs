@@ -70,6 +70,129 @@ fn package(frames: &[String]) -> Vec<u8> {
     ])
 }
 
+#[test]
+fn nested_graphic_layers_preserve_hierarchy_on_roundtrip() {
+    let option = r#"<GraphicLayerOption UpdateLinkOption="KeepOverrides">
+      <GraphicLayer Self="a" Id="1" Name="Group"><GraphicLayer Self="b" Id="2" Name="Nested" OriginalVisibility="true" CurrentVisibility="false"/></GraphicLayer>
+      <GraphicLayer Self="c" Id="3" Name="Sibling"/>
+    </GraphicLayerOption>"#;
+    let image = image(1, PHOTO, None).replace("</Image>", &format!("{option}</Image>"));
+    let d = import_idml(&package(&[frame(1, 0.0, 0.0, &image)])).unwrap();
+    let options = |d: &Document| d.spreads[0].items[0].graphic().unwrap().layer_options.clone().unwrap();
+    let expected = options(&d);
+    assert_eq!(expected.layers.len(), 3);
+    assert_eq!(expected.parents, [None, Some(0), None]);
+    assert!(expected.has_visibility_overrides());
+    let reopened = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(options(&reopened), expected);
+}
+
+#[test]
+fn graphic_layer_options_survive_for_each_placement_of_a_shared_asset() {
+    let option = |n: usize, visible: &str| {
+        format!(
+            r#"<GraphicLayerOption UpdateLinkOption="KeepOverrides"><GraphicLayer Self="gl{n}" Id="7" Name="Synthetic layer" OriginalVisibility="true" CurrentVisibility="{visible}" Locked="true" HasPrintState="true" PrintState="false"/></GraphicLayerOption>"#
+        )
+    };
+    let frames = ["false", "true"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, visible)| {
+            let n = i + 1;
+            frame(n, i as f64 * 100.0, 0.0, &image(n, PHOTO, None).replace("</Image>", &format!("{}</Image>", option(n, visible))))
+        })
+        .collect::<Vec<_>>();
+    let reads = Cell::new(0);
+    let loaded = import_idml_report_with_previews(
+        &package(&frames),
+        &|_| {
+            reads.set(reads.get() + 1);
+            Some(vec![42; 16])
+        },
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(reads.get(), 1);
+    assert_eq!(loaded.document.assets.len(), 1, "layer choices belong to placements, not shared image bytes");
+    let out = export_idml(&loaded.document);
+    let spreads = zip_text(&out, "Spreads/");
+    assert_eq!(spreads.matches("<GraphicLayer ").count(), 2, "both placements must retain their independent layer choices");
+    assert!(spreads.contains("CurrentVisibility=\"false\""));
+    assert!(spreads.contains("CurrentVisibility=\"true\""));
+    assert_eq!(spreads.matches("UpdateLinkOption=\"KeepOverrides\"").count(), 2);
+    assert_eq!(spreads.matches("PrintState=\"false\"").count(), 2);
+    assert!(loaded.warnings.iter().any(|w| w.contains("layer visibility")));
+    let reopened = import_idml(&out).unwrap();
+    let options = |d: &Document| {
+        d.spreads[0]
+            .items
+            .iter()
+            .filter_map(|i| match &i.content {
+                Content::Graphic(g) => g.layer_options.clone(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(options(&loaded.document), options(&reopened));
+    let twice = zip_text(&export_idml(&reopened), "Spreads/");
+    assert_eq!(twice.matches("<GraphicLayer ").count(), 2);
+}
+
+#[test]
+fn malformed_native_graphic_layer_parents_cannot_cycle_or_overflow_xml_depth() {
+    let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
+    let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {
+        panic!("graphic")
+    };
+    let mut options = designcraft_doc::GraphicLayerOptions::default();
+    for i in 0..300usize {
+        options.layers.push(std::collections::BTreeMap::from([("Name".into(), format!("Layer {i}"))]));
+        options.parents.push(Some(i.saturating_sub(1)));
+    }
+    options.parents[1] = Some(usize::MAX);
+    g.layer_options = Some(options);
+    let reopened = import_idml(&export_idml(&d)).unwrap();
+    assert_eq!(reopened.spreads[0].items[0].graphic().unwrap().layer_options.as_ref().unwrap().layers.len(), 300);
+}
+
+#[test]
+fn closed_graphic_layer_subtrees_cannot_reorder_native_layers() {
+    let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
+    let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {
+        panic!("graphic")
+    };
+    g.layer_options = Some(designcraft_doc::GraphicLayerOptions {
+        layers: ["A", "B", "C", "D"].into_iter().map(|name| std::collections::BTreeMap::from([("Name".into(), name.into())])).collect(),
+        parents: vec![None, None, Some(0), Some(2)],
+        ..Default::default()
+    });
+    let reopened = import_idml(&export_idml(&d)).unwrap();
+    let options = reopened.spreads[0].items[0].graphic().unwrap().layer_options.as_ref().unwrap();
+    assert_eq!(options.layers.iter().map(|a| a["Name"].as_str()).collect::<Vec<_>>(), ["A", "B", "C", "D"]);
+    assert_eq!(options.parents, [None, None, None, Some(2)]);
+}
+
+#[test]
+fn graphic_layer_attributes_from_native_data_cannot_inject_xml_or_self_ids() {
+    let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
+    let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {
+        panic!("graphic")
+    };
+    let attributes = std::collections::BTreeMap::from([
+        ("Name".into(), "A < B & C".into()),
+        ("Self".into(), "injected-id".into()),
+        ("xmlns".into(), "urn:injected".into()),
+        ("bad\" injected=\"true".into(), "invalid".into()),
+    ]);
+    g.layer_options = Some(designcraft_doc::GraphicLayerOptions { attributes: attributes.clone(), layers: vec![attributes], ..Default::default() });
+    let out = export_idml(&d);
+    let xml = zip_text(&out, "Spreads/");
+    assert!(!xml.contains("injected-id") && !xml.contains("injected=") && !xml.contains("urn:injected"));
+    let back = import_idml(&out).unwrap();
+    let Content::Graphic(g) = &back.spreads[0].items[0].content else { panic!("graphic") };
+    assert_eq!(g.layer_options.as_ref().unwrap().layers[0]["Name"], "A < B & C");
+}
+
 /// (asset, crop, transform) of each graphic, left to right.
 fn placements(d: &Document) -> Vec<(AssetId, [f64; 4], designcraft_geom::Affine)> {
     let mut out: Vec<(f64, AssetId, [f64; 4], designcraft_geom::Affine)> = d.spreads[0]
@@ -146,14 +269,22 @@ fn placed_svg_with_only_a_viewbox_keeps_its_viewbox_size() {
     let reader = |p: &str| match p {
         "/art/overhang.svg" => Some(OVERHANG.as_bytes().to_vec()),
         "/art/sized.svg" => Some(SIZED.as_bytes().to_vec()),
+        "/art/bom.svg" => Some(format!("\u{feff}{OVERHANG}").into_bytes()),
+        "/art/junk.svg" => Some(OVERHANG.replace("0 0 200 100", "0 0 junk 200 100").into_bytes()),
+        "/art/nested.svg" => Some(format!("<html>{OVERHANG}</html>").into_bytes()),
         _ => None,
     };
     // GraphicBounds are the art's bounds: 211 wide for the overhanging one, placed twice (the second
-    // reuses the first's asset); a sized SVG is still stretched onto its bounds.
+    // reuses the first's asset); a sized SVG is still stretched onto its bounds. A file that starts
+    // with a UTF-8 byte order mark keeps its viewBox size too. A viewBox with a value that is not a
+    // number gives no size, so its bounds size it, as they do when the root is not an `svg` element.
     let frames = vec![
         frame(1, 0.0, 0.0, &svg(1, "file:/art/overhang.svg", [-11.0, 0.0, 200.0, 100.0])),
         frame(2, 100.0, 0.0, &svg(2, "file:/art/overhang.svg", [-11.0, 0.0, 200.0, 100.0])),
         frame(3, 200.0, 0.0, &svg(3, "file:/art/sized.svg", [-10.0, 0.0, 200.0, 100.0])),
+        frame(4, 300.0, 0.0, &svg(4, "file:/art/bom.svg", [-11.0, 0.0, 200.0, 100.0])),
+        frame(5, 400.0, 0.0, &svg(5, "file:/art/junk.svg", [-10.0, 0.0, 200.0, 100.0])),
+        frame(6, 500.0, 0.0, &svg(6, "file:/art/nested.svg", [-10.0, 0.0, 200.0, 100.0])),
     ];
     let d = import_idml_with(&package(&frames), &reader).unwrap();
     let mut gs: Vec<_> = d.spreads[0]
@@ -166,7 +297,17 @@ fn placed_svg_with_only_a_viewbox_keeps_its_viewbox_size() {
         .collect();
     gs.sort_by(|a, b| a.0.total_cmp(&b.0));
     let got: Vec<_> = gs.into_iter().map(|(_, size, x)| (size, x)).collect();
-    assert_eq!(got, vec![((200.0, 100.0), -11.0), ((200.0, 100.0), -11.0), ((210.0, 100.0), -10.0)]);
+    assert_eq!(
+        got,
+        vec![
+            ((200.0, 100.0), -11.0),
+            ((200.0, 100.0), -11.0),
+            ((210.0, 100.0), -10.0),
+            ((200.0, 100.0), -11.0),
+            ((210.0, 100.0), -10.0),
+            ((210.0, 100.0), -10.0)
+        ]
+    );
 }
 
 /// `PDFAttribute/@PageNumber` (1-based) is read into `Asset.page` (0-based), and the same file at
@@ -269,4 +410,43 @@ fn the_swatch_applied_to_an_image_is_kept() {
     assert!(images.iter().any(|e| e.contains(r#"FillColor="Color/Brand""#) && e.contains(r#"FillTint="50""#)), "{images:?}");
     assert!(!images.iter().any(|e| e.contains("Swatch/None")), "{images:?}");
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);
+}
+
+/// Past the embedded-image limit an export still succeeds: the images that no longer fit are
+/// written as links, and each is named in a warning.
+#[test]
+fn export_past_the_embed_limit_warns_for_each_image_written_as_a_link() {
+    let bytes = vec![42u8; 300];
+    let reader = |p: &str| p.ends_with("couple.jpg").then(|| bytes.clone());
+    let frames = vec![
+        frame(1, 0.0, 1.0, &image(1, PHOTO, None)),
+        frame(2, 100.0, 2.0, &image(2, PHOTO, None)),
+        frame(3, 200.0, 3.0, &image(3, PHOTO, None)),
+        frame(4, 300.0, 4.0, &image(4, "file:/elsewhere/copy.jpg", Some(&bytes))),
+    ];
+    let d = import_idml_with(&package(&frames), &reader).unwrap();
+    let opts = ExportOptions { embed_images: true };
+    // Four placements of 300 bytes each; the limit holds two.
+    let (out, warnings) = crate::export::export_with_limit(&d, &opts, 700);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings.iter().all(|w| w.contains("written as a link")), "{warnings:?}");
+    assert_eq!(import_idml_with(&out, &reader).unwrap().assets.len(), 2);
+    assert!(crate::export::export_with_limit(&d, &opts, 1200).1.is_empty());
+}
+
+/// An image with no link of its own is embedded even past the limit: it has no other home, and
+/// dropping its data would lose it.
+#[test]
+fn an_unlinked_image_is_embedded_past_the_embed_limit() {
+    let bytes = vec![42u8; 300];
+    let reader = |p: &str| p.ends_with("couple.jpg").then(|| bytes.clone());
+    let frames = vec![frame(1, 0.0, 1.0, &image(1, PHOTO, None)), frame(2, 100.0, 2.0, &image(2, PHOTO, None))];
+    let mut d = import_idml_with(&package(&frames), &reader).unwrap();
+    for a in d.assets.values_mut() {
+        std::sync::Arc::make_mut(a).link = None;
+    }
+    let (out, warnings) = crate::export::export_with_limit(&d, &ExportOptions { embed_images: true }, 100);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let back = import_idml_with(&out, &|_: &str| None).unwrap();
+    assert!(!back.assets.is_empty() && back.assets.values().all(|a| a.data.load().unwrap().as_slice() == bytes.as_slice()));
 }

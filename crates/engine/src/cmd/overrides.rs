@@ -85,7 +85,9 @@ fn override_items(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit(|d, sel| {
         let all = parent_items(d, page).ok_or_else(|| bad("layout.overrideParentItems", "the page has no parent"))?;
         let (si, pi) = d.page_loc(page).ok_or_else(|| bad("layout.overrideParentItems", "no such page"))?;
-        let already = d.spreads[si].pages[pi].overridden.clone();
+        // What the page already leaves out: its own overrides and those of the parent pages
+        // behind it. An item a parent removed doesn't show here, so there is nothing to override.
+        let already = d.overridden_parent_items(SpreadRef::Doc(si), pi);
         let picked: Vec<(ItemId, Vec2)> =
             all.into_iter().filter(|(i, _)| wanted.as_ref().is_none_or(|w| w.contains(i)) && !already.contains(i)).collect();
         if picked.is_empty() {
@@ -186,6 +188,26 @@ mod tests {
         let (si, pi) = d.page_loc(2).unwrap();
         assert!(d.spreads[si].pages[pi].overridden.is_empty());
         d.check().unwrap();
+    }
+
+    /// An item that parent B overrode and deleted doesn't show on the pages using B, so overriding
+    /// all of them doesn't bring back a copy of it (#1469).
+    #[test]
+    fn an_item_a_parent_removed_is_not_overridden_again() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        s.execute("layout.parents.new", &json!({"prefix": "B"})).unwrap();
+        let r = s
+            .execute("frame.create", &json!({"spread": {"kind": "parent", "index": 0}, "rect": [72.0, 72.0, 200.0, 200.0], "content": "unassigned"}))
+            .unwrap();
+        let a_item = ItemId(r["id"].as_u64().unwrap());
+        s.execute("layout.parents.options", &json!({"parent": "B", "basedOn": "A"})).unwrap();
+        s.execute("layout.pages.applyParent", &json!({"pages": [1], "parent": "B"})).unwrap();
+        // B overrides A's item and the override is deleted: B's page keeps it in its list.
+        let st = s.doc_mut().unwrap();
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut st.doc).parents[1]).pages[0].overridden.push(a_item);
+        let r = s.execute("layout.overrideParentItems", &json!({"page": 1})).unwrap();
+        assert_eq!(r["ids"], json!([]), "nothing on the page to override");
     }
 
     /// On a page whose parent B is based on A, A's items can be overridden too.

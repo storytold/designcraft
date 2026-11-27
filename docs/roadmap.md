@@ -1,6 +1,6 @@
 # DesignCraft roadmap (detail)
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (.indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-15 · **Change:** minor (existing pull-request CI gate; independent parent page resizing, #1620; .indd and .indt open through indd-utils; text threads by hand; the gate waits on the Primary Text Frame page fixes) · **Target:** Adobe InDesign 2026 (21.6)
 
 Forward-looking plan. The one-page summary is [ROADMAP.md](../ROADMAP.md); numbers are in
 [target-app-parity.md](target-app-parity.md); the work list is [gaps.md](gaps.md). Hours are
@@ -17,7 +17,7 @@ but are next in line.
 
 | Core workflow | Works end to end? | Evidence | Hours to pass |
 |---|---|---|---|
-| Set up a document (size, margins, columns, parent pages, page numbers, sections); save and reopen | yes | New Document, Document Setup, parent pages and overrides, Numbering & Section Options; `.designcraft` round-trip tests; recovery | 0 |
+| Set up a document (size, margins, columns, parent pages, page numbers, sections); save and reopen | yes | New Document, Document Setup, independently sized parent pages (Properties and Page Tool, #1620), parent overrides, Numbering & Section Options; `.designcraft` round-trip tests; recovery | 0 |
 | Flow a long story across frames and pages: thread, unthread, autoflow | **no** | threading by hand works (ports, loaded text cursor, `text.thread`/`text.unthread`/`text.removeFromThread`); Primary Text Frame autoflow adds pages users can't delete (#165) | 5–7 |
 | Format text with paragraph and character styles | partial (not blocking) | Paragraph/Character Style Options, Quick Apply, based-on, nested/GREP styles work; style edit/delete from the panel reported (#169); formatting set at a caret is discarded (#289) | 6–12 |
 | Place, crop and fit images; wrap text around them | yes | place gun, frame fitting and Fitting Options, content grabber, text wrap, Links panel | 0 |
@@ -39,16 +39,14 @@ In order. Each closes a beta blocker from [gaps.md](gaps.md).
    delete (#165). 5–7 h.
 1. **Basic editing works on every platform** (gap 1): object copy/paste, Paste in Place, context menus, caret formatting, reproduced and pinned with control-channel tests on
    macOS, Windows and Linux. 30–50 h.
-2. **CI on pull requests** (gap 7): `cargo xtask ci` on every PR, at least macOS and Linux;
-   Windows smoke start. 4–8 h. Needs the owner to make it a required check.
-3. **INDD real-file corpus** (gap 2): `.indd` and `.indt` open through storytold/indd-utils
+2. **INDD real-file corpus** (gap 2): `.indd` and `.indt` open through storytold/indd-utils
    (INDD → IDML in memory → existing importer, warnings in the open result); a pinned corpus and
    a metric show what survives. 10–30 h.
-4. **IDML real-file corpus** (gap 3): a pinned corpus, a survival metric, and fixes for #193,
+3. **IDML real-file corpus** (gap 3): a pinned corpus, a survival metric, and fixes for #193,
    #338, #339, #340. 60–100 h.
-5. **Composition oracle** (gap 4): synthetic stories set in InDesign 2026 vs DesignCraft;
+4. **Composition oracle** (gap 4): synthetic stories set in InDesign 2026 vs DesignCraft;
    optical kerning; the overset rule. 80–140 h.
-6. **Start on any GPU; find every installed font** (gaps 5, 6). 25–50 h.
+5. **Start on any GPU; find every installed font** (gaps 5, 6). 25–50 h.
 
 ## Milestones
 
@@ -63,9 +61,9 @@ set exists; depth gaps are in gaps.md.
 | M3 | Styles (nested/GREP, bullets, keeps, span columns) | ✅; style editing reliability (#169) |
 | M4 | Color & effects | ✅ core; colour management depth |
 | M5 | Graphics & links | ✅ core; EPS preview only |
-| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD read ✅ (via indd-utils); PDF/X-1a/X-3 and presets ✗ |
+| M6 | Files & export (native, IDML, PDF, PNG/JPEG) | IDML ✅, PDF ✅ (X-4, A-2b, tagged); INDD read ✅ (via indd-utils); PDF/X-1a ✅; PDF/X-3 and presets ✗ |
 | M7 | Long documents (sections, TOC, index, footnotes, books) | ✅ except Books (shallow) |
-| M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines, anchored objects in cells (#163) |
+| M8 | Tables | ✅ core (table/cell styles, rotation); diagonal lines in IDML, anchored objects in cells (#163) |
 | M9 | Performance (MT composition, tiles) | in progress: parallel compose 6.7×, damage regions; incremental composition next |
 | M10 | Find/Change, spelling, Preflight | ✅ (spelling English only) |
 | M11 | Layout power features (liquid/alternate layouts, data merge) | present, shallow; Flex Layout (new in InDesign 2026) ✗ |
@@ -87,12 +85,16 @@ that is ~28 points and **420–750 h** (~120–200 wall-clock hours with four to
 | IDML real-file corpus and fixes | 3 | 60–100 |
 | Composition oracle and fixes | 4, 13 | 80–140 |
 | Start-up robustness, fonts | 5, 6 | 25–50 |
-| CI, Windows/Linux runtime tests | 7, 14 | 35–70 |
+| Windows/Linux runtime tests (historical estimate also included the existing PR gate) | 14 | 35–70 |
 | IME | 8 | 10–20 |
 | PDF/X-1a/X-3, presets, physical print validation | 9, 10 | 65–110 |
 | Styles, tables, missing menu items (the most-used half) | 11, 12, 16 | 60–100 |
 | Long documents (Books) | 15 | 30–50 |
 | **Total** | | **420–750** |
+
+The 35–70 h row retains the historical combined estimate for pull-request CI (former gap 7)
+and runtime validation (gap 14); the [PR quality gate](../.github/workflows/ci.yml) already exists.
+This correction does not recalibrate hours or readiness.
 
 ## After beta: to full parity
 
@@ -111,9 +113,10 @@ output intent · EPS place") is done except Books depth and EPS (preview only).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-15 | minor | Remove existing PR CI from Current focus; retain the historical combined CI/runtime estimate without recalibration |
 | 2026-10-13 | minor | INDD and INDT open through storytold/indd-utils; focus item 3 shrinks to a real-file corpus (10–30 h) |
 | 2026-10-12 | minor | Threading row: threading by hand works; the gate waits on the Primary Text Frame page fixes (#165), 5–7 h |
-| 2026-10-10 | trivial | Ready figure 42% → 47% (method aligned with the standard); beta distance 28 points |
+| 2026-10-10 | trivial | Ready figure 42% → 47%; beta distance 28 points |
 | 2026-10-10 | minor | Alpha gate table added (6 core workflows); gate fails on manual threading, stage pre-alpha; A1 milestone and focus item 0 |
 | 2026-10-10 | major | Created: milestones moved from ROADMAP.md and re-assessed; Current focus and the beta plan from the full re-measure |
 

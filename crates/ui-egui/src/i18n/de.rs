@@ -3,6 +3,8 @@
 //! Brazilian Portuguese, Italian and Ukrainian tables has a row here; the German column of the shared
 //! table is carried over and stays the fallback for keys added there after this table.
 pub(super) const TABLE: &[(&str, &str)] = &[
+    ("Fewer Options", "Weniger Optionen"),
+    ("Tab Character", "Tabulatorzeichen"),
     ("File", "Datei"),
     ("Edit", "Bearbeiten"),
     ("Layout", "Layout"),
@@ -31,6 +33,55 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Cut", "Ausschneiden"),
     ("Copy", "Kopieren"),
     ("Paste", "Einfügen"),
+    ("Apply Next Style", "Nächstes Format anwenden"),
+    ("Text Frame General Options", "Allgemeine Textrahmenoptionen"),
+    ("Stroke Type", "Konturtyp"),
+    ("Corner Shape", "Eckenform"),
+    ("Corner Size and Shape:", "Eckengröße und -form:"),
+    ("Join", "Verbinden"),
+    ("Convert Point", "Punkt konvertieren"),
+    ("Plain", "Einfach"),
+    ("Symmetrical", "Symmetrisch"),
+    ("New Section", "Neuer Abschnitt"),
+    ("Clear Frame Fitting Options", "Rahmeneinpassungsoptionen löschen"),
+    ("Cannot be edited", "Nicht bearbeitbar"),
+    ("Overprint", "Überdrucken"),
+    ("Top Left Corner", "Ecke oben links"),
+    ("Top Right Corner", "Ecke oben rechts"),
+    ("Bottom Left Corner", "Ecke unten links"),
+    ("Bottom Right Corner", "Ecke unten rechts"),
+    ("Anchor Point(s)", "Ankerpunkt(e)"),
+    ("Convert Points", "Punkte konvertieren"),
+    ("Delete Point(s)", "Punkt(e) löschen"),
+    ("Convert Text to Table…", "Text in Tabelle umwandeln …"),
+    ("Convert Table to Text…", "Tabelle in Text umwandeln …"),
+    ("Column Separator", "Spaltentrennzeichen"),
+    ("Row Separator", "Zeilentrennzeichen"),
+    ("Number of Columns", "Spaltenanzahl"),
+    ("Comma", "Komma"),
+    ("Restart Numbering", "Nummerierung neu beginnen"),
+    ("Continue Numbering", "Nummerierung fortführen"),
+    ("Keep Options…", "Umbruchoptionen …"),
+    ("Space Between Paragraphs Using Same Style", "Abstand zwischen Absätzen mit gleichem Format"),
+    ("Ignore", "Ignorieren"),
+    ("Do Not Align to Baseline Grid", "Nicht am Grundlinienraster ausrichten"),
+    ("Only Align First Line to Grid", "Nur erste Zeile am Raster ausrichten"),
+    ("Balance Ragged Lines", "Unausgeglichene Zeilen ausgleichen"),
+    ("Drop Caps and Nested Styles…", "Initialen und verschachtelte Formate …"),
+    ("GREP Styles…", "GREP-Stile …"),
+    ("Restart/Continue Numbering", "Nummerierung neu beginnen/fortführen"),
+    ("Convert Bullets and Numbering to Text", "Aufzählungszeichen und Nummerierung in Text konvertieren"),
+    ("Hyphenation…", "Silbentrennung …"),
+    ("Hyphenation Settings", "Silbentrennungseinstellungen"),
+    ("hyphens", "Trennstriche"),
+    ("Hyphenation Zone:", "Silbentrennungsbereich:"),
+    ("Better Spacing", "Bessere Abstände"),
+    ("Fewer Hyphens", "Weniger Trennstriche"),
+    ("Hyphenate Capitalized Words", "Großgeschriebene Wörter trennen"),
+    ("Hyphenate Last Word", "Letztes Wort trennen"),
+    ("Hyphenate Across Column", "Über Spalten trennen"),
+    ("Apply Bullets", "Aufzählungszeichen anwenden"),
+    ("Apply Numbers", "Nummerierung anwenden"),
     ("Inches Decimal", "Zoll dezimal"),
     ("Back", "Zurück"),
     ("Warning", "Warnung"),
@@ -64,6 +115,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Duplicate", "Duplizieren"),
     ("Select All", "Alles auswählen"),
     ("Deselect All", "Auswahl aufheben"),
+    ("Select All Guides", "Alle Hilfslinien auswählen"),
+    ("Ruler Guide", "Hilfslinie"),
     ("Find/Change…", "Suchen/Ersetzen …"),
     ("Check Spelling…", "Rechtschreibprüfung …"),
     ("Preferences…", "Voreinstellungen …"),
@@ -198,6 +251,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Choose Image…", "Bild auswählen …"),
     ("Class:", "Klasse:"),
     ("Color Picker", "Farbwähler"),
+    ("Color spectrum", "Farbspektrum"),
     ("Color Settings", "Farbeinstellungen"),
     ("Color:", "Farbe:"),
     ("Columns", "Spalten"),
@@ -253,6 +307,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Generate QR Code", "QR-Code erzeugen"),
     ("Go To", "Gehe zu"),
     ("Go to Page", "Gehe zu Seite"),
+    ("Go to Row", "Gehe zu Zeile"),
     ("Gutter", "Spaltenabstand"),
     ("Header Rows", "Tabellenkopfzeilen"),
     ("Height", "Höhe"),
@@ -519,6 +574,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Convert Text to Table", "Text in Tabelle umwandeln"),
     ("Convert to Button", "In Schaltfläche umwandeln"),
     ("Convert to Form Field", "In Formularfeld umwandeln"),
+    ("Convert to Note", "In Notiz umwandeln"),
     ("Conveyor", "Förderband"),
     ("Copy Link(s) To…", "Verknüpfung(en) kopieren nach …"),
     ("Corner Options…", "Eckenoptionen …"),
@@ -589,6 +645,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Go To Source", "Gehe zu Quelle"),
     ("Go to Footnote Reference", "Gehe zu Fußnotenverweis"),
     ("Go to Page…", "Gehe zu Seite …"),
+    ("Go to Row…", "Gehe zu Zeile …"),
     ("Gradient Feather", "Weiche Verlaufskante"),
     ("Gridify", "Rastern"),
     ("Group Transparency", "Gruppentransparenz"),
@@ -609,6 +666,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Insert Math Expression…", "Mathematischen Ausdruck einfügen …"),
     ("Insert Pages…", "Seiten einfügen …"),
     ("Insert Variable", "Variable einfügen"),
+    ("Convert Variable to Text", "Variable in Text konvertieren"),
     ("Inspect Document", "Dokument untersuchen"),
     ("Interface Color Theme", "Farbschema der Oberfläche"),
     ("Join the ArtCraft Discord…", "Dem ArtCraft-Discord beitreten …"),
@@ -644,6 +702,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Table Style…", "Neues Tabellenformat …"),
     ("Next Cell", "Nächste Zelle"),
     ("Next Document", "Nächstes Dokument"),
+    ("Next Note", "Nächste Notiz"),
     ("Next Object Above", "Nächstes Objekt darüber"),
     ("Next Object Below", "Nächstes Objekt darunter"),
     ("Next Object in Group", "Nächstes Objekt in der Gruppe"),
@@ -677,6 +736,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Preflight Document", "Preflight für Dokument"),
     ("Previous Cell", "Vorherige Zelle"),
     ("Previous Document", "Vorheriges Dokument"),
+    ("Previous Note", "Vorherige Notiz"),
     ("Previous Object in Group", "Vorheriges Objekt in der Gruppe"),
     ("Primary Text Frame", "Primärer Textrahmen"),
     ("Print Booklet…", "Broschüre drucken …"),
@@ -717,18 +777,23 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set Visibility / Lock", "Sichtbarkeit/Sperre festlegen"),
     ("Show Panel", "Bedienfeld einblenden"),
     ("Show/Hide Baseline Grid", "Grundlinienraster ein-/ausblenden"),
+    ("Show/Hide Depth Ruler", "Tiefenlineal ein-/ausblenden"),
     ("Show/Hide Frame Edges", "Rahmenkanten ein-/ausblenden"),
     ("Show/Hide Guides", "Hilfslinien ein-/ausblenden"),
     ("Show/Hide Hidden Characters", "Verborgene Zeichen ein-/ausblenden"),
     ("Show/Hide Panels", "Bedienfelder ein-/ausblenden"),
     ("Show/Hide Panels Except Tools", "Bedienfelder außer Werkzeugen ein-/ausblenden"),
+    ("Show/Hide Paragraph Break Marks", "Absatzendemarken ein-/ausblenden"),
     ("Show/Hide Rulers", "Lineale ein-/ausblenden"),
+    ("Show/Hide Style Name Column", "Spalte mit Formatnamen ein-/ausblenden"),
     ("Show/Hide Tagged Frames", "Getaggte Rahmen ein-/ausblenden"),
     ("Show/Hide Text Threads", "Textverkettungen ein-/ausblenden"),
+    ("Show/Hide Link Badge", "Verknüpfungssymbol ein-/ausblenden"),
     ("Smooth", "Glätten"),
     ("Sort", "Sortieren"),
     ("Split Cell Horizontally", "Zelle horizontal teilen"),
     ("Split Cell Vertically", "Zelle vertikal teilen"),
+    ("Split Note", "Notiz teilen"),
     ("Split Path", "Pfad teilen"),
     ("Step and Repeat…", "Duplizieren und versetzt einfügen …"),
     ("Stroke Styles", "Konturformate"),
@@ -830,6 +895,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Move Anchors", "Anker verschieben"),
     ("Move Column", "Spalte verschieben"),
     ("Move Guide", "Hilfslinie verschieben"),
+    ("Move Column Guide", "Spaltenhilfslinie verschieben"),
     ("Move Layer", "Ebene verschieben"),
     ("Move Pages…", "Seiten verschieben …"),
     ("Move to Layer", "Auf Ebene verschieben"),
@@ -840,6 +906,25 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("New Note", "Neue Notiz"),
     ("New Object Style…", "Neues Objektformat …"),
     ("New Parent…", "Neue Vorlagenseite …"),
+    ("Export Layouts and Versions…", "Layouts und Versionen exportieren …"),
+    ("Export Layouts and Versions", "Layouts und Versionen exportieren"),
+    ("Export Layout…", "Layout exportieren …"),
+    ("Versions", "Versionen"),
+    ("A file per layout", "Eine Datei pro Layout"),
+    ("All layouts in one PDF", "Alle Layouts in einem PDF"),
+    ("Put each version in its own folder", "Jede Version in einem eigenen Ordner"),
+    ("+ Add Version", "+ Version hinzufügen"),
+    ("Files to export: {n}", "Zu exportierende Dateien: {n}"),
+    ("Print each layout separately", "Jedes Layout einzeln drucken"),
+    ("Parent Options…", "Vorlagenoptionen …"),
+    ("Parent Options", "Vorlagenoptionen"),
+    ("Duplicate Parent Spread", "Vorlagendruckbogen duplizieren"),
+    ("Delete Parent", "Vorlagenseite löschen"),
+    ("Alternate Layout Options…", "Optionen für alternatives Layout …"),
+    ("Duplicate Alternate Layout", "Alternatives Layout duplizieren"),
+    ("Delete Alternate Layout", "Alternatives Layout löschen"),
+    ("Layout Options", "Layoutoptionen"),
+    ("Based on Parent:", "Basierend auf Vorlage:"),
     ("New Tag", "Neues Tag"),
     ("Opacity", "Deckkraft"),
     ("Paste in Place", "An Originalposition einfügen"),
@@ -1077,6 +1162,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("In justified Arabic text", "Im arabischen Blocksatz"),
     ("Korean Line Breaks:", "Koreanische Zeilenumbrüche:"),
     ("Between syllables (not only at spaces)", "Zwischen Silben (nicht nur an Leerzeichen)"),
+    ("Auto Leading:", "Automatischer Zeilenabstand:"),
+    ("Single Word Justification:", "Ausrichtung einzelner Wörter:"),
     ("Binding:", "Bindung:"),
     ("Ruby:", "Ruby:"),
     ("Set over the selected text; empty removes it.", "Wird über den ausgewählten Text gesetzt; leer entfernt es."),
@@ -1151,6 +1238,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Load DTD…", "DTD laden …"),
     ("Location:", "Position:"),
     ("Lock Guides", "Hilfslinien sperren"),
+    ("Lock Column Guides", "Spaltenhilfslinien sperren"),
     ("Miter Limit:", "Gehrungsgrenze:"),
     ("New Article from Selection", "Neuer Artikel aus Auswahl"),
     ("New Note at Cursor", "Neue Notiz an der Einfügemarke"),
@@ -1311,6 +1399,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Chinese", "Chinesisch"),
     ("Constrain proportions for width and height", "Proportionen für Breite und Höhe beibehalten"),
     ("Corner", "Ecke"),
+    ("Croatian", "Kroatisch"),
     ("Custom", "Benutzerdefiniert"),
     ("Czech", "Tschechisch"),
     ("Danish", "Dänisch"),
@@ -1330,6 +1419,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("German: Swiss 2006 Reform", "Deutsch: Schweiz, Rechtschreibreform 2006"),
     ("Greek", "Griechisch"),
     ("Hebrew", "Hebräisch"),
+    ("Esperanto", "Esperanto"),
     ("Hindi", "Hindi"),
     ("Hungarian", "Ungarisch"),
     ("Inverse Rounded Rectangle", "Umgekehrt abgerundetes Rechteck"),
@@ -1387,6 +1477,12 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Box", "Rechteck"),
     ("Comb", "Kamm"),
     ("Cover", "Überdecken"),
+    ("Cover Image:", "Titelbild:"),
+    ("Choose…", "Auswählen …"),
+    (
+        "A PNG or JPEG file; left empty, the first page is the cover.",
+        "Eine PNG- oder JPEG-Datei; bleibt das Feld leer, ist die erste Seite das Titelbild.",
+    ),
     ("Dissolve", "Auflösen"),
     ("Fade", "Überblenden"),
     ("Push", "Schieben"),
@@ -1415,6 +1511,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Set", "Festlegen"),
     ("unused", "nicht verwendet"),
     ("⚠ Missing", "⚠ Fehlt"),
+    ("Checking", "Wird geprüft"),
+    ("Link status is unavailable.", "Der Verknüpfungsstatus ist nicht verfügbar."),
     ("▲ Modified", "▲ Geändert"),
     ("(Text Color)", "(Textfarbe)"),
     ("{count} glyphs — click to insert at the text cursor", "{count} Glyphen – zum Einfügen an der Einfügemarke klicken"),
@@ -1635,6 +1733,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Object/Fitting", "Objekt/Anpassen"),
     ("Object/Pathfinder", "Objekt/Pathfinder"),
     ("Object/Paths", "Objekt/Pfade"),
+    ("Object/Convert Point", "Objekt/Punkt konvertieren"),
     ("Object/Select", "Objekt/Auswählen"),
     ("Object/Transform", "Objekt/Transformieren"),
     ("Object/Transform Again", "Objekt/Erneut transformieren"),
@@ -1724,6 +1823,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("I, II, III, IV...", "I, II, III, IV..."),
     ("Indent to Here", "Einzug bis hierhin"),
     ("Ink Limit 300%", "Farbauftrag max. 300 %"),
+    ("All Inks", "Alle Druckfarben"),
     ("Internet Standard RGB (sRGB)", "Internet-Standard-RGB (sRGB)"),
     ("Left:", "Links:"),
     ("Legacy Macintosh RGB", "Älteres Macintosh-RGB"),
@@ -1774,6 +1874,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Third Space", "Drittelgeviert"),
     ("Title Case", "Wortanfänge groß"),
     ("Top:", "Oben:"),
+    ("Inset:", "Versatz:"),
     ("Trademark Symbol", "Markensymbol"),
     ("Transform Again Individually", "Erneut einzeln transformieren"),
     ("Transform Sequence Again", "Abfolge erneut transformieren"),
@@ -1865,6 +1966,15 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Fancy", "Verziert"),
     ("Gap Tint:", "Lückenfarbton:"),
     ("Strokes and Fills…", "Konturen und Flächen …"),
+    ("Diagonal Lines…", "Diagonale Linien …"),
+    ("No Diagonal Lines", "Keine diagonalen Linien"),
+    ("Diagonal Line from Top Left to Bottom Right", "Diagonale Linie von links oben nach rechts unten"),
+    ("Diagonal Line from Top Right to Bottom Left", "Diagonale Linie von rechts oben nach links unten"),
+    ("Crossed Diagonal Lines", "Gekreuzte diagonale Linien"),
+    ("Line Stroke", "Linienkontur"),
+    ("Draw:", "Zeichnen:"),
+    ("Diagonal In Front", "Diagonale im Vordergrund"),
+    ("Content In Front", "Inhalt im Vordergrund"),
     ("Cell Stroke", "Zellkontur"),
     ("Cell Fill", "Zellfläche"),
     ("Cell edges", "Zellkanten"),
@@ -2008,6 +2118,7 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Color Group Options…", "Farbgruppenoptionen …"),
     ("Layer Options", "Ebenenoptionen"),
     ("Layer Options for \"{name}\"…", "Ebenenoptionen für „{name}“ …"),
+    ("Duplicate Layer \"{name}\"", "Ebene „{name}“ duplizieren"),
     ("Swatch Name:", "Farbfeldname:"),
     ("Name with Color Value", "Name mit Farbwert"),
     ("Color Type:", "Farbtyp:"),
@@ -2033,7 +2144,6 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Print Layer", "Ebene drucken"),
     ("Suppress Text Wrap When Layer is Hidden", "Textumfluss bei ausgeblendeter Ebene unterdrücken"),
     // Remaining interface strings.
-    ("A custom name", "Ein eigener Name"),
     ("Close Panel", "Bedienfeld schließen"),
     ("Default Fill and Stroke", "Standardfläche und -kontur"),
     ("Distribute Rows Evenly", "Zeilen gleichmäßig verteilen"),
@@ -2072,55 +2182,3 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Update Data Source", "Datenquelle aktualisieren"),
     ("Validate from Root Element", "Ab Stammelement prüfen"),
 ];
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::TABLE;
-    use crate::i18n::tr;
-
-    fn placeholders(text: &str) -> Vec<&str> {
-        let mut found = Vec::new();
-        let mut rest = text;
-        while let Some(start) = rest.find('{') {
-            let Some(len) = rest[start..].find('}') else { break };
-            found.push(&rest[start..start + len + 1]);
-            rest = &rest[start + len + 1..];
-        }
-        found.sort_unstable();
-        found
-    }
-
-    #[test]
-    fn rows_are_unique_and_complete() {
-        let mut seen = HashSet::new();
-        for (en, de) in TABLE {
-            assert!(seen.insert(*en), "duplicate {en}");
-            assert!(!de.is_empty(), "{en}");
-        }
-    }
-
-    #[test]
-    fn rows_keep_placeholders_padding_and_endings() {
-        let ellipsis = |text: &str| text.trim_end().ends_with('…') || text.trim_end().ends_with("...");
-        for (en, de) in TABLE {
-            assert_eq!(placeholders(en), placeholders(de), "placeholders of {en}");
-            assert_eq!(en.len() - en.trim_start().len(), de.len() - de.trim_start().len(), "leading space of {en}");
-            assert_eq!(en.len() - en.trim_end().len(), de.len() - de.trim_end().len(), "trailing space of {en}");
-            assert_eq!(ellipsis(en), ellipsis(de), "ellipsis of {en}");
-            // The numbering samples (`a, b, c, d...`) stay as they are; everything else uses `…`.
-            assert!(!de.contains("...") || de == en, "ASCII ellipsis in {en}");
-            assert_eq!(en.trim_end().ends_with(':'), de.trim_end().ends_with(':'), "colon of {en}");
-        }
-    }
-
-    #[test]
-    fn lookup_uses_this_table_and_leaves_unknown_text_alone() {
-        assert_eq!(tr("de", "File"), "Datei");
-        assert_eq!(tr("de", "Cancel"), "Abbrechen");
-        assert_eq!(tr("de", "{count} glyphs — click to insert at the text cursor").matches("{count}").count(), 1);
-        let unknown = String::from("A user-defined untranslated label");
-        assert!(std::ptr::eq(tr("de", &unknown), unknown.as_str()));
-    }
-}

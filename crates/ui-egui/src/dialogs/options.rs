@@ -3,7 +3,7 @@
 use designcraft_color::{Color, ColorType, SwatchValue};
 use serde_json::{Map, Value, json};
 
-use super::{Dialog, check, text_field};
+use super::{Dialog, check, text_field_named};
 use crate::DesignApp;
 use crate::i18n::tr;
 
@@ -94,10 +94,15 @@ fn caption(ui: &mut egui::Ui, lang: &str, s: &str) {
     crate::rtl::label(ui, tr(lang, s));
 }
 
+/// Render a labelled, bounded colour-channel spinner, name it for accessibility and write changed values to dialog fields.
 fn channel(ui: &mut egui::Ui, d: &mut Dialog, key: &str, label: &str, max: f64, suffix: &str) {
     ui.label(egui::RichText::new(label).monospace());
     let mut v = d.n(key).unwrap_or(0.0);
-    if ui.add(egui::DragValue::new(&mut v).range(0.0..=max).speed(0.5).max_decimals(1).suffix(suffix)).changed() {
+    let resp = ui.add(egui::DragValue::new(&mut v).range(0.0..=max).speed(0.5).max_decimals(1).suffix(suffix));
+    let changed = resp.changed();
+    // The channel name is a painted label beside a bare spinner: name the spinner too.
+    let _ = resp.accessible_name(label.to_owned());
+    if changed {
         d.fields.insert(key.into(), json!(v));
     }
     ui.end_row();
@@ -112,7 +117,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
     egui::Grid::new("swatch_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         caption(ui, lang, "Swatch Name:");
-        ui.add_enabled_ui(!d.b("locked") && !auto, |ui| text_field(ui, d, "swatchName", 220.0));
+        ui.add_enabled_ui(!d.b("locked") && !auto, |ui| text_field_named(ui, d, "swatchName", 220.0, tr(lang, "Swatch Name")));
         ui.end_row();
     });
     if kind == "color" {
@@ -125,7 +130,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 if kind == "color" {
                     caption(ui, lang, "Color Type:");
                     let cur = d.s("colorType");
-                    egui::ComboBox::from_id_salt("swatch_color_type")
+                    let combo = craft_ui::ComboBox::from_id_salt("swatch_color_type")
                         .selected_text(crate::rtl::widget(ui, tr(lang, if cur == "spot" { "Spot" } else { "Process" })))
                         .show_ui(ui, |ui| {
                             for (v, l) in [("process", "Process"), ("spot", "Spot")] {
@@ -134,6 +139,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                                 }
                             }
                         });
+                    let _ = crate::widgets::name_combo(combo, tr(lang, "Color Type"));
                     ui.end_row();
                 }
                 caption(ui, lang, "Color Mode:");
@@ -143,16 +149,19 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                     "gray" => "Gray",
                     _ => "CMYK",
                 };
-                egui::ComboBox::from_id_salt("swatch_color_mode").selected_text(crate::rtl::widget(ui, tr(lang, label(&cur)))).show_ui(ui, |ui| {
-                    for m in ["cmyk", "rgb", "gray"] {
-                        if ui.selectable_label(cur == m, crate::rtl::widget(ui, tr(lang, label(m)))).clicked()
-                            && cur != m
-                            && let Some(c) = dialog_color(&d.fields)
-                        {
-                            set_color(&mut d.fields, c, Some(m));
+                let combo = craft_ui::ComboBox::from_id_salt("swatch_color_mode")
+                    .selected_text(crate::rtl::widget(ui, tr(lang, label(&cur))))
+                    .show_ui(ui, |ui| {
+                        for m in ["cmyk", "rgb", "gray"] {
+                            if ui.selectable_label(cur == m, crate::rtl::widget(ui, tr(lang, label(m)))).clicked()
+                                && cur != m
+                                && let Some(c) = dialog_color(&d.fields)
+                            {
+                                set_color(&mut d.fields, c, Some(m));
+                            }
                         }
-                    }
-                });
+                    });
+                let _ = crate::widgets::name_combo(combo, tr(lang, "Color Mode"));
                 ui.end_row();
                 match d.s("mode").as_str() {
                     "rgb" => {
@@ -182,7 +191,7 @@ pub fn swatch_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                 ui.end_row();
                 caption(ui, lang, "Tint:");
                 let mut v = d.n("tint").unwrap_or(100.0);
-                if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%").integer()).changed() {
+                if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix("%").integer()).accessible_name(tr(lang, "Tint")).changed() {
                     d.fields.insert("tint".into(), json!(v));
                 }
                 ui.end_row();
@@ -239,7 +248,7 @@ pub fn open_color_group_options(app: &mut DesignApp, name: &str) -> Result<(), S
 pub fn color_group_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     ui.horizontal(|ui| {
         caption(ui, &app.ui.language, "Name:");
-        text_field(ui, d, "groupName", 220.0);
+        text_field_named(ui, d, "groupName", 220.0, tr(&app.ui.language, "Name"));
     });
     status(ui, d);
 }
@@ -258,7 +267,7 @@ pub fn open_layer_options(app: &mut DesignApp, id: Option<u64>) -> Result<(), St
     let id = id.map_or(st.active_layer, designcraft_doc::LayerId);
     let l = st.doc.layer(id).ok_or("no such layer")?;
     let f = json!({"id": l.id.0, "name": l.name, "rgb": l.color, "visible": l.visible, "locked": l.locked, "printable": l.printable,
-        "showGuides": l.show_guides, "suppressWrapWhenHidden": l.suppress_wrap_when_hidden});
+        "showGuides": l.show_guides, "lockGuides": l.lock_guides, "suppressWrapWhenHidden": l.suppress_wrap_when_hidden});
     app.ui.dialog = Some(Dialog::new("layerSettings", f));
     Ok(())
 }
@@ -269,11 +278,11 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let named = designcraft_doc::LAYER_COLORS.iter().find(|(_, c)| *c == rgb).map(|(n, _)| *n);
     egui::Grid::new("layer_options").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         caption(ui, lang, "Name:");
-        text_field(ui, d, "name", 220.0);
+        text_field_named(ui, d, "name", 220.0, tr(lang, "Name"));
         ui.end_row();
         caption(ui, lang, "Color:");
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("layer_color")
+            let combo = craft_ui::ComboBox::from_id_salt("layer_color")
                 .selected_text(crate::rtl::widget(ui, tr(lang, named.unwrap_or("Custom"))))
                 .width(140.0)
                 .show_ui(ui, |ui| {
@@ -287,16 +296,20 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
                         }
                     }
                 });
+            let _ = crate::widgets::name_combo(combo, tr(lang, "Color"));
             super::color_field(ui, d, "rgb");
         });
         ui.end_row();
     });
     ui.add_space(6.0);
+    // As InDesign's: the layer's options on the left, its guides' on the right.
     egui::Grid::new("layer_flags").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
         check(ui, d, "visible", tr(lang, "Show Layer"));
-        check(ui, d, "locked", tr(lang, "Lock Layer"));
-        ui.end_row();
         check(ui, d, "showGuides", tr(lang, "Show Guides"));
+        ui.end_row();
+        check(ui, d, "locked", tr(lang, "Lock Layer"));
+        check(ui, d, "lockGuides", tr(lang, "Lock Guides"));
+        ui.end_row();
         check(ui, d, "printable", tr(lang, "Print Layer"));
         ui.end_row();
     });
@@ -306,7 +319,7 @@ pub fn layer_options(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
 
 pub fn confirm_layer_options(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
     let mut p = json!({"id": d.fields.get("id").cloned().unwrap_or(Value::Null), "name": d.s("name"), "color": d.fields.get("rgb").cloned().unwrap_or(Value::Null)});
-    for k in ["visible", "locked", "printable", "showGuides", "suppressWrapWhenHidden"] {
+    for k in ["visible", "locked", "printable", "showGuides", "lockGuides", "suppressWrapWhenHidden"] {
         p[k] = json!(d.b(k));
     }
     app.run("layer.set", p)
@@ -326,7 +339,7 @@ mod tests {
         let mut h = Harness::builder().with_size(vec2(360.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
             move |ui, app: &mut DesignApp| {
                 // The fonts are installed before the first frame that draws.
-                let id = egui::Id::new("test_fonts");
+                let id = egui::Id::unique("test_fonts");
                 if ui.data(|d| d.get_temp::<bool>(id)).is_none() {
                     crate::theme::install_fonts(ui.ctx(), "");
                     ui.data_mut(|d| d.insert_temp(id, true));
@@ -342,7 +355,8 @@ mod tests {
     }
 
     fn double_click(h: &mut Harness<'static, DesignApp>, label: &str) {
-        let at = h.get_by_label(label).rect().center();
+        // A swatch row's accessible name is its name, then what its marks show.
+        let at = h.get_by(|n| n.label().is_some_and(|l| crate::panels::swatches::names_swatch(&l, label))).rect().center();
         h.hover_at(at);
         // Two clicks without the pointer leaving (`drop_at` would end the double click).
         for pressed in [true, false, true, false] {
@@ -421,5 +435,23 @@ mod tests {
         let doc = &h.state().session.active().unwrap().doc;
         let l = doc.layers.iter().find(|l| l.name == "Artwork").expect("renamed");
         assert!(!l.printable);
+    }
+
+    /// The course's chapter 32: Layer Options has InDesign's Lock Guides, beside Lock Layer.
+    #[test]
+    fn layer_options_lock_the_layers_guides() {
+        let mut app = app();
+        app.run("layer.new", json!({"name": "Grid"})).unwrap();
+        let mut h = harness(app, crate::panels::layers::show);
+        double_click(&mut h, "Grid");
+        let (lock, guides) = (h.get_by_label("Lock Layer").rect(), h.get_by_label("Lock Guides").rect());
+        assert!((lock.center().y - guides.center().y).abs() < 2.0 && guides.left() > lock.right(), "Lock Guides is beside Lock Layer");
+        h.get_by_label("Lock Guides").click();
+        h.run_steps(2);
+        h.get_by_label("  OK  ").click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().unwrap().doc;
+        let l = doc.layers.iter().find(|l| l.name == "Grid").unwrap();
+        assert!(l.lock_guides && !l.locked);
     }
 }

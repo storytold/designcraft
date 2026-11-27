@@ -2,7 +2,7 @@
 //! repaint just those regions (typing in a frame repaints the frame, not the window).
 //!
 //! Conservative: anything whose effect can reach beyond the changed items' own bounds (styles,
-//! swatches, layers, parent pages, text wrap, effects, text that other stories show through
+//! swatches, layers, parent pages, placed files, text wrap, effects, text that other stories show through
 //! cross-references, variables or footnote numbers) reports "everything" (`None`).
 
 use std::collections::HashMap;
@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use designcraft_doc::{Document, Item, ItemId, SpreadRef, Story, StoryId};
 use designcraft_geom::Rect;
+
+use crate::fx::max_scale;
 
 /// Changed regions in spread coordinates, or `None` when the whole view must be repainted.
 pub fn damage(old: &Document, new: &Document) -> Option<Vec<(SpreadRef, Rect)>> {
@@ -33,6 +35,9 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
         || old.spreads.len() != new.spreads.len()
         || old.parents.len() != new.parents.len()
         || old.parents.iter().zip(&new.parents).any(|(a, b)| !Arc::ptr_eq(a, b))
+        // A relinked or updated file changes what unchanged items show.
+        || old.assets.len() != new.assets.len()
+        || old.assets.iter().zip(&new.assets).any(|((ka, a), (kb, b))| ka != kb || !Arc::ptr_eq(a, b))
     {
         return None;
     }
@@ -107,11 +112,7 @@ pub fn damage_with(old: &Document, new: &Document, cache: Option<&designcraft_co
             let cur = c.get(new, sid, None);
             let changed = designcraft_compose::Cache::changed_frames(&prev, &cur);
             for f in changed {
-                for d in [old, new] {
-                    if d.find(f).is_some() {
-                        out.push(frame_area(d, f)?);
-                    }
-                }
+                out.extend(changed_frame_areas(old, new, f)?);
             }
             continue;
         }
@@ -155,36 +156,66 @@ fn shows_other_text(d: &Document, s: &Story) -> bool {
 fn item_area(it: &Item) -> Option<Rect> {
     let mut ok = true;
     it.walk(&mut |i| {
-        // Effects spill outside; text wrap reflows other frames.
-        if i.effects.any() || i.has_wrap() {
+        // Text wrap reflows other frames. A nested item's effects are drawn through its parents'
+        // transforms, which can scale how far they reach.
+        if i.has_wrap() || !std::ptr::eq(i, it) && i.effects.any() {
             ok = false;
         }
     });
     if !ok {
         return None;
     }
-    let pad = it.stroke.extent().max(0.0) + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 };
-    Some(painted_bounds(it).inflate(pad, pad))
+    // The stroke and the effects' spread are drawn through the item's transform. The item's own
+    // drop shadow and outer glow reach `fx::outset_scaled` past what it paints; its inner effects
+    // and feathers stay inside the shape.
+    let scale = max_scale(it.xf)?;
+    let stroke = it.stroke.extent().max(0.0) * scale;
+    let pad = stroke + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 } + crate::fx::outset_scaled(it, scale);
+    if !pad.is_finite() {
+        return None;
+    }
+    Some(painted_bounds(it)?.inflate(pad, pad))
 }
 
 /// An item's bounds, grown to its text: text is composed in the box around the frame's path in
 /// the frame's own coordinates, which a sheared then rotated frame turns past its path's bounds.
-fn painted_bounds(it: &Item) -> Rect {
+/// Its children's bounds include their strokes. None when a child's transform is not finite.
+fn painted_bounds(it: &Item) -> Option<Rect> {
     let mut b = it.bounds();
     if it.is_text_frame() {
         b = b.union(it.xf.transform_rect_bbox(it.inner_bounds()));
     }
     for c in it.children() {
-        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)));
+        let stroke = c.stroke.extent().max(0.0) * max_scale(c.xf)?;
+        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
     }
-    b
+    Some(b)
+}
+
+/// The areas of changed frame `f` before and after an edit. None (repaint everything) for a
+/// text frame anchored in either document: it isn't on a spread there (so it has no area of its
+/// own here) but is drawn inside the text it is anchored in, wherever that is laid out, also when
+/// it is on a spread in the other document. A frame that is neither on a spread nor anchored in
+/// either document is drawn nowhere and adds nothing. Anchored items are searched (a scan of the
+/// whole document) only in a version where the frame is not on a spread: item ids are unique in
+/// a document, and anchoring takes an item off its spread.
+fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<(SpreadRef, Rect)>> {
+    let mut areas = Vec::new();
+    for d in [old, new] {
+        if d.find(f).is_some() {
+            areas.push(frame_area(d, f)?);
+        } else if d.anchored_item(f).is_some() {
+            return None;
+        }
+    }
+    Some(areas)
 }
 
 /// A text frame's area: its spread and bounds with room for glyph overhang.
 fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
     let loc = d.find(f)?;
     let it = d.item_at(&loc)?;
-    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it));
+    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it)?);
     // Overhang of italics, swashes and big initials, and anchored objects pinned to lines.
     Some((loc.spread, b.inflate(24.0 + 0.1 * b.width().max(b.height()), 24.0)))
 }
@@ -229,6 +260,43 @@ mod tests {
     }
 
     #[test]
+    fn relinking_an_asset_damages_the_frame_showing_it() {
+        use designcraft_doc::{Asset, AssetId, Content, Graphic};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let aid = AssetId(d.alloc());
+        d.assets.insert(aid, Arc::new(Asset { id: aid, name: "a.png".into(), mime: "image/png".into(), ..Default::default() }));
+        let mut it = Item::new(
+            ItemId(d.alloc()),
+            lid,
+            designcraft_doc::Shape::Rectangle,
+            designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 200.0, 200.0)),
+        );
+        it.content = Content::Graphic(Graphic {
+            layer_options: None,
+            asset: aid,
+            size: (100.0, 100.0),
+            xf: designcraft_geom::Affine::IDENTITY,
+            clip: None,
+            auto_fit: Default::default(),
+            fit_align: 4,
+            crop: [0.0; 4],
+            wrap: Default::default(),
+            fill: Default::default(),
+        });
+        Arc::make_mut(&mut d.spreads[0]).items.push(Arc::new(it));
+        let old = d.clone();
+        // Relink: the same asset id now holds other bytes; the item itself is unchanged.
+        let fresh = Asset { data: designcraft_doc::AssetData::embedded(vec![1, 2, 3]), link: Some("/new/a.png".into()), ..(*d.assets[&aid]).clone() };
+        d.assets.insert(aid, Arc::new(fresh));
+        let dmg = damage(&old, &d);
+        assert!(
+            dmg.as_ref().is_none_or(|v| v.iter().any(|(_, r)| r.contains(designcraft_geom::Point::new(150.0, 150.0)))),
+            "relink reported damage {dmg:?}"
+        );
+    }
+
+    #[test]
     fn editing_a_wrapping_anchored_object_damages_the_text_it_wraps() {
         let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
         let lid = d.default_layer();
@@ -257,8 +325,8 @@ mod tests {
         let mut r = Renderer::new();
         r.threads = 0;
         let opts = RenderOptions::default();
-        let mut img = r.render(old, &cache, &placed, w, h, view, &opts);
-        let full = r.render(new, &cache, &placed, w, h, view, &opts);
+        let mut img = r.render(old, &cache, &placed, (w, h), view, &opts);
+        let full = r.render(new, &cache, &placed, (w, h), view, &opts);
         // Patch the damaged pixels.
         let regions = damage(old, new).unwrap();
         let u = regions.iter().map(|(_, r)| *r).reduce(|a, b| a.union(b)).unwrap();
@@ -266,7 +334,7 @@ mod tests {
         let y0 = ((u.y0 * zoom).floor().max(0.0)) as u32;
         let x1 = ((u.x1 * zoom).ceil() as u32).min(w);
         let y1 = ((u.y1 * zoom).ceil() as u32).min(h);
-        let patch = r.render(new, &cache, &placed, x1 - x0, y1 - y0, Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
+        let patch = r.render(new, &cache, &placed, (x1 - x0, y1 - y0), Affine::translate((-(x0 as f64), -(y0 as f64))) * view, &opts);
         for y in y0..y1 {
             for x in x0..x1 {
                 let pi = (((y - y0) * (x1 - x0) + (x - x0)) * 4) as usize;
@@ -307,6 +375,56 @@ mod tests {
     }
 
     #[test]
+    fn editing_the_story_of_an_anchored_text_frame_repaints_everything() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (_, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        d.check().unwrap();
+        let cache = designcraft_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.story_mut(sid).unwrap().insert(5, " text");
+        assert!(damage(&old, &d).is_none());
+        assert!(damage_with(&old, &d, Some(&cache)).is_none());
+    }
+
+    /// Only an anchored frame repaints everything: a frame on a spread damages its areas, and
+    /// one that is nowhere damages nothing.
+    #[test]
+    fn changed_frame_areas_repaint_everything_for_anchored_frames_only() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (on_spread, host) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let it = d.item(fid).unwrap().clone();
+        d.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        d.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&d, &d, fid).is_none(), "anchored");
+        assert_eq!(changed_frame_areas(&d, &d, on_spread).map(|a| a.len()), Some(2), "before and after");
+        assert_eq!(changed_frame_areas(&d, &d, ItemId(u64::MAX)), Some(Vec::new()), "nowhere");
+    }
+
+    /// A frame on a spread in one document and anchored in the other repaints everything, both
+    /// ways: its anchored placement is drawn inside its host's text, outside the spread area.
+    #[test]
+    fn a_frame_moving_between_a_spread_and_an_anchor_repaints_everything() {
+        let mut on_spread = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = on_spread.default_layer();
+        let (_, host) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(72.0, 72.0, 300.0, 200.0), lid, "", ParaFormat::default()).unwrap();
+        let (fid, _) = on_spread.add_text_frame(SpreadRef::Doc(0), Rect::new(0.0, 0.0, 100.0, 40.0), lid, "Inner", ParaFormat::default()).unwrap();
+        let mut anchored = on_spread.clone();
+        let it = anchored.item(fid).unwrap().clone();
+        anchored.spread_mut(SpreadRef::Doc(0)).unwrap().items.retain(|i| i.id != fid);
+        anchored.story_mut(host).unwrap().insert_object(0, designcraft_doc::AnchoredObject::new(it, Default::default()));
+        assert!(changed_frame_areas(&on_spread, &anchored, fid).is_none(), "spread to anchor");
+        assert!(changed_frame_areas(&anchored, &on_spread, fid).is_none(), "anchor to spread");
+    }
+
+    #[test]
     fn only_changed_frames_of_a_thread_are_damaged() {
         let mut d = Document::new(&NewDocument { pages: 3, facing_pages: false, ..Default::default() });
         let lid = d.default_layer();
@@ -343,5 +461,125 @@ mod tests {
         let dmg = damage_with(&old, &d, Some(&cache)).unwrap();
         let spreads: Vec<SpreadRef> = dmg.iter().map(|(r, _)| *r).collect();
         assert!(spreads.contains(&SpreadRef::Doc(1)), "{dmg:?}");
+    }
+
+    /// Moving an object with a drop shadow or an outer glow damages where its effect was and is,
+    /// and every pixel the move changes lies in that damage: the canvas repaints those regions,
+    /// not the whole view.
+    #[test]
+    fn moving_an_object_with_a_shadow_or_glow_damages_its_effect_area() {
+        for glow in [false, true] {
+            let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+            let lid = d.default_layer();
+            let id = ItemId(d.alloc());
+            let mut it =
+                Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 250.0, 200.0)));
+            it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+            if glow {
+                let g = &mut it.effects.outer_glow;
+                (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 30.0, 20.0);
+            } else {
+                let s = &mut it.effects.drop_shadow;
+                (s.on, s.color, s.opacity, s.size, s.distance, s.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 25.0, 30.0);
+            }
+            d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+            let old = d.clone();
+            let it = d.item_mut(id).unwrap();
+            it.path.transform(designcraft_geom::Affine::translate((60.0, 40.0)));
+            let changed = changed_pixels_in_damage(&old, &d);
+            assert!(changed.iter().any(|p| !Rect::new(98.0, 98.0, 312.0, 242.0).contains(*p)), "glow {glow}: the effect paints outside the object");
+        }
+        // A hardened glow on a scaled object: its growth is stroked through the transform, so it
+        // reaches three times as far on the spread as the glow's size says.
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 90.0, 90.0)));
+        it.xf = designcraft_geom::Affine::scale(3.0);
+        it.fill = designcraft_doc::Fill::swatch(designcraft_color::swatch::BLACK);
+        let g = &mut it.effects.outer_glow;
+        (g.on, g.color, g.opacity, g.size, g.spread) = (true, designcraft_color::swatch::BLACK.into(), 1.0, 20.0, 100.0);
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let old = d.clone();
+        let it = d.item_mut(id).unwrap();
+        it.xf = designcraft_geom::Affine::translate((60.0, 40.0)) * it.xf;
+        // The square covers 150..270 before the move; its glow reaches 60 pt past that.
+        let changed = changed_pixels_in_damage(&old, &d);
+        assert!(changed.iter().any(|p| p.x < 110.0), "the hard glow grows with the object's scale");
+        // An effect on an object inside a group is drawn through the group's transform: unbounded.
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let mut child =
+            Item::new(ItemId(d.alloc()), lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(0.0, 0.0, 9.0, 9.0)));
+        child.effects.drop_shadow.on = true;
+        let gid = ItemId(d.alloc());
+        let mut group = Item::new(gid, lid, designcraft_doc::Shape::Group, Default::default());
+        group.content = designcraft_doc::Content::Group { items: vec![Arc::new(child)] };
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let old = d.clone();
+        d.item_mut(gid).unwrap().xf = designcraft_geom::Affine::scale(4.0);
+        assert!(damage(&old, &d).is_none());
+    }
+
+    /// A stroke is drawn through its item's transform: a frame scaled up paints its stroke that
+    /// much wider, and moving it damages all of it.
+    #[test]
+    fn moving_a_scaled_frame_damages_its_whole_stroke() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let id = ItemId(d.alloc());
+        let mut it = Item::new(id, lid, designcraft_doc::Shape::Rectangle, designcraft_geom::shapes::rectangle(Rect::new(50.0, 50.0, 125.0, 100.0)));
+        it.xf = designcraft_geom::Affine::scale(2.0);
+        it.stroke.swatch = designcraft_color::swatch::BLACK.into();
+        it.stroke.weight = 20.0;
+        it.stroke.align = designcraft_doc::StrokeAlign::Outside;
+        it.effects.outer_glow.on = true;
+        it.effects.outer_glow.size = 0.0;
+        d.insert_item(SpreadRef::Doc(0), it, None).unwrap();
+        let old = d.clone();
+        let it = d.item_mut(id).unwrap();
+        it.xf = designcraft_geom::Affine::translate((60.0, 40.0)) * it.xf;
+        // The stroke reaches 40 pt past the frame's 100..250 × 100..200 outline on the spread.
+        let changed = changed_pixels_in_damage(&old, &d);
+        assert!(changed.iter().any(|p| p.x < 70.0), "the stroke paints its scaled width");
+        // The same frame inside a group with a gradient feather: the child's stroke counts too.
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let mut child = old.spreads[0].items[0].as_ref().clone();
+        child.effects = Default::default();
+        child.id = ItemId(d.alloc());
+        let gid = ItemId(d.alloc());
+        let outline = designcraft_geom::shapes::rectangle(Rect::new(100.0, 100.0, 250.0, 200.0));
+        let mut group = Item::new(gid, d.default_layer(), designcraft_doc::Shape::Group, outline);
+        group.content = designcraft_doc::Content::Group { items: vec![Arc::new(child)] };
+        let gf = &mut group.effects.gradient_feather;
+        (gf.on, gf.start, gf.end) = (true, 1.0, 0.5);
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let old = d.clone();
+        d.item_mut(gid).unwrap().xf = designcraft_geom::Affine::translate((60.0, 40.0));
+        let changed = changed_pixels_in_damage(&old, &d);
+        assert!(changed.iter().any(|p| p.x < 70.0), "the child's stroke paints its scaled width");
+    }
+
+    /// The pixels a page render changes from `old` to `new`, each checked to lie in the damage.
+    fn changed_pixels_in_damage(old: &Document, new: &Document) -> Vec<designcraft_geom::Point> {
+        let dmg = damage(old, new).expect("bounded damage");
+        let cache = designcraft_compose::Cache::new();
+        let mut r = crate::Renderer::new();
+        r.threads = 0;
+        let opts = crate::RenderOptions::default();
+        let before = r.render_page(old, &cache, 0, 1.0, false, &opts).unwrap();
+        let after = r.render_page(new, &cache, 0, 1.0, false, &opts).unwrap();
+        let mut changed = Vec::new();
+        for y in 0..before.height {
+            for x in 0..before.width {
+                if before.pixel(x, y) == after.pixel(x, y) {
+                    continue;
+                }
+                let p = designcraft_geom::Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                assert!(dmg.iter().any(|(_, r)| r.inflate(1.0, 1.0).contains(p)), "changed pixel {p:?} outside {dmg:?}");
+                changed.push(p);
+            }
+        }
+        changed
     }
 }

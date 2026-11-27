@@ -1,4 +1,4 @@
-//! Last-resort guard (craftrules `standards/never-crash.md`): a panic that escapes a command —
+//! Last-resort guard: a panic that escapes a command —
 //! any edit, import or export, from the UI, the CLI, MCP or the control channel — becomes an
 //! error, and the document is kept as it was before the command (and saved for crash recovery
 //! when a recovery directory is set). It is a safety net: commands still must not panic.
@@ -13,7 +13,7 @@ use crate::{EngineError, Result, Session};
 pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic".into())
 }

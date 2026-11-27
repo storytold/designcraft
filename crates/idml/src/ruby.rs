@@ -50,59 +50,87 @@ fn name<T: Copy + PartialEq>(table: &[(T, &'static str)], v: T) -> Option<&'stat
     table.iter().find(|(t, _)| *t == v).map(|(_, n)| *n)
 }
 
-fn finite(e: &El, k: &str) -> Option<f64> {
-    e.num(k).filter(|v| v.is_finite())
-}
-
-/// Read the ruby settings of a style or range element into `a`. `swatch` maps a swatch
-/// reference to the document's swatch name.
-pub(crate) fn read(e: &El, a: &mut CharAttrs, mut swatch: impl FnMut(&str) -> String) {
-    a.ruby_type = e.prop("RubyType").and_then(|v| lookup(TYPES, &v));
-    a.ruby_alignment = e.prop("RubyAlignment").and_then(|v| lookup(ALIGNMENTS, &v));
-    a.ruby_position = e.prop("RubyPosition").and_then(|v| lookup(POSITIONS, &v));
-    a.ruby_x_offset = finite(e, "RubyXOffset").map(|v| v.clamp(-1000.0, 1000.0));
-    a.ruby_y_offset = finite(e, "RubyYOffset").map(|v| v.clamp(-1000.0, 1000.0));
-    if let Some(f) = e.prop("RubyFont") {
+/// Read neutral Ruby values into `a`. `swatch` maps a swatch reference to the document's swatch name.
+pub(crate) fn read_values(values: &craft_idml::model::RubyValues, a: &mut CharAttrs, mut swatch: impl FnMut(&str) -> String) {
+    a.ruby_type = values.kind.as_deref().and_then(|value| lookup(TYPES, value));
+    a.ruby_alignment = values.alignment.as_deref().and_then(|value| lookup(ALIGNMENTS, value));
+    a.ruby_position = values.position.as_deref().and_then(|value| lookup(POSITIONS, value));
+    a.ruby_x_offset = values.x_offset.map(|v| v.clamp(-1000.0, 1000.0));
+    a.ruby_y_offset = values.y_offset.map(|v| v.clamp(-1000.0, 1000.0));
+    if let Some(f) = &values.font {
         let f = f.trim();
         let fam = f.split('\t').next().unwrap_or(f);
         a.ruby_font = Some(if fam == "$ID/" { String::new() } else { fam.to_string() });
     }
-    if let Some(s) = e.prop("RubyFontStyle") {
+    if let Some(s) = &values.font_style {
         let s = s.trim();
         a.ruby_font_style = Some(if s == "Nothing" { String::new() } else { s.to_string() });
     }
     // -1: automatic (half the parent size).
-    a.ruby_font_size = finite(e, "RubyFontSize").map(|v| (v > 0.0).then_some(v.clamp(0.1, 1296.0)));
-    a.ruby_x_scale = finite(e, "RubyXScale").map(|v| (v / 100.0).clamp(0.01, 10.0));
-    a.ruby_y_scale = finite(e, "RubyYScale").map(|v| (v / 100.0).clamp(0.01, 10.0));
-    a.ruby_open_type_pro = e.boolean("RubyOpenTypePro");
-    a.ruby_auto_tcy_digits = finite(e, "RubyAutoTcyDigits").map(|v| v.clamp(0.0, 9.0) as u32);
-    a.ruby_auto_tcy_include_roman = e.boolean("RubyAutoTcyIncludeRoman");
-    a.ruby_auto_tcy_auto_scale = e.boolean("RubyAutoTcyAutoScale");
-    a.ruby_overhang = e.boolean("RubyOverhang");
-    a.ruby_overhang_amount = e.prop("RubyParentOverhangAmount").and_then(|v| lookup(OVERHANGS, &v));
-    a.ruby_parent_spacing = e.prop("RubyParentSpacing").and_then(|v| lookup(SPACINGS, &v));
-    a.ruby_auto_align = e.boolean("RubyAutoAlign");
-    a.ruby_auto_scaling = e.boolean("RubyAutoScaling");
-    a.ruby_scaling_min = finite(e, "RubyParentScalingPercent").map(|v| (v / 100.0).clamp(0.1, 1.0));
-    let color = |r: String, swatch: &mut dyn FnMut(&str) -> String| if r.trim() == TEXT_COLOR { String::new() } else { swatch(r.trim()) };
-    a.ruby_fill = e.prop("RubyFill").map(|r| color(r, &mut swatch));
-    a.ruby_stroke = e.prop("RubyStroke").map(|r| color(r, &mut swatch));
+    a.ruby_font_size = values.font_size.map(|v| (v > 0.0).then_some(v.clamp(0.1, 1296.0)));
+    a.ruby_x_scale = values.x_scale.map(|v| (v / 100.0).clamp(0.01, 10.0));
+    a.ruby_y_scale = values.y_scale.map(|v| (v / 100.0).clamp(0.01, 10.0));
+    a.ruby_open_type_pro = values.open_type_pro;
+    a.ruby_auto_tcy_digits = values.auto_tcy_digits.map(|v| v.clamp(0.0, 9.0) as u32);
+    a.ruby_auto_tcy_include_roman = values.auto_tcy_include_roman;
+    a.ruby_auto_tcy_auto_scale = values.auto_tcy_auto_scale;
+    a.ruby_overhang = values.overhang;
+    a.ruby_overhang_amount = values.parent_overhang.as_deref().and_then(|value| lookup(OVERHANGS, value));
+    a.ruby_parent_spacing = values.parent_spacing.as_deref().and_then(|value| lookup(SPACINGS, value));
+    a.ruby_auto_align = values.auto_align;
+    a.ruby_auto_scaling = values.auto_scaling;
+    a.ruby_scaling_min = values.parent_scaling.map(|v| (v / 100.0).clamp(0.1, 1.0));
+    let color = |r: &str, swatch: &mut dyn FnMut(&str) -> String| if r.trim() == TEXT_COLOR { String::new() } else { swatch(r.trim()) };
+    a.ruby_fill = values.fill.as_deref().map(|r| color(r, &mut swatch));
+    a.ruby_stroke = values.stroke.as_deref().map(|r| color(r, &mut swatch));
     // -1: automatic (the text's tint, stroke weight).
     let tint = |v: f64| (v >= 0.0).then_some((v / 100.0).clamp(0.0, 1.0) as f32);
-    a.ruby_fill_tint = finite(e, "RubyTint").map(tint);
-    a.ruby_stroke_tint = finite(e, "RubyStrokeTint").map(tint);
-    a.ruby_stroke_weight = finite(e, "RubyWeight").map(|v| (v >= 0.0).then_some(v.min(800.0)));
-    let overprint = |k: &str| e.prop(k).and_then(|v| overprint_in(&v));
-    a.ruby_overprint_fill = overprint("RubyOverprintFill");
-    a.ruby_overprint_stroke = overprint("RubyOverprintStroke");
+    a.ruby_fill_tint = values.fill_tint.map(tint);
+    a.ruby_stroke_tint = values.stroke_tint.map(tint);
+    a.ruby_stroke_weight = values.stroke_weight.map(|v| (v >= 0.0).then_some(v.min(800.0)));
+    a.ruby_overprint_fill = values.overprint_fill.as_deref().and_then(overprint_in);
+    a.ruby_overprint_stroke = values.overprint_stroke.as_deref().and_then(overprint_in);
+}
+
+/// Ruby parent-text options (OpenType Pro, auto tate-chu-yoko, overhang, spacing, scaling).
+fn write_parent_options(el: &mut El, a: &CharAttrs) {
+    let b = |v: bool| if v { "true" } else { "false" };
+    if let Some(v) = a.ruby_open_type_pro {
+        el.set("RubyOpenTypePro", b(v));
+    }
+    if let Some(v) = a.ruby_auto_tcy_digits {
+        el.set("RubyAutoTcyDigits", v);
+    }
+    if let Some(v) = a.ruby_auto_tcy_include_roman {
+        el.set("RubyAutoTcyIncludeRoman", b(v));
+    }
+    if let Some(v) = a.ruby_auto_tcy_auto_scale {
+        el.set("RubyAutoTcyAutoScale", b(v));
+    }
+    if let Some(v) = a.ruby_overhang {
+        el.set("RubyOverhang", b(v));
+    }
+    if let Some(v) = a.ruby_overhang_amount.and_then(|v| name(OVERHANGS, v)) {
+        el.set("RubyParentOverhangAmount", v);
+    }
+    if let Some(v) = a.ruby_parent_spacing.and_then(|v| name(SPACINGS, v)) {
+        el.set("RubyParentSpacing", v);
+    }
+    if let Some(v) = a.ruby_auto_align {
+        el.set("RubyAutoAlign", b(v));
+    }
+    if let Some(v) = a.ruby_auto_scaling {
+        el.set("RubyAutoScaling", b(v));
+    }
+    if let Some(v) = a.ruby_scaling_min {
+        el.set("RubyParentScalingPercent", num(v * 100.0));
+    }
 }
 
 /// Write the ruby settings set in `a`: attributes on `el`, fonts and colours as `props`. `sw`
 /// maps a swatch name to its IDML reference. Returns the ruby font (family, style) to list in
 /// the fonts part.
 pub(crate) fn write(el: &mut El, props: &mut Vec<El>, a: &CharAttrs, sw: impl Fn(&str) -> String) -> Option<(String, String)> {
-    let b = |v: bool| if v { "true" } else { "false" };
     let prop = |k: &str, ty: &str, v: String| El::new(k).attr("type", ty).text(v);
     if let Some(v) = a.ruby_type.and_then(|v| name(TYPES, v)) {
         el.set("RubyType", v);
@@ -134,36 +162,7 @@ pub(crate) fn write(el: &mut El, props: &mut Vec<El>, a: &CharAttrs, sw: impl Fn
     if let Some(v) = a.ruby_y_scale {
         el.set("RubyYScale", num(v * 100.0));
     }
-    if let Some(v) = a.ruby_open_type_pro {
-        el.set("RubyOpenTypePro", b(v));
-    }
-    if let Some(v) = a.ruby_auto_tcy_digits {
-        el.set("RubyAutoTcyDigits", v);
-    }
-    if let Some(v) = a.ruby_auto_tcy_include_roman {
-        el.set("RubyAutoTcyIncludeRoman", b(v));
-    }
-    if let Some(v) = a.ruby_auto_tcy_auto_scale {
-        el.set("RubyAutoTcyAutoScale", b(v));
-    }
-    if let Some(v) = a.ruby_overhang {
-        el.set("RubyOverhang", b(v));
-    }
-    if let Some(v) = a.ruby_overhang_amount.and_then(|v| name(OVERHANGS, v)) {
-        el.set("RubyParentOverhangAmount", v);
-    }
-    if let Some(v) = a.ruby_parent_spacing.and_then(|v| name(SPACINGS, v)) {
-        el.set("RubyParentSpacing", v);
-    }
-    if let Some(v) = a.ruby_auto_align {
-        el.set("RubyAutoAlign", b(v));
-    }
-    if let Some(v) = a.ruby_auto_scaling {
-        el.set("RubyAutoScaling", b(v));
-    }
-    if let Some(v) = a.ruby_scaling_min {
-        el.set("RubyParentScalingPercent", num(v * 100.0));
-    }
+    write_parent_options(el, a);
     for (k, c) in [("RubyFill", &a.ruby_fill), ("RubyStroke", &a.ruby_stroke)] {
         if let Some(c) = c {
             props.push(if c.is_empty() { prop(k, "string", TEXT_COLOR.into()) } else { prop(k, "object", sw(c.as_str())) });

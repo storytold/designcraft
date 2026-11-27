@@ -14,8 +14,9 @@
 //! fallback off.
 //!
 //! The fallback: before the window is created, `gpu.json` in the settings directory records the
-//! backend being tried; once a frame has been presented, or the graphics failed with an error the
-//! app caught (see `gpu::finish`), that entry is cleared. An entry still there at the next start
+//! backend being tried; once a frame has been presented, the window closed normally (even before
+//! its first frame), or the graphics failed with an error the app caught (see `gpu::finish`), that
+//! entry is cleared. An entry still there at the next start
 //! means the previous start never got that far — the driver crashed, or the app was killed
 //! meanwhile — so that backend joins `failed`, the next candidate is tried and the status bar says
 //! so. Backends a restart left out (`--gpu-skip=`, see `gpu`) aren't chosen for that start but
@@ -138,13 +139,18 @@ pub fn choose(candidates: &[Backend], previous: &Record, version: &str, skipped:
     let first = *candidates.first()?;
     let same_version = previous.version == version;
     let mut failed: Vec<Backend> = if same_version { previous.failed.clone() } else { Vec::new() };
+    // A stored entry that is no candidate here came from another machine and says nothing. The
+    // backend the previous start was still on is added after this and stays, candidate or not:
+    // the instance can load a backend that is no candidate — everywhere but Windows OpenGL rides
+    // along beside the chosen one (`instance_backends`) — and a start that one took down must
+    // keep it out of the next instance.
+    failed.retain(|b| candidates.contains(b));
     let unfinished = previous.trying.filter(|_| same_version);
     if let Some(b) = unfinished
         && !failed.contains(&b)
     {
         failed.push(b);
     }
-    failed.retain(|b| candidates.contains(b));
     let pick = |failed: &[Backend]| candidates.iter().copied().find(|b| !failed.contains(b) && !skipped.contains(b));
     let backend = match pick(&failed) {
         Some(b) => b,
@@ -226,7 +232,21 @@ impl Fallback {
                 choice.backend.name(),
                 choice.record.failed
             ),
-            None => log::info!("graphics: {} (WGPU_BACKEND overrides)", choice.backend.name()),
+            // Not a switch from an unfinished start. `begin` has already returned when
+            // `WGPU_BACKEND` names a backend, so wgpu is not being told which to use here -- an
+            // empty or unrecognised value is no choice and reaches this line like an unset one.
+            // The message used to say the environment had been asked, which reads in a log as
+            // though the user had chosen the backend (#1343). What this start did choose is
+            // either the first candidate or the first one that has not failed before, so it says
+            // which of the two it is rather than claiming the first choice.
+            None if choice.record.failed.is_empty() => {
+                log::info!("graphics: {} (nothing has failed before; set WGPU_BACKEND to choose another)", choice.backend.name())
+            }
+            None => log::info!(
+                "graphics: {} (the first that hasn't failed before, after {:?}; set WGPU_BACKEND to choose another)",
+                choice.backend.name(),
+                choice.record.failed
+            ),
         }
         let instance = instance_backends(choice.backend, &choice.record.failed);
         Some(Fallback { backend: choice.backend, switched_from: choice.switched_from, instance, path, record: choice.record })
@@ -387,6 +407,23 @@ mod tests {
         assert_eq!(c.record.failed, &[Backend::Vulkan]);
     }
 
+    /// The backend the previous start was still on stays in `failed` even where it is no
+    /// candidate: on macOS Metal is the only candidate, but the instance loads OpenGL beside it,
+    /// so a start OpenGL took down has to keep it out of the next one. Only the stored list is
+    /// filtered to this platform's candidates — those entries came from another machine.
+    #[test]
+    fn the_backend_a_start_was_on_counts_as_failed_even_where_it_is_no_candidate() {
+        const MAC: &[Backend] = &[Backend::Metal];
+        let c = choose(MAC, &record(Some(Backend::Gl), &[]), V, &[]).unwrap();
+        assert_eq!(c.backend, Backend::Metal);
+        assert_eq!(c.record.failed, &[Backend::Gl], "OpenGL ran here, so it failed here");
+        assert_eq!(c.switched_from, Some(Backend::Gl));
+        assert!(!instance_backends(c.backend, &c.record.failed).contains(wgpu::Backends::GL));
+        // Stored on another machine, never run here: dropped, and OpenGL may ride along again.
+        let c = choose(MAC, &record(None, &[Backend::Gl]), V, &[]).unwrap();
+        assert_eq!(c.record.failed, &[]);
+    }
+
     /// A restart that found no adapter of DirectX 12 names the backend in its skip list: that start
     /// takes the next candidate, with or without a record, and the record doesn't keep it as failed
     /// (a later launch tries it again).
@@ -499,6 +536,23 @@ mod tests {
         } else {
             assert_eq!(s.switched_from, None);
         }
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    /// A window closed before its first frame (#2116): the app was created slowly or not at all,
+    /// so neither a frame nor `on_exit` cleared the record, but eframe ended cleanly. No driver
+    /// fault took that start down, so the next start keeps the backend.
+    #[test]
+    fn a_start_that_ends_cleanly_before_its_first_frame_does_not_fail_its_backend() {
+        let path = temp_path("clean-end");
+        let fallback = Fallback::begin_unforced(Some(path.clone()), V, &[]).expect("candidates");
+        let first = fallback.backend;
+        assert_eq!(read(&path).trying, Some(first));
+        let startup = super::super::Startup::new(Some(fallback), Vec::new());
+        assert_eq!(super::super::finish(Ok(Ok(())), &startup), Ok(()));
+        assert_eq!(read(&path).trying, None, "a clean end leaves no backend being tried");
+        let c = choose(candidates(), &read(&path), V, &[]).expect("candidates");
+        assert_eq!((c.backend, c.record.failed, c.switched_from), (first, Vec::new(), None));
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
     }
 

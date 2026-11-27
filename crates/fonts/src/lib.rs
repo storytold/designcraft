@@ -13,6 +13,7 @@ mod group;
 mod kind;
 #[cfg(target_os = "macos")]
 mod mac_fonts;
+pub mod psname;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 mod vertical;
@@ -20,7 +21,7 @@ mod vertical;
 pub use features::{FontFeatures, font_features};
 pub use fontdb::{
     DOCUMENT_FONTS_FOLDER, DocumentFonts, FALLBACK_FAMILY, FaceRef, FontDb, FontFace, FontSource, MAX_DOCUMENT_FONT_BYTES, MAX_DOCUMENT_FONT_FILES,
-    MAX_DOCUMENT_FONTS_TOTAL, ScopedFonts, base_style, bundled, same_style, system_font_dirs,
+    MAX_DOCUMENT_FONTS_TOTAL, ReloadedFonts, ScopedFonts, base_style, bundled, same_style, sans_by_name, system_font_dirs,
 };
 pub use group::{FamilyInfo, FontGroup, sort_for_menu};
 pub use harfrust::Feature;
@@ -197,6 +198,20 @@ pub fn shape_with_context(
     out
 }
 
+/// `features` as a run in `script` takes them. Contextual alternates are part of how Arabic joins
+/// (connecting strokes, tatweel and letter variants): InDesign keeps them in Arabic text with
+/// Contextual Alternates off, so `calt` off is dropped there.
+fn script_features(features: &[Feature], script: unicode_script::Script) -> std::borrow::Cow<'_, [Feature]> {
+    use unicode_script::Script;
+    let calt = Tag::new(b"calt");
+    let off = |f: &Feature| f.tag == calt && f.value == 0;
+    if script == Script::Arabic && features.iter().any(off) {
+        features.iter().filter(|f| !off(f)).copied().collect::<Vec<_>>().into()
+    } else {
+        features.into()
+    }
+}
+
 fn shape_dir(
     face: &FontFace,
     text: &str,
@@ -207,6 +222,8 @@ fn shape_dir(
     context: ShapeContext<'_>,
 ) -> Vec<ShapedGlyph> {
     let mut out = Vec::with_capacity(text.len());
+    let features = script_features(features, script);
+    let features = &features[..];
     let shaped = face.hb().map(|hb| {
         let shaper = face.shaper.shaper(&hb).instance(face.instance.as_ref()).build();
         let mut buf = UnicodeBuffer::new();
@@ -335,6 +352,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn arabic_keeps_contextual_alternates() {
+        use unicode_script::Script;
+        let off = feature("-calt").unwrap();
+        let liga = feature("-liga").unwrap();
+        let tags = |s: Script| script_features(&[off, liga], s).iter().map(|f| (f.tag, f.value)).collect::<Vec<_>>();
+        assert_eq!(tags(Script::Arabic), vec![(liga.tag, 0)]);
+        assert_eq!(tags(Script::Latin), vec![(off.tag, 0), (liga.tag, 0)]);
+    }
+
+    #[test]
     fn arabic_script_runs_do_not_inherit_the_hebrew_shaper() {
         use unicode_script::Script;
         let text = "אב بب";
@@ -453,6 +480,12 @@ mod tests {
         let custom = db.face(&fam, &format!("{} {{wght:{mid}}}", light.style));
         assert!(custom.is_variable() && custom.coords.iter().any(|(t, v)| t == b"wght" && *v == mid));
         assert!(!db.styles(&fam).iter().any(|s| s.contains('{')), "instances aren't listed");
+        // Settings for axes the font hasn't got are dropped, however many a style string names.
+        let bogus: Vec<String> = (0..20_000).map(|i| format!("q{:03}:1", i % 1000)).collect();
+        let t = std::time::Instant::now();
+        let odd = db.face(&fam, &format!("{} {{wght:{mid},{}}}", light.style, bogus.join(",")));
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(odd.coords.len(), custom.coords.len(), "only the font's own axes are kept");
         let static_face = db.face(DEFAULT_FAMILY, "Regular {wght:700}");
         assert_eq!(static_face.style, "Regular", "static fonts ignore axis settings");
     }

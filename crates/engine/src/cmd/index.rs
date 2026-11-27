@@ -72,7 +72,9 @@ fn add_reference(s: &mut Session, p: &Value) -> Result<Value> {
         "currentPage" => IndexRange::CurrentPage,
         "toEndOfStory" => IndexRange::ToEndOfStory,
         "suppressPageRange" => IndexRange::SuppressPageRange,
-        "nextParagraphs" => IndexRange::NextParagraphs(p.get("paragraphs").and_then(Value::as_u64).unwrap_or(1) as u32),
+        "nextParagraphs" => {
+            IndexRange::NextParagraphs(p.get("paragraphs").and_then(Value::as_u64).map_or(1, |x| u32::try_from(x).unwrap_or(u32::MAX)))
+        }
         "see" => IndexRange::See(target()),
         "seeAlso" => IndexRange::SeeAlso(target()),
         r => return Err(bad("index.addReference", format!("unknown range `{r}`"))),
@@ -86,6 +88,9 @@ fn add_reference(s: &mut Session, p: &Value) -> Result<Value> {
         let at = t.range().start.min(st.len());
         st.insert_index_ref(at, r.clone());
         let shift = INDEX_MARK.len_utf8();
+        if t.cell.is_none() {
+            d.adjust_text_ranges(t.story, at..at, shift);
+        }
         sel.text = Some(TextSel { anchor: t.anchor + shift, focus: t.focus + shift, ..t });
         Ok(json!({"pos": at}))
     })
@@ -103,8 +108,9 @@ fn resolve(s: &Session, d: &Document, skip: Option<StoryId>) -> Vec<(StoryId, us
                 IndexRange::ToEndOfStory => page(st.len().saturating_sub(1)),
                 IndexRange::NextParagraphs(n) => {
                     let ranges = st.para_ranges();
-                    let pi = (st.para_at(pos) + *n as usize).min(ranges.len() - 1);
-                    page(ranges[pi].end.saturating_sub(1).max(ranges[pi].start))
+                    let n = usize::try_from(*n).unwrap_or(usize::MAX);
+                    let pi = st.para_at(pos).saturating_add(n).min(ranges.len().saturating_sub(1));
+                    ranges.get(pi).and_then(|r| page(r.end.saturating_sub(1).max(r.start)))
                 }
                 _ => start,
             };
@@ -181,14 +187,17 @@ fn fill_index(s: &mut Session, spec: IndexSpec, new_frame: Option<(usize, Option
             }
         };
         let text = paras.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
-        let st = d.story_mut(story).ok_or(designcraft_doc::DocError::NoStory(story))?;
-        let len = st.len();
-        st.replace(0..len, &text);
-        for (pi, r) in st.para_ranges().into_iter().enumerate() {
-            if let Some((name, _)) = paras.get(pi) {
-                st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
+        {
+            let st = d.story_mut(story).ok_or(designcraft_doc::DocError::NoStory(story))?;
+            let len = st.len();
+            st.replace(0..len, &text);
+            for (pi, r) in st.para_ranges().into_iter().enumerate() {
+                if let Some((name, _)) = paras.get(pi) {
+                    st.format_paras(r.start..r.start, |f| *f = ParaFormat { style: name.clone(), ..Default::default() });
+                }
             }
         }
+        d.prune_story_text_ranges(story);
         d.index = Some(IndexSpec { story, ..spec.clone() });
         Ok(json!({"story": story.0, "entries": paras.iter().filter(|(s, _)| s.starts_with("Index Level")).count()}))
     })

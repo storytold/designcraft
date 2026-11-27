@@ -7,6 +7,18 @@ use serde_json::json;
 use crate::DesignApp;
 use crate::theme::Tokens;
 
+/// Click on a condition name: toggle it on the selected text, or tell the user to select some.
+fn apply_condition(app: &mut DesignApp, name: &str, has_text: bool, applied: &[String]) {
+    if has_text {
+        let on = !applied.iter().any(|a| a == name);
+        if let Err(e) = app.run("condition.apply", json!({"name": name, "on": on})) {
+            app.status_error("Conditional Text", e);
+        }
+    } else {
+        app.status(crate::i18n::tr(&app.ui.language, "Select text to apply a condition"));
+    }
+}
+
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else { return };
@@ -28,7 +40,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
         // Visibility (eye).
         let eye = egui::Rect::from_min_size(row.min + vec2(2.0, 3.0), vec2(16.0, 16.0));
-        let er = ui.interact(eye, ui.id().with(("cond_eye", &c.name)), Sense::click()).on_hover_ui(|ui| {
+        let er = ui.interact(eye, ui.scope_id().with(("cond_eye", &c.name)), Sense::click()).on_hover_ui(|ui| {
             crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Show / hide text with this condition"));
         });
         if c.visible {
@@ -47,7 +59,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
         // Name (click: toggle on the selected text) and indicator colour.
         let name_r = egui::Rect::from_min_max(row.min + vec2(42.0, 0.0), row.max - vec2(24.0, 0.0));
-        let nr = ui.interact(name_r, ui.id().with(("cond_name", &c.name)), Sense::click());
+        let nr = ui.interact(name_r, ui.scope_id().with(("cond_name", &c.name)), Sense::click());
         if nr.hovered() {
             ui.painter().rect_filled(name_r, 0.0, t.hover);
         }
@@ -55,14 +67,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         let chip = egui::Rect::from_min_size(egui::pos2(row.max.x - 20.0, row.min.y + 5.0), vec2(14.0, 12.0));
         ui.painter().rect_filled(chip, 2.0, egui::Color32::from_rgb(c.color[0], c.color[1], c.color[2]));
         if nr.clicked() {
-            if has_text {
-                let on = !applied.contains(&c.name);
-                if let Err(e) = app.run("condition.apply", json!({"name": c.name, "on": on})) {
-                    app.status_error("Conditional Text", e);
-                }
-            } else {
-                app.status(crate::i18n::tr(&app.ui.language, "Select text to apply a condition"));
-            }
+            apply_condition(app, &c.name, has_text, &applied);
         }
         nr.context_menu(|ui| {
             if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Delete Condition"))).clicked() {
@@ -72,7 +77,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
     }
     ui.add_space(6.0);
-    let id = egui::Id::new("new_condition_name");
+    let id = egui::Id::unique("new_condition_name");
     let mut name: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.add(

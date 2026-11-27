@@ -143,33 +143,40 @@ fn font_fields(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog, cf: &Char
     };
     crate::rtl::label(ui, tr(lang, "Font Family:"));
     ui.add_enabled_ui(enabled, |ui| {
-        egui::ComboBox::from_id_salt(("cjkfam", fam_key))
+        let picked = craft_ui::ComboBox::from_id_salt(("cjkfam", fam_key))
             .selected_text(shown)
             .width(200.0)
             .height(440.0)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show_ui(ui, |ui| {
-                if cf.sparse && ui.selectable_label(raw.is_null(), " ").clicked() {
-                    cf.set(d, fam_key, Value::Null);
-                    cf.set(d, style_key, Value::Null);
-                }
-                if ui.selectable_label(!raw.is_null() && fam.is_empty(), crate::rtl::widget(ui, parent.as_str())).clicked() {
-                    cf.set(d, fam_key, json!(""));
-                    cf.set(d, style_key, json!(""));
-                }
-                if let Some(f) = crate::panels::font_menu_body(app, ui, &menu, &fam, 200.0) {
-                    cf.set(d, fam_key, json!(f.family));
-                    if let Some(style) = f.style {
-                        cf.set(d, style_key, json!(style));
+            .show_ui_with_header(
+                ui,
+                |ui| {
+                    if cf.sparse && ui.selectable_label(raw.is_null(), " ").clicked() {
+                        cf.set(d, fam_key, Value::Null);
+                        cf.set(d, style_key, Value::Null);
                     }
-                }
-            });
+                    if ui.selectable_label(!raw.is_null() && fam.is_empty(), crate::rtl::widget(ui, parent.as_str())).clicked() {
+                        cf.set(d, fam_key, json!(""));
+                        cf.set(d, style_key, json!(""));
+                    }
+                    crate::panels::font_menu_header(app, ui, &menu, &fam, 200.0)
+                },
+                crate::panels::font_menu_list,
+            )
+            .inner
+            .flatten();
+        if let Some(f) = picked {
+            cf.set(d, fam_key, json!(f.family));
+            if let Some(style) = f.style {
+                cf.set(d, style_key, json!(style));
+            }
+        }
     });
     ui.end_row();
     crate::rtl::label(ui, tr(lang, "Font Style:"));
     let sty = cf.get(d, style_key).as_str().unwrap_or("").to_string();
     ui.add_enabled_ui(enabled && !fam.is_empty(), |ui| {
-        egui::ComboBox::from_id_salt(("cjksty", style_key)).selected_text(&sty).width(200.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt(("cjksty", style_key)).selected_text(&sty).width(200.0).show_ui(ui, |ui| {
             for s in fonts.styles(&fam) {
                 if ui.selectable_label(s == sty, &s).clicked() {
                     cf.set(d, style_key, json!(s));
@@ -527,7 +534,7 @@ fn kenten(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog, cf: &CharField
             Some(false) => tr(lang, "None").to_string(),
             Some(true) => tr(lang, kenten_label(kind)).to_string(),
         };
-        egui::ComboBox::from_id_salt("cjkkententype").selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("cjkkententype").selected_text(crate::rtl::widget(ui, shown)).width(200.0).show_ui(ui, |ui| {
             if cf.sparse && ui.selectable_label(on.is_none(), " ").clicked() {
                 for key in ["kenten", "kentenKind", "kentenCharacter"] {
                     cf.set(d, key, Value::Null);
@@ -654,7 +661,7 @@ fn para_value(d: &Dialog, pv: &Value, key: &str) -> Value {
 /// A paragraph attribute from `opts` (value, label); `current` is the value shown.
 fn para_choice(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, key: &str, current: &str, opts: &[(&str, &str)]) {
     let shown = opts.iter().find(|o| o.0 == current).map_or("", |o| crate::i18n::tr(lang, o.1));
-    egui::ComboBox::from_id_salt(("cjkp", key)).selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
+    craft_ui::ComboBox::from_id_salt(("cjkp", key)).selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
         for (v, label) in opts {
             if ui.selectable_label(*v == current, crate::rtl::widget(ui, crate::i18n::tr(lang, label))).clicked() {
                 d.fields.insert(format!("p.{key}"), json!(v));
@@ -731,7 +738,7 @@ fn japanese_composition(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &Char
         // `null`: no set given, so the composer's default rules apply.
         let name = para_value(d, pv, "kinsoku").get("name").and_then(Value::as_str).map(str::to_string);
         let shown = name.as_deref().map_or_else(|| crate::i18n::tr(lang, "Default Rules").to_string(), |n| kinsoku_label(lang, n));
-        egui::ComboBox::from_id_salt("cjkkinsoku").selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("cjkkinsoku").selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
             // `style.paragraph.edit` takes `null` as the default rules, also over a Based On set.
             if ui.selectable_label(name.is_none(), crate::rtl::widget(ui, crate::i18n::tr(lang, "Default Rules"))).clicked() {
                 d.fields.insert("p.kinsoku".into(), Value::Null);
@@ -780,7 +787,7 @@ fn japanese_composition(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, cf: &Char
         let sets = mojikumi_sets(doc, &current);
         let label = |l: &str| if l.is_empty() { crate::i18n::tr(lang, "None").to_string() } else { l.to_string() };
         let shown = sets.iter().find(|s| s.0 == current).map_or_else(String::new, |s| label(s.1.as_str()));
-        egui::ComboBox::from_id_salt("cjkmojikumi").selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("cjkmojikumi").selected_text(crate::rtl::widget(ui, shown)).width(220.0).show_ui(ui, |ui| {
             for (v, l) in &sets {
                 if ui.selectable_label(*v == current, crate::rtl::widget(ui, label(l.as_str()))).clicked() {
                     d.fields.insert("p.mojikumi".into(), json!(v));
@@ -834,7 +841,7 @@ fn grid_settings(lang: &str, ui: &mut egui::Ui, d: &mut Dialog, pv: &Value) {
     grid("cjkgrid").show(ui, |ui| {
         crate::rtl::label(ui, tr(lang, "Grid Alignment:"));
         let shown = if on { REFERENCES.iter().find(|r| r.0 == reference).map_or("", |r| r.1) } else { "None" };
-        egui::ComboBox::from_id_salt("cjkgridalign").selected_text(crate::rtl::widget(ui, tr(lang, shown))).width(220.0).show_ui(ui, |ui| {
+        craft_ui::ComboBox::from_id_salt("cjkgridalign").selected_text(crate::rtl::widget(ui, tr(lang, shown))).width(220.0).show_ui(ui, |ui| {
             if ui.selectable_label(!on, crate::rtl::widget(ui, tr(lang, "None"))).clicked() {
                 set(d, GridAlign::None);
             }

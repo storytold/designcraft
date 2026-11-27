@@ -65,7 +65,7 @@ pub fn open(app: &mut DesignApp, page: &str) {
 }
 
 /// Every effect's settings, those still at their defaults included (the document leaves them out).
-fn effects_json(e: &designcraft_doc::Effects) -> Value {
+pub(crate) fn effects_json(e: &designcraft_doc::Effects) -> Value {
     use designcraft_doc::{Bevel, DirectionalFeather, DropShadow, FeatherOptions, GradientFeather, InnerGlow, InnerShadow, OuterGlow, Satin};
     let mut fx = serde_json::to_value(e).unwrap_or_else(|_| json!({}));
     let defaults = [
@@ -90,7 +90,7 @@ fn effects_json(e: &designcraft_doc::Effects) -> Value {
 }
 
 /// Turn the effect of `page` on, as choosing it does (Basic Feather: its default width).
-fn turn_on(fx: &mut Value, page: &str) {
+pub(crate) fn turn_on(fx: &mut Value, page: &str) {
     match page {
         "transparency" => {}
         "feather" => {
@@ -106,7 +106,7 @@ fn turn_on(fx: &mut Value, page: &str) {
     }
 }
 
-fn is_on(fx: &Value, page: &str) -> bool {
+pub(crate) fn is_on(fx: &Value, page: &str) -> bool {
     match page {
         "transparency" => true,
         "feather" => fx["feather"].as_f64().unwrap_or(0.0) > 0.0,
@@ -116,9 +116,16 @@ fn is_on(fx: &Value, page: &str) -> bool {
 
 /// The `object.effects` params the dialog stands for.
 pub fn params(d: &Dialog) -> Value {
-    json!({"ids": d.fields.get("ids").cloned().unwrap_or(json!([])), "effects": d.fields.get("fx").cloned().unwrap_or(json!({})),
-        "opacity": d.fields.get("opacity").and_then(Value::as_f64).unwrap_or(1.0), "blend": d.fields.get("blend").and_then(Value::as_str).unwrap_or("Normal")})
+    let mut p = json!({"ids": d.fields.get("ids").cloned().unwrap_or(json!([])), "effects": d.fields.get("fx").cloned().unwrap_or(json!({})),
+        "opacity": d.fields.get("opacity").and_then(Value::as_f64).unwrap_or(1.0), "blend": d.fields.get("blend").and_then(Value::as_str).unwrap_or("Normal")});
+    if let Some(a) = d.fields.get(GLOBAL_LIGHT).and_then(Value::as_f64) {
+        p["globalLight"] = json!(a);
+    }
+    p
 }
+
+/// The global light angle as changed in the dialog (an Angle field with Use Global Light on).
+const GLOBAL_LIGHT: &str = "globalLight";
 
 /// Apply: the preview goes and the settings are made once, as one undo step.
 pub fn confirm(app: &mut DesignApp, d: &Dialog) -> Result<Value, String> {
@@ -202,12 +209,110 @@ fn percent(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
     }
 }
 
-fn angle(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], enabled: bool, global: f64) {
-    let mut v = if enabled { num(d, path) } else { global };
-    let r = ui.add_enabled(enabled, egui::DragValue::new(&mut v).range(-180.0..=180.0).suffix("°").max_decimals(1));
-    if r.changed() {
-        set(d, path, json!(v));
+/// The effect's own angle at `path`, or with Use Global Light (`own` false) the document's
+/// global light angle: editing it then changes that one, for every effect that uses it. The dial
+/// and the field both edit it.
+fn angle(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], own: bool, global: f64) -> egui::Response {
+    let mut v = if own { num(d, path) } else { global };
+    let put = |d: &mut Dialog, v: f64| {
+        if own {
+            set(d, path, json!(v));
+        } else {
+            d.fields.insert(GLOBAL_LIGHT.into(), json!(v));
+        }
+    };
+    ui.horizontal(|ui| {
+        if let Some(a) = angle_dial(ui, v, true) {
+            v = a;
+            put(d, v);
+        }
+        if ui.add(egui::DragValue::new(&mut v).range(-180.0..=180.0).suffix("°").max_decimals(1)).changed() {
+            put(d, v);
+        }
+    })
+    .response
+}
+
+/// InDesign's angle dial: a circle with a radius pointing where the light comes from (0° to the
+/// right, counter-clockwise). A click or a drag on it points it at the pointer. Focused, the
+/// arrow keys turn it a degree (Shift: 10°) — Right and Up counter-clockwise — and assistive
+/// technology can step it or set its value, as with a slider.
+fn angle_dial(ui: &mut egui::Ui, deg: f64, enabled: bool) -> Option<f64> {
+    use egui::accesskit::{Action, ActionData};
+    let sense = if enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() };
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), sense);
+    resp.widget_info(|| egui::WidgetInfo::slider(enabled, deg, "Angle"));
+    let col = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+    let (c, rad) = (r.center(), 11.0);
+    ui.painter().circle_stroke(c, rad, egui::Stroke::new(1.2, col));
+    let a = deg.to_radians() as f32;
+    ui.painter().line_segment([c, c + egui::vec2(a.cos(), -a.sin()) * rad], egui::Stroke::new(1.4, col));
+    if resp.has_focus() {
+        ui.painter().circle_stroke(c, rad + 2.0, ui.visuals().selection.stroke);
     }
+    if !enabled {
+        return None;
+    }
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_min_numeric_value(-180.0);
+        node.set_max_numeric_value(180.0);
+        node.set_numeric_value_step(1.0);
+        node.add_action(Action::SetValue);
+        node.add_action(Action::Increment);
+        node.add_action(Action::Decrement);
+    });
+    let mut next = None;
+    let mut steps = 0i64;
+    if resp.has_focus() {
+        // The arrows turn the dial instead of moving the focus.
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(resp.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() })
+        });
+        ui.input(|i| {
+            for e in &i.events {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                    let dir = match key {
+                        egui::Key::ArrowRight | egui::Key::ArrowUp => 1,
+                        egui::Key::ArrowLeft | egui::Key::ArrowDown => -1,
+                        _ => 0,
+                    };
+                    steps += dir * if modifiers.shift { 10 } else { 1 };
+                }
+            }
+        });
+    }
+    ui.input(|i| {
+        steps += i.num_accesskit_action_requests(resp.id, Action::Increment) as i64;
+        steps -= i.num_accesskit_action_requests(resp.id, Action::Decrement) as i64;
+        for request in i.accesskit_action_requests(resp.id, Action::SetValue) {
+            if let Some(ActionData::NumericValue(v)) = request.data {
+                next = Some(v);
+            }
+        }
+    });
+    if steps != 0 {
+        next = Some(deg + steps as f64);
+    }
+    if (resp.dragged() || resp.clicked())
+        && let Some(a) = resp.interact_pointer_pos().and_then(|p| dial_angle(c, p))
+    {
+        next = Some(a);
+    }
+    next.filter(|v| v.is_finite()).map(wrap_angle)
+}
+
+/// `deg` turned into the dial's range, −180 (exclusive) to 180°.
+fn wrap_angle(deg: f64) -> f64 {
+    let a = (deg + 180.0).rem_euclid(360.0) - 180.0;
+    if a <= -180.0 { 180.0 } else { a }
+}
+
+/// The angle a dial at `c` points at for the pointer at `p`, in whole degrees (−180 to 180,
+/// counter-clockwise from the right); none too close to the centre to tell.
+fn dial_angle(c: egui::Pos2, p: egui::Pos2) -> Option<f64> {
+    let d = p - c;
+    // Straight left is 180° (not −180°, which a negative zero would give).
+    (d.length() > 2.0).then(|| f64::from((-d.y).atan2(d.x)).to_degrees().round()).map(|a| if a <= -180.0 { 180.0 } else { a })
 }
 
 fn flag(ui: &mut egui::Ui, d: &mut Dialog, path: &[&str], label: &str) {
@@ -232,15 +337,15 @@ fn swatch(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, path: &[&str]) {
         }
         v.as_str().unwrap_or("[Black]").to_string()
     };
-    let names: Vec<String> = app
-        .session
-        .active()
-        .map_or_else(Vec::new, |st| st.doc.swatches.iter().filter(|w| !w.hidden || w.name == cur).map(|w| w.name.clone()).collect());
-    egui::ComboBox::from_id_salt(("fx_swatch", path.join("."))).selected_text(&cur).width(150.0).show_ui(ui, |ui| {
-        for n in names {
-            if ui.selectable_label(n == cur, &n).clicked() {
-                set(d, path, json!(n));
-            }
+    let Some(doc) = app.session.active().map(|st| &st.doc) else { return };
+    // The colour itself beside its name, and a chip per swatch in the menu, as the swatch menus
+    // elsewhere: a list of bare names hid what the shadow was coloured with.
+    ui.horizontal(|ui| {
+        let (c, g) = crate::widgets::swatch_colors(doc, &cur, 1.0);
+        let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        crate::widgets::paint_chip(ui.painter(), r, c, g);
+        if let Some(n) = crate::dialogs::swatch_menu(ui, doc, ("fx_swatch", path.join(".")), &cur, 128.0) {
+            set(d, path, json!(n));
         }
     });
 }
@@ -269,11 +374,13 @@ fn offset(ui: &mut egui::Ui, d: &mut Dialog, key: &str, unit: Unit, global: f64,
 }
 
 /// The settings of `page`.
-fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
+pub(crate) fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
     let lang = app.ui.language.clone();
     let tr = |s: &str| crate::i18n::tr(&lang, s).to_string();
     let unit = app.session.active().map_or(Unit::Points, |st| st.doc.settings.horizontal_units);
-    let global = app.session.active().map_or(120.0, |st| st.doc.settings.global_light);
+    // The global light angle as the dialog will set it (an edit in it shows at once).
+    let global =
+        d.fields.get(GLOBAL_LIGHT).and_then(Value::as_f64).unwrap_or_else(|| app.session.active().map_or(120.0, |st| st.doc.settings.global_light));
     let row = |ui: &mut egui::Ui, l: &str| crate::rtl::label(ui, tr(l));
     crate::rtl::label(ui, egui::RichText::new(tr(PAGES.iter().find(|p| p.0 == page).map_or("Transparency", |p| p.1))).font(semibold(14.0)));
     let grid = |id: &str| egui::Grid::new(("fx_grid", id.to_string())).num_columns(4).spacing([8.0, 6.0]);
@@ -283,7 +390,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
             grid("t").show(ui, |ui| {
                 row(ui, "Mode:");
                 let cur = d.fields.get("blend").and_then(Value::as_str).unwrap_or("Normal").to_string();
-                egui::ComboBox::from_id_salt("fx_blend").selected_text(tr(&cur)).width(150.0).show_ui(ui, |ui| {
+                craft_ui::ComboBox::from_id_salt("fx_blend").selected_text(tr(&cur)).width(150.0).show_ui(ui, |ui| {
                     for m in designcraft_color::BlendMode::ALL {
                         if ui.selectable_label(m.label() == cur, tr(m.label())).clicked() {
                             d.fields.insert("blend".into(), json!(m.label()));
@@ -302,6 +409,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
             let key = page;
             heading(ui, &tr("Blending"));
             grid("b").show(ui, |ui| {
+                mode_row(ui, d, key, &tr);
                 row(ui, "Color:");
                 swatch(app, ui, d, &[key, "color"]);
                 row(ui, "Opacity:");
@@ -343,23 +451,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
             let key = page;
             heading(ui, &tr("Blending"));
             grid("b").show(ui, |ui| {
-                // Inner Glow: its blend mode (Screen, as InDesign starts it).
-                if key == "innerGlow" {
-                    row(ui, "Mode:");
-                    let cur = d.fields.get("fx").and_then(|f| f["innerGlow"]["mode"].as_str()).unwrap_or("Screen").to_string();
-                    let label = |m: &designcraft_color::BlendMode| {
-                        serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
-                    };
-                    let shown = designcraft_color::BlendMode::ALL.iter().find(|m| label(m) == cur).map_or("Screen", |m| m.label());
-                    egui::ComboBox::from_id_salt("fx_glow_mode").selected_text(tr(shown)).width(150.0).show_ui(ui, |ui| {
-                        for m in designcraft_color::BlendMode::ALL {
-                            if ui.selectable_label(label(&m) == cur, tr(m.label())).clicked() {
-                                set(d, &["innerGlow", "mode"], json!(label(&m)));
-                            }
-                        }
-                    });
-                    ui.end_row();
-                }
+                mode_row(ui, d, key, &tr);
                 row(ui, "Color:");
                 swatch(app, ui, d, &[key, "color"]);
                 row(ui, "Opacity:");
@@ -379,7 +471,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                     ui.end_row();
                     row(ui, "Technique:");
                     let cur = d.fields.get("fx").and_then(|f| f["innerGlow"]["technique"].as_str()).unwrap_or("softer").to_string();
-                    egui::ComboBox::from_id_salt("fx_technique").selected_text(tr(if cur == "precise" { "Precise" } else { "Softer" })).show_ui(
+                    craft_ui::ComboBox::from_id_salt("fx_technique").selected_text(tr(if cur == "precise" { "Precise" } else { "Softer" })).show_ui(
                         ui,
                         |ui| {
                             for (v, l) in [("softer", "Softer"), ("precise", "Precise")] {
@@ -393,7 +485,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                     row(ui, "Source:");
                     let mut center = d.fields.get("fx").is_some_and(|f| f["innerGlow"]["center"].as_bool().unwrap_or(false));
                     let label = |c: bool| tr(if c { "Center" } else { "Edge" });
-                    egui::ComboBox::from_id_salt("fx_source").selected_text(label(center)).show_ui(ui, |ui| {
+                    craft_ui::ComboBox::from_id_salt("fx_source").selected_text(label(center)).show_ui(ui, |ui| {
                         for c in [false, true] {
                             if ui.selectable_value(&mut center, c, label(c)).clicked() {
                                 set(d, &["innerGlow", "center"], json!(c));
@@ -474,7 +566,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                     "rounded" => "Rounded",
                     _ => "Diffused",
                 };
-                egui::ComboBox::from_id_salt("fx_corners").selected_text(tr(shown)).show_ui(ui, |ui| {
+                craft_ui::ComboBox::from_id_salt("fx_corners").selected_text(tr(shown)).show_ui(ui, |ui| {
                     for (v, l) in [("sharp", "Sharp"), ("rounded", "Rounded"), ("diffused", "Diffused")] {
                         if ui.selectable_label(cur == v, tr(l)).clicked() {
                             set(d, &["featherOptions", "corners"], json!(v));
@@ -523,7 +615,7 @@ fn page_ui(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog, page: &str) {
                 row(ui, "Type:");
                 let mut radial = d.fields.get("fx").is_some_and(|f| f["gradientFeather"]["radial"].as_bool().unwrap_or(false));
                 let label = |r: bool| tr(if r { "Radial" } else { "Linear" });
-                egui::ComboBox::from_id_salt("fx_gtype").selected_text(label(radial)).show_ui(ui, |ui| {
+                craft_ui::ComboBox::from_id_salt("fx_gtype").selected_text(label(radial)).show_ui(ui, |ui| {
                     for r in [false, true] {
                         if ui.selectable_value(&mut radial, r, label(r)).clicked() {
                             set(d, &["gradientFeather", "radial"], json!(r));
@@ -549,6 +641,28 @@ fn summary(lang: &str, d: &Dialog) -> String {
     format!("{}: {} {:.0}%; {}", crate::i18n::tr(lang, "OBJECT").to_uppercase(), crate::i18n::tr(lang, blend), opacity * 100.0, effects)
 }
 
+/// The Mode row of a shadow's or glow's Blending: its blend mode, as InDesign's (shadows start
+/// Multiply, glows Screen).
+fn mode_row(ui: &mut egui::Ui, d: &mut Dialog, key: &str, tr: &dyn Fn(&str) -> String) {
+    crate::rtl::label(ui, tr("Mode:"));
+    let fallback = if key.ends_with("Glow") { "Screen" } else { "Multiply" };
+    let cur = d.fields.get("fx").and_then(|f| f[key]["mode"].as_str()).unwrap_or(fallback).to_string();
+    let name = |m: &designcraft_color::BlendMode| serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    let shown = designcraft_color::BlendMode::ALL.iter().find(|m| name(m) == cur).map_or(fallback, |m| m.label());
+    let mut picked = None;
+    craft_ui::ComboBox::from_id_salt(("fx_mode", key.to_string())).selected_text(tr(shown)).width(150.0).show_ui(ui, |ui| {
+        for m in designcraft_color::BlendMode::ALL {
+            if ui.selectable_label(name(&m) == cur, tr(m.label())).clicked() {
+                picked = Some(name(&m));
+            }
+        }
+    });
+    if let Some(m) = picked {
+        set(d, &[key, "mode"], json!(m));
+    }
+    ui.end_row();
+}
+
 /// The dialog's body.
 pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     let lang = app.ui.language.clone();
@@ -557,7 +671,7 @@ pub fn show(app: &mut DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
         crate::rtl::label(ui, tr("Settings for:"));
         // Stroke, Fill and Text levels aren't in the document model yet: the object only.
         ui.add_enabled_ui(false, |ui| {
-            egui::ComboBox::from_id_salt("fx_level").selected_text(tr("Object")).width(110.0).show_ui(ui, |_| {});
+            craft_ui::ComboBox::from_id_salt("fx_level").selected_text(tr("Object")).width(110.0).show_ui(ui, |_| {});
         });
     });
     ui.add_space(6.0);
@@ -657,6 +771,32 @@ mod tests {
         texts
     }
 
+    /// With Use Global Light on, the Angle is the document's global light and stays editable:
+    /// a change there is applied to the document with the effects (it was greyed out).
+    #[test]
+    fn the_angle_with_global_light_sets_the_global_light() {
+        let (mut app, _) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        crate::menus::activate(&mut app, "object.dropShadow", &Value::Null);
+        let d = app.ui.dialog.as_mut().unwrap();
+        set(d, &["dropShadow", "globalLight"], json!(true));
+        frame(&mut app, &ctx);
+        // The field shows the global angle and is enabled: a DragValue that isn't disabled.
+        let global = app.session.doc().unwrap().doc.settings.global_light;
+        let mut d = app.ui.dialog.clone().unwrap();
+        let ui_ctx = egui::Context::default();
+        let mut enabled = false;
+        let mut out = ui_ctx.run_ui(egui::RawInput::default(), |ui| {
+            enabled = angle(ui, &mut d, &["dropShadow", "angle"], false, global).enabled();
+        });
+        out.textures_delta.clear();
+        assert!(enabled, "the Angle stays editable with Use Global Light");
+        d.fields.insert(GLOBAL_LIGHT.into(), json!(15.0));
+        confirm(&mut app, &d).unwrap();
+        assert_eq!(app.session.doc().unwrap().doc.settings.global_light, 15.0);
+    }
+
     #[test]
     fn set_makes_the_path_and_ignores_an_empty_one() {
         let mut d = Dialog::new(ID, json!({"fx": {}}));
@@ -723,6 +863,114 @@ mod tests {
         assert!((app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().opacity - 0.8).abs() < 1e-6);
         app.run("edit.undo", json!({})).unwrap();
         assert!(!fx(&app).inner_shadow.on);
+    }
+
+    /// The angle dial points where the pointer is, as InDesign's: right is 0°, up 90°, left 180°,
+    /// down −90°, upper left 135°.
+    #[test]
+    fn the_angle_dial_points_at_the_pointer() {
+        let c = egui::pos2(100.0, 100.0);
+        assert_eq!(dial_angle(c, egui::pos2(120.0, 100.0)), Some(0.0));
+        assert_eq!(dial_angle(c, egui::pos2(100.0, 80.0)), Some(90.0));
+        assert_eq!(dial_angle(c, egui::pos2(80.0, 100.0)), Some(180.0));
+        assert_eq!(dial_angle(c, egui::pos2(100.0, 120.0)), Some(-90.0));
+        assert_eq!(dial_angle(c, egui::pos2(90.0, 90.0)), Some(135.0));
+        assert_eq!(dial_angle(c, egui::pos2(101.0, 100.0)), None, "too close to the centre");
+    }
+
+    /// Without a pointer: Tab focuses the dial, the arrows turn it (Shift: 10°), wrapping at 180°.
+    #[test]
+    fn the_angle_dial_turns_with_the_keyboard() {
+        let ctx = egui::Context::default();
+        let key = |key, shift| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE },
+        };
+        let mut deg = 175.0;
+        let frame = |events: Vec<egui::Event>, deg: &mut f64| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                if let Some(a) = angle_dial(ui, *deg, true) {
+                    *deg = a;
+                }
+            });
+            out.textures_delta.clear();
+        };
+        frame(vec![], &mut deg);
+        frame(vec![key(egui::Key::Tab, false)], &mut deg);
+        frame(vec![key(egui::Key::ArrowRight, false)], &mut deg);
+        assert_eq!(deg, 176.0);
+        frame(vec![key(egui::Key::ArrowUp, true)], &mut deg);
+        assert_eq!(deg, -174.0, "past 180° it comes round to −174°");
+        frame(vec![key(egui::Key::ArrowLeft, true)], &mut deg);
+        frame(vec![key(egui::Key::ArrowDown, false)], &mut deg);
+        assert_eq!(deg, 175.0);
+        assert_eq!(wrap_angle(-180.0), 180.0);
+        assert_eq!(wrap_angle(540.0), 180.0);
+    }
+
+    /// Drop Shadow and Outer Glow have InDesign's Mode under Blending (Multiply and Screen to
+    /// start); a mode picked there is what OK applies.
+    #[test]
+    fn shadows_and_glows_have_a_blend_mode() {
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        open(&mut app, "dropShadow");
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Mode:") && texts.iter().any(|x| x.trim() == "Multiply"), "{texts:?}");
+        crate::dialogs::cancel(&mut app);
+        open(&mut app, "outerGlow");
+        let texts = frame(&mut app, &ctx);
+        assert!(texts.iter().any(|x| x.trim() == "Screen"), "{texts:?}");
+        if let Some(d) = app.ui.dialog.as_mut() {
+            set(d, &["outerGlow", "mode"], json!("Normal"));
+        }
+        frame(&mut app, &ctx);
+        crate::dialogs::confirm(&mut app).unwrap();
+        let fx = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.clone();
+        assert!(fx.outer_glow.on);
+        assert_eq!(fx.outer_glow.mode, designcraft_color::BlendMode::Normal);
+    }
+
+    #[test]
+    fn the_shadow_colour_shows_its_swatch_beside_the_name() {
+        let (mut app, _) = app_with_frame();
+        app.run("swatch.create", json!({"name": "Shade", "color": "#12ab34"})).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let shade = crate::widgets::swatch_colors(&app.session.doc().unwrap().doc, "Shade", 1.0).0.unwrap();
+        // Does the dialog, once faded in, paint a chip of the colour `c`?
+        let mut time = 0.0;
+        let mut painted = |app: &mut DesignApp, c: egui::Color32| {
+            let mut found = false;
+            for _ in 0..20 {
+                time += 0.1;
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    time: Some(time),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| crate::dialogs::show(app, ui.ctx()));
+                out.textures_delta.clear();
+                fn walk(s: &egui::epaint::Shape, c: egui::Color32) -> bool {
+                    match s {
+                        egui::epaint::Shape::Rect(r) => r.fill == c,
+                        egui::epaint::Shape::Vec(v) => v.iter().any(|s| walk(s, c)),
+                        _ => false,
+                    }
+                }
+                found = out.shapes.iter().any(|s| walk(&s.shape, c));
+            }
+            found
+        };
+        open(&mut app, "dropShadow");
+        assert!(!painted(&mut app, shade), "not the shadow's colour yet");
+        set(app.ui.dialog.as_mut().unwrap(), &["dropShadow", "color"], json!("Shade"));
+        assert!(painted(&mut app, shade), "the chosen swatch's colour is shown, not only its name");
+        assert_eq!(params(app.ui.dialog.as_ref().unwrap())["effects"]["dropShadow"]["color"], "Shade");
     }
 
     #[test]
