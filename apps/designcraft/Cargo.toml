@@ -18,6 +18,8 @@ egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# Non-exhaustive identity errors for the nightly process identity (`src/process_identity.rs`).
+thiserror = { workspace = true }
 
 [build-dependencies]
 # Icon + VERSIONINFO for designcraft.exe; build.rs only uses it when the target is Windows.
@@ -40,7 +42,7 @@ craft-update = { workspace = true }
 # that shows it; drawing on a GPU without a monitor reset the display driver. Safe wrappers over
 # Win32 (MIT); the `user` feature is User32.dll only. Also the window frame for the custom title
 # bar (src/window_frame.rs, window styles).
-winsafe = { version = "0.0.29", default-features = false, features = ["user"] }
+winsafe = { version = "0.0.29", default-features = false, features = ["user", "shell"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The same winit as eframe; only the native termination opt-in is used.
