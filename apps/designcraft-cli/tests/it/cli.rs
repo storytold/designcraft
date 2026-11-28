@@ -828,6 +828,27 @@ fn the_argument_parser_refuses_what_it_cannot_mean() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn invalid_export_option_values_leave_earlier_destinations_untouched() {
+    let dir = std::env::temp_dir().join(format!("dc-cli-bad-export-option-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("first.png");
+    for (flag, value, second, diagnostic) in [
+        ("--page", "-1", "second.png", "bad --page"),
+        ("--scale", "NaN", "second.png", "bad --scale"),
+        ("--pdf-options", "[]", "second.pdf", "expected a JSON object"),
+        ("--pdf-options", "{", "second.pdf", "--pdf-options:"),
+    ] {
+        std::fs::write(&first, b"older file").unwrap();
+        let out = cli().current_dir(&dir).args(["run", "--sample", "--export", "first.png", flag, value, "--export", second]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && err.contains(diagnostic), "{flag} {value}: {err}");
+        assert_eq!(std::fs::read(&first).unwrap(), b"older file", "{flag} {value} changed the earlier export");
+        assert!(!dir.join(second).exists(), "{flag} {value} wrote the later export");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// photocraft#1108: an argument that is not UTF-8 panicked in `std::env::args` ("called
 /// `Result::unwrap()` on an `Err` value"). Such a name cannot reach the engine, whose paths are
 /// `str`, so it is a usage error.
