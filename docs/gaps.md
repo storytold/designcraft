@@ -68,13 +68,13 @@ Kind: **F** feature · **U** UI/UX · **T** typography · **FF** file format · 
 ### 4. Composition isn't compared with InDesign (T)
 - **Missing:** an oracle harness: the same synthetic stories set by InDesign 2026 (observed
   black-box, results kept under `plan/`) and by DesignCraft, comparing line breaks, overset and
-  frame fit. Known differences: optical kerning is an outline-based approximation, not Adobe's
-  algorithm (#181); a frame goes overset when descenders don't fit, InDesign needs only the baseline
+  frame fit. Known differences: optical kerning is an outline-based approximation fitted to
+  InDesign's values on ten text faces, not Adobe's algorithm (#181); a frame goes overset when descenders don't fit, InDesign needs only the baseline
   (#180); setting the text language was missing (#130; Language is now in Properties, #145, the issue is still open); "hyphenation doesn't work"
   (#87).
 - **Impact:** an opened IDML reflows: different line breaks, different page count, overset text.
   Professionals notice on the first page.
-- **Estimate:** 70–125 h (harness 20–30, optical kerning tuning 5–10, then fixes by cluster).
+- **Estimate:** 70–125 h (harness 20–30, optical kerning: more faces in the fit 2–5, then fixes by cluster).
 - **Doc:** [typography-parity.md](typography-parity.md)
 
 ### 5. Startup crashes on some graphics hardware (S, H)
