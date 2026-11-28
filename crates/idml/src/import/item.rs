@@ -61,7 +61,7 @@ impl<'r> Importer<'r> {
         if let Some(s) = model_item.self_id() {
             self.item_ids.insert(s.to_string(), id);
         }
-        let layer = model_item.item_layer().and_then(|l| self.layer_ids.get(l)).copied().unwrap_or_else(|| self.layers[0].id);
+        let layer = model_item.item_layer().and_then(|l| self.layer_ids.get(l)).copied().or(self.parent_layer).unwrap_or_else(|| self.layers[0].id);
         let path = path_from_model(model_item.geometry());
         let mut it = Item::new(id, layer, shape, path);
         it.xf = parent * Affine::new(model_item.item_transform());
@@ -233,12 +233,14 @@ impl<'r> Importer<'r> {
             }
             "Group" => {
                 let mut kids = Vec::new();
+                let outer = self.parent_layer.replace(item.layer);
                 for child in model_item.items() {
                     let child = crate::xml::from_craft(child.to_el());
                     if let Some(k) = self.item(&child, Affine::IDENTITY) {
                         kids.push(Arc::new(k));
                     }
                 }
+                self.parent_layer = outer;
                 item.content = Content::Group { items: kids };
                 item.fill = Fill::none();
                 item.stroke = Stroke::none();
@@ -265,12 +267,14 @@ impl<'r> Importer<'r> {
                     }
                 } else {
                     // Page items pasted into this frame (Paste Into).
+                    let outer = self.parent_layer.replace(item.layer);
                     let kids: Vec<Arc<Item>> = e
                         .elements()
                         .filter(|c| matches!(c.local(), "Rectangle" | "Oval" | "Polygon" | "GraphicLine" | "Group" | "TextFrame"))
                         .filter_map(|c| self.item(c, Affine::IDENTITY))
                         .map(Arc::new)
                         .collect();
+                    self.parent_layer = outer;
                     if !kids.is_empty() {
                         item.content = Content::Group { items: kids };
                     }
