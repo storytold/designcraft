@@ -71,7 +71,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!("spelling.change", "Change", [], None, "{story, start, end, to}", has_doc, |s, p| {
             let sid = StoryId(p.get("story").and_then(Value::as_u64).ok_or_else(|| bad("spelling.change", "missing story"))?);
             let (a, b) = (p.get("start").and_then(Value::as_u64).unwrap_or(0) as usize, p.get("end").and_then(Value::as_u64).unwrap_or(0) as usize);
-            let to = str_param(p, "to").unwrap_or("").to_string();
+            let to = str_param(p, "to").ok_or_else(|| bad("spelling.change", "`to` must be a string"))?.to_string();
             s.edit(|d, _| {
                 let r = {
                     let st = d.story_mut(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
@@ -402,6 +402,27 @@ mod tests {
         s.execute("file.new", &json!({})).unwrap();
         s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "We don’t email us if we’re online."})).unwrap();
         assert_eq!(s.execute("spelling.check", &json!({})).unwrap(), json!([]));
+    }
+
+    #[test]
+    fn change_requires_an_explicit_replacement_string() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let frame = s.execute("frame.create", &json!({"rect": [36, 36, 300, 200], "content": "text", "text": "Thw quick"})).unwrap();
+        let id = frame["story"].as_u64().unwrap();
+        let story = StoryId(id);
+        let invalid_params = [
+            json!({"story": id, "start": 0, "end": 3}),
+            json!({"story": id, "start": 0, "end": 3, "to": null}),
+            json!({"story": id, "start": 0, "end": 3, "to": 42}),
+        ];
+        for params in invalid_params {
+            let err = s.execute("spelling.change", &params).unwrap_err();
+            assert!(err.to_string().contains("`to` must be a string"), "{err}");
+            assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, "Thw quick");
+        }
+        s.execute("spelling.change", &json!({"story": id, "start": 0, "end": 3, "to": ""})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.story(story).unwrap().text, " quick");
     }
 
     #[test]
