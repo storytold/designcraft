@@ -11,6 +11,8 @@ default-run = "designcraft"
 workspace = true
 
 [dependencies]
+# The control channel's per-launch token comes from the OS random source (#1585).
+getrandom = "0.4"
 designcraft-engine = { workspace = true }
 designcraft-ui-egui = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "links", "clipboard"] }
