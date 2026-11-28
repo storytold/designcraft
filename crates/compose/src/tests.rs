@@ -10511,6 +10511,47 @@ fn cross_reference_text_breaks_at_its_spaces() {
     }
 }
 
+/// In right-to-left text a cluster can start with a mark that has no advance: the highlight must
+/// still cover its base, or the selected letters are drawn inverted on the bare page.
+#[test]
+fn the_highlight_covers_every_glyph_of_a_right_to_left_cluster() {
+    use designcraft_fonts::testing::font_mapping;
+    const FAMILY: &str = "DC Test Selected Arabic";
+    static ADDED: std::sync::Once = std::sync::Once::new();
+    ADDED.call_once(|| {
+        let glyphs = [('\u{0628}', 'a'), ('\u{064e}', 'b'), ('\u{0644}', 'c'), (' ', ' '), ('x', 'x'), ('y', 'y')];
+        designcraft_fonts::FontDb::global().add_font(font_mapping(FAMILY, &glyphs).unwrap());
+    });
+    let text = "\u{0628}\u{064e}\u{0644}\u{064e} \u{0628}\u{064e}\u{0644}\u{064e}";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    assert!(line.glyphs.iter().any(|g| g.rtl), "exercise right-to-left text");
+    assert!(line.glyphs.iter().any(|g| g.len == 0 && g.byte < text.len() && g.adv > 0.0), "a cluster's later glyph has its own width");
+    let quads = highlight_quads(line, 0, text.len(), false);
+    assert_eq!(quads.len(), 1, "one line of one direction is one band: {quads:?}");
+    for g in line.glyphs.iter().filter(|g| g.byte < text.len() && g.adv > 0.0) {
+        let covered = quads.iter().any(|q| {
+            let (x0, x1) = (q[0].x.min(q[1].x), q[0].x.max(q[1].x));
+            x0 <= g.x + 1e-6 && g.x + g.adv <= x1 + 1e-6
+        });
+        assert!(covered, "glyph at byte {} ({:.2}+{:.2}) outside {quads:?}", g.byte, g.x, g.adv);
+    }
+    // A selection across a change of direction lands in two places, and not on what lies between.
+    let text = "xy \u{0628}\u{0644}\u{0628} yx";
+    let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 600.0, 400.0), ParaAttrs::default());
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.font_family = Some(FAMILY.into()));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let line = all_lines(&cs)[0];
+    let first_arabic_end = "xy \u{0628}".len();
+    let quads = highlight_quads(line, 1, first_arabic_end, false);
+    assert_eq!(quads.len(), 2, "{quads:?}");
+    let last = line.glyphs.iter().find(|g| g.byte == "xy \u{0628}\u{0644}".len()).unwrap();
+    let middle = last.x + last.adv / 2.0;
+    assert!(quads.iter().all(|q| middle < q[0].x.min(q[1].x) || middle > q[0].x.max(q[1].x)), "an unselected letter stays out");
+}
+
 /// A story numbering list `list` (continuing across stories; Upper Roman, no tab after the
 /// number) in a frame at `r` on `page`.
 fn listed_story(d: &mut Document, page: usize, r: Rect, text: &str, list: &str) -> StoryId {
