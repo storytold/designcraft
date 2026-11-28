@@ -1,4 +1,4 @@
-use super::common::{color_value, pct};
+use super::common::{color_value, pct, tint_value};
 use super::{Color, ColorType, Ex, GradientKind, SwatchValue, escape_id, num, swatch};
 use craft_idml::model::{
     ColorDefinition, ColorGroupDefinition, ColorGroupMember, GradientDefinition, GradientStopDefinition, GraphicPart, InkDefinition,
@@ -107,7 +107,7 @@ impl<'a> Ex<'a> {
                     }
                 }
                 SwatchValue::Tint { base, tint } => {
-                    graphic.tints.push(TintDefinition { self_id: id, value: pct(*tint as f64), base_color: self.sw(base), name: s.name.clone() });
+                    graphic.tints.push(TintDefinition { self_id: id, value: tint_value(*tint), base_color: self.sw(base), name: s.name.clone() });
                 }
                 _ => {}
             }

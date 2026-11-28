@@ -1,4 +1,4 @@
-use super::common::{affine_s, bool_s, pct, uid, with_props};
+use super::common::{affine_s, bool_s, color_percent, tint_value, uid, with_props};
 use super::{Affine, ColumnsKind, Content, El, Ex, Item, Node, OBJECT_BUILTINS, PathData, Shape, TextFrameOptions, base64_encode, names, num, pt};
 
 impl<'a> Ex<'a> {
@@ -61,7 +61,7 @@ impl<'a> Ex<'a> {
         el.set("AppliedObjectStyle", names::style_self("ObjectStyle", OBJECT_BUILTINS, os));
         el.set("ItemTransform", affine_s(xf));
         el.set("FillColor", self.sw(&it.fill.swatch));
-        el.set("FillTint", pct(it.fill.tint as f64));
+        el.set("FillTint", tint_value(it.fill.tint));
         el.set("OverprintFill", bool_s(it.fill.overprint));
         if let Some([x0, y0, x1, y1]) = it.fill.gradient_vector {
             // Gradient Swatch tool vector: start, length and angle in the item's space.
@@ -325,7 +325,7 @@ impl<'a> Ex<'a> {
             && let Some(id) = self.swatch_ids.get(&g.fill.swatch)
         {
             el.set("FillColor", id.clone());
-            el.set("FillTint", pct(g.fill.tint as f64));
+            el.set("FillTint", tint_value(g.fill.tint));
         }
         let wanted = !data.is_empty() && embedding;
         // An image with no link of its own has nowhere else to live, so it is always embedded
@@ -435,7 +435,7 @@ pub(super) fn text_frame_pref(o: &TextFrameOptions, rule_color: &str) -> El {
             no_line_breaks: o.auto_size_no_line_breaks,
             column_rule_override: o.column_rule,
             column_rule_width: Some(o.column_rule_weight),
-            column_rule_tint: Some(f64::from(o.column_rule_tint) * 100.0),
+            column_rule_tint: Some(color_percent(o.column_rule_tint)),
             column_rule_offset: Some(o.column_rule_offset),
             column_rule_top_inset: Some(o.column_rule_top_inset),
             column_rule_bottom_inset: Some(o.column_rule_bottom_inset),

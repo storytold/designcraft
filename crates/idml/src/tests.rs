@@ -756,6 +756,45 @@ fn imports_hand_written_fixture() {
     assert_fixture_items(&d);
 }
 
+#[test]
+fn color_and_tint_export_preserves_decimal_values_and_round_trips() {
+    for (cmyk, tint) in [("0 85 90 5", "40"), ("0 85.125 90 5", "40.125"), ("0 85 90 5", "0"), ("0 85 90 5", "100")] {
+        let rgb = "17 127.125 255";
+        let graphic = GRAPHIC
+            .replace("10 20 30 40", cmyk)
+            .replace("255 0 0", rgb)
+            .replace(r#"Name="$ID/" Visible="false""#, r#"Name="Process Ink" Visible="true""#)
+            .replace(r#"TintValue="50""#, &format!(r#"TintValue="{tint}""#));
+        let spread = SPREAD.replace(r#"FillColor="Tint/Brand 50%25""#, &format!(r#"FillColor="Tint/Brand 50%25" FillTint="{tint}""#));
+        let input = zip_files(&[
+            ("designmap.xml", DESIGNMAP),
+            ("Resources/Graphic.xml", &graphic),
+            ("Resources/Styles.xml", STYLES),
+            ("Resources/Preferences.xml", PREFS),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", &spread),
+            ("Stories/Story_s1.xml", STORY),
+        ]);
+        let original = import_idml_with(&input, &|_| None).unwrap();
+        let output = export_idml(&original);
+        let graphics = zip_text(&output, "Resources/Graphic.xml");
+        for attr in [format!(r#"ColorValue="{cmyk}""#), format!(r#"ColorValue="{rgb}""#), format!(r#"TintValue="{tint}""#)] {
+            assert!(graphics.contains(&attr), "missing {attr}");
+        }
+        assert!(zip_text(&output, "Spreads/").contains(&format!(r#"FillTint="{tint}""#)));
+        let back = import_idml_with(&output, &|_| None).unwrap();
+        for name in ["Process Ink", "Brand", "Brand 50%"] {
+            assert_eq!(back.swatch(name).unwrap().value, original.swatch(name).unwrap().value);
+        }
+        for doc in [&original, &back] {
+            let frame = doc.stories.values().next().unwrap().frames[0];
+            let fill = &doc.item(frame).unwrap().fill;
+            assert_eq!(fill.swatch, "Brand 50%");
+            assert_eq!(fill.tint, (tint.parse::<f64>().unwrap() / 100.0) as f32);
+        }
+    }
+}
+
 fn assert_fixture_settings_and_pages(d: &Document) {
     assert_eq!(d.title, "Fixture");
     assert!(d.settings.facing_pages);

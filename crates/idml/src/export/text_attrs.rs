@@ -1,4 +1,4 @@
-use super::common::{bool_s, p, pct};
+use super::common::{bool_s, color_percent, p, pct, tint_value};
 use super::{CHAR_BUILTINS, CharAttrs, El, Ex, ListType, ParaAttrs, SpanColumns, escape_id, names, num, st};
 
 impl<'a> Ex<'a> {
@@ -26,13 +26,13 @@ impl<'a> Ex<'a> {
             el.set("FillColor", self.sw(v));
         }
         if let Some(v) = a.fill_tint {
-            el.set("FillTint", pct(v as f64));
+            el.set("FillTint", tint_value(v));
         }
         if let Some(v) = &a.stroke {
             el.set("StrokeColor", self.sw(v));
         }
         if let Some(v) = a.stroke_tint {
-            el.set("StrokeTint", pct(v as f64));
+            el.set("StrokeTint", tint_value(v));
         }
         if let Some(v) = a.stroke_weight {
             el.set("StrokeWeight", num(v));
@@ -167,7 +167,7 @@ impl<'a> Ex<'a> {
                 el.set(&format!("{k}Color"), if c.is_empty() { "Text Color".into() } else { self.sw(c) });
             }
             if let Some(t) = t {
-                el.set(&format!("{k}Tint"), num(t as f64 * 100.0));
+                el.set(&format!("{k}Tint"), tint_value(t));
             }
         }
     }
@@ -448,12 +448,12 @@ impl<'a> Ex<'a> {
         let values = craft_idml::model::ParagraphBoxValues {
             shading_on: a.shading_on,
             shading_color: a.shading_color.as_ref().map(|color| self.sw(color)),
-            shading_tint: a.shading_tint.map(|tint| f64::from(tint) * 100.0),
+            shading_tint: a.shading_tint.map(color_percent),
             shading_offsets: a.shading_offsets,
             shading_overprint: a.shading_overprint,
             border_on: a.border_on,
             border_color: a.border_color.as_ref().map(|color| self.sw(color)),
-            border_tint: a.border_tint.map(|tint| f64::from(tint) * 100.0),
+            border_tint: a.border_tint.map(color_percent),
             border_weights: a.border_weights,
             border_offsets: a.border_offsets,
             border_type: a.border_type.as_ref().map(names::stroke_type_out),
@@ -466,7 +466,7 @@ impl<'a> Ex<'a> {
             border_display_if_splits: a.border_display_if_splits,
             border_merge: a.border_merge,
             border_gap_color: a.border_gap_color.as_ref().map(|color| self.sw(color)),
-            border_gap_tint: a.border_gap_tint.map(|tint| f64::from(tint) * 100.0),
+            border_gap_tint: a.border_gap_tint.map(color_percent),
             border_overprint: a.border_overprint,
             border_gap_overprint: a.border_gap_overprint,
             shading_width: a.shading_width.map(|width| names::box_width_out(width).to_string()),
@@ -569,7 +569,7 @@ impl Ex<'_> {
         }
         for (key, tint) in [("KentenTint", a.kenten_fill_tint), ("KentenStrokeTint", a.kenten_stroke_tint)] {
             if let Some(t) = tint {
-                el.set(key, t.map_or_else(|| "-1".to_string(), |t| num(f64::from(t) * 100.0)));
+                el.set(key, t.map_or_else(|| "-1".to_string(), tint_value));
             }
         }
         if let Some(w) = a.kenten_stroke_weight {
