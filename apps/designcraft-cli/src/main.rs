@@ -42,7 +42,7 @@ use designcraft_engine::Session;
 use serde_json::{Value, json};
 
 /// The usage block. Shared by `--help` (stdout, success) and an unknown command (stderr, failure).
-const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
+const USAGE: &str = "usage: designcraft-cli run [--in FILE | --sample] [--cmd ID[=JSON]]... [--page N] [--scale S] [--pdf-options JSON] [--export OUT] [--all-pages DIR]\n         (--page, --scale and --pdf-options apply to the exports that follow them)\n       designcraft-cli commands [FILTER]\n       designcraft-cli describe COMMAND\n       designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]\n       designcraft-cli app [--port PORT] COMMAND [JSON] | --method METHOD [JSON]\n       designcraft-cli mcp [--connect PORT] [--sample] [--automation-read-root DIR]... [--automation-write-root DIR]...\n         the roots confine every file the agent's commands read (open, placed images, data sources, libraries) and\n         write (save, export, package) to those folders, links followed. Each may be given more than once; a kind\n         left out grants none of its access.\n         They run the in-process server, so they conflict with --connect (a running app is not confined by them).\n       designcraft-cli perf [--pages N] [--frames N] [--chars N] [--images N] [--runs N] [--strict]\n       designcraft-cli bench FILE [--runs N]\n       designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]  # built-in PDF/X checks (including visible unembedded fonts; the standard defaults to the file's own)\n       designcraft-cli thumbnail FILE.designcraft OUT.png [SIZE]  # the saved first-page preview, at most SIZE px\n       designcraft-cli links\n       designcraft-cli --version";
 
 /// `script --help`: the script syntax, otherwise only in `describe script.run` and docs/agents.md.
 const SCRIPT_HELP: &str = r#"usage: designcraft-cli script [FILE|-] [--in FILE | --sample] [--connect PORT] [--save OUT] [--export OUT] [--keep-going]
@@ -169,6 +169,17 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+    }
+    // The Launcher's nightly-v1 profile is a desktop-only contract. Never let its arguments fall
+    // through to the CLI's directory and credential discovery (which would read the stable
+    // profile), and answer before any subcommand parses them. A file name after `--` is a file.
+    if args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--launch-profile" || arg == "--profile-root" || arg.starts_with("--launch-profile=") || arg.starts_with("--profile-root="))
+    {
+        eprintln!("designcraft-cli: nightly-v1 is supported only by the DesignCraft desktop launcher protocol");
+        return ExitCode::from(2);
     }
     // `<sub> --help` asks about that subcommand, which every parser but `script`'s read as an
     // unknown option (photocraft#423). It goes to stdout and succeeds, as `--help` does.

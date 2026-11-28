@@ -48,10 +48,12 @@ bound.
 
 Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print).
 
+**Headless ([RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md)): 0 yes, 0 no (window 0, os 0, engine-gap 0), 0 partial, 277 unknown.** The rows name no command ids yet, so none can be `yes`. A row may add a fifth `Headless` cell, `no (<reach>)` or `partial (<reach>)` with a reach of `window`, `os` or `engine-gap`; a row without one is `unknown`.
+
 ## Rows
 
-| Area | Feature | Priority | Status |
-|---|---|---|---|
+| Area | Feature | Priority | Status | Headless |
+|---|---|---|---|---|
 | Application shell & workspace | Start/Home screen | P0 | D |
 | Application shell & workspace | Multiple documents in tabs | P0 | D |
 | Application shell & workspace | New Window for same document | P1 | D |
@@ -315,7 +317,7 @@ Open P0 items: Vector/page formats (PDF/AI/SVG/EPS place), Export to PDF (print)
 | View & navigation | Screen modes | P0 | D |
 | View & navigation | Overprint preview | P1 | D |
 | View & navigation | Rulers, guides, grids toggles | P0 | D |
-| View & navigation | Show/hide frame edges, threads, hidden chars | P0 | D |
+| View & navigation | Show/hide frame edges, threads, link badge, hidden chars | P0 | D |
 | View & navigation | Structure / tag markers | P2 | D |
 | View & navigation | Display performance | P0 | D |
 | View & navigation | Navigate pages | P0 | D |

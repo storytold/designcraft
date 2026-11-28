@@ -9,16 +9,19 @@ use super::{CommandSpec, PRESETS, Value, always, bad, cmd, has_doc, json, ok, st
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "file.new", "Document…", ["File", "New"], Some("Cmd+N"),
-            "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?, primaryTextFrame?: bool}",
+            "{preset?: \"Letter\"|\"A4\"|… or a saved preset (file.savePreset), intent?: print|web|mobile, units?: points|picas|millimeters|…, width?, height?, pages?, startPage?, facingPages?, binding?: leftToRight|rightToLeft (anything else is refused), columns?, gutter?, margins?: number|{top,bottom,inside,outside}, bleed?, slug?: n | [top, bottom, inside, outside], title?, primaryTextFrame?: bool}",
             always, file_new),
         cmd!(noundo "file.newSample", "Sample Document", ["Help"], None, "{} — a multi-page magazine sample", always, file_sample),
-        cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true`)", always, |s, _| {
+        cmd!(query "file.presets", "Document Presets", [], None, "{} → the built-in presets [{name, intent, width, height, units}], then the saved ones (with `saved: true` and their `binding`: leftToRight|rightToLeft)", always, |s, _| {
             let mut presets: Vec<Value> = PRESETS.iter().map(|p| serde_json::to_value(p).unwrap_or_default()).collect();
             presets.extend(
                 s.prefs
                     .document_presets
                     .iter()
-                    .map(|p| json!({"name": p.title, "intent": p.intent, "width": p.width, "height": p.height, "units": p.units, "saved": true})),
+                    .map(|p| {
+                        let binding = if p.right_to_left_binding { "rightToLeft" } else { "leftToRight" };
+                        json!({"name": p.title, "intent": p.intent, "width": p.width, "height": p.height, "units": p.units, "binding": binding, "saved": true})
+                    }),
             );
             Ok(Value::Array(presets))
         }),
@@ -48,9 +51,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s.prefs.recent_files.clear();
             ok()
         }),
-        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?} — a `path` without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path} — a path without the .designcraft extension gets it → {path: the file written, bytes}", has_doc, file_save),
-        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, embedLinks?: copy every linked file in (fails when one is missing or changed)} — writes the document without changing which file it is or its unsaved state; a path without the .designcraft extension gets it → {path: the file written, bytes, warnings}", has_doc, file_save_a_copy),
+        cmd!(noundo "file.save", "Save", ["File"], Some("Cmd+S"), "{path?, allowLoss?} — a `.idml` path is written as IDML (images embedded; refused when IDML can't keep some of the document, see file.idmlLosses, unless allowLoss); any other `path` without the .designcraft extension gets it → {path: the file written, bytes, warnings}", has_doc, file_save),
+        cmd!(noundo "file.saveAs", "Save As…", ["File"], Some("Cmd+Shift+S"), "{path, allowLoss?} — a `.idml` path is written as IDML (images embedded; refused when IDML can't keep some of the document, see file.idmlLosses, unless allowLoss); any other path without the .designcraft extension gets it → {path: the file written, bytes, warnings}", has_doc, file_save),
+        cmd!(noundo "file.saveACopy", "Save a Copy…", ["File"], None, "{path, embedLinks?: copy every linked file in (fails when one is missing or changed), allowLoss?} — writes the document without changing which file it is or its unsaved state; a `.idml` path is written as IDML (refused when IDML can't keep some of the document, unless allowLoss), any other without the .designcraft extension gets it → {path: the file written, bytes, warnings}", has_doc, file_save_a_copy),
+        cmd!(query "file.idmlLosses", "IDML Losses", [], None,
+        "{} → {editorialNotes, endnotes}: what saving the document as IDML would lose (editorial notes aren't written; endnotes become plain text in the endnote frame). A `.idml` save refuses while any is non-zero, unless allowLoss",
+        has_doc, |s, _| {
+            let lost = designcraft_idml::unwritten(&s.doc()?.doc);
+            Ok(json!({"editorialNotes": lost.editorial_notes, "endnotes": lost.endnotes}))
+        }),
         cmd!(noundo "file.revert", "Revert", ["File"], None, "{} — back to the last saved version (not undoable)", can_revert, file_revert),
         cmd!(query "file.recovery.list", "Recovery Data", [], None, "{dir?} → [{uid, path, title, saved}] unsaved documents left by a crash (default: the session's recovery folder)", always, |s, p| {
             let dir = recovery_dir(s, p, FolderAccess::Read)?;
