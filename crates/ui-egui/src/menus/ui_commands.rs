@@ -208,6 +208,7 @@ pub const UI_COMMANDS: &[(&str, &str, Option<&str>, &str)] = &[
     ("app.characterStylesPanel", "Character Styles", Some("Cmd+Shift+F11"), "{} — the Character Styles panel"),
     ("app.paragraphStylesPanel", "Paragraph Styles", Some("Cmd+F11"), "{} — the Paragraph Styles panel"),
     ("app.insertCurrentPageNumber", "Current Page Number", Some("Cmd+Alt+Shift+N"), "{} — the Current Page Number marker at the insertion point"),
+    ("app.insertPageBreak", "Page Break", Some("Cmd+Shift+Enter"), "{} — insert a page break in the selected text"),
     ("app.insertEmSpace", "Em Space", Some("Cmd+Shift+M"), "{} — an em space at the insertion point"),
     ("app.insertEnSpace", "En Space", Some("Cmd+Shift+N"), "{} — an en space at the insertion point"),
     ("app.storyEditor", "Edit in Story Editor", Some("Cmd+Y"), "{story?}"),

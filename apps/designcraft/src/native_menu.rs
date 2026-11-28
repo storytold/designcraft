@@ -126,6 +126,7 @@ impl NativeMenu {
         let recording = app.shortcut_recording();
         app.native_shortcuts = keys
             .iter()
+            .filter(|(id, _)| id != "app.insertPageBreak")
             .filter_map(|(id, sc)| sc.as_ref().filter(|sc| !recording && accel(sc).is_some()).map(|sc| (id.clone(), sc.clone())))
             .collect();
         let recent = recent.map(|submenu| RecentMenu { submenu, shown: Vec::new(), ids: Vec::new(), separator: None });
@@ -252,8 +253,18 @@ fn build(
             Item::Cmd { label, id, params, .. } => {
                 *counter += 1;
                 let mid = format!("dc{counter}");
-                let sc = if params.is_null() && !app.shortcut_recording() { shortcut(app, id).as_deref().and_then(accel) } else { None };
-                let label = menu_title(app, label);
+                let mut label = menu_title(app, label);
+                let sc = if id == "app.insertPageBreak" {
+                    // The canvas owns this shortcut only while editing text.
+                    if let Some(keys) = menus::shortcut_label(app, id, params) {
+                        label.push_str(&format!(" ({keys})"));
+                    }
+                    None
+                } else if params.is_null() && !app.shortcut_recording() {
+                    shortcut(app, id).as_deref().and_then(accel)
+                } else {
+                    None
+                };
                 let handle = if menus::checked(app, id, params).is_some() {
                     let c = CheckMenuItem::with_id(mid.clone(), label, true, false, sc);
                     let _ = parent.append(&c);

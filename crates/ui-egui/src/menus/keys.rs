@@ -99,6 +99,9 @@ fn take_keys(app: &mut DesignApp, input: &mut egui::InputState, typing: bool) ->
     // handle them, and Paste carries the text.
     let accept = |hit: &craft_keymap::egui::Hit| {
         let c = &hit.command;
+        if c.id == "app.insertPageBreak" && !typing {
+            return false;
+        }
         let on_bar =
             || c.params.is_null() && native.get(&c.id).and_then(|sc| craft_keymap::Binding::parse(sc).ok()).is_some_and(|b| b.trigger == hit.trigger);
         let leave = hit.exact && hit.cycle.is_empty() && (c.id == "edit.clear" || on_bar());

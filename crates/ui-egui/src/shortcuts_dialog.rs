@@ -343,6 +343,13 @@ mod tests {
     }
 
     #[test]
+    fn page_break_is_listed_in_keyboard_shortcuts() {
+        let mut h = opened();
+        let page_break = row(&mut h, "Page Break", "app.insertPageBreak");
+        assert!(has(&h, &page_break));
+    }
+
+    #[test]
     fn a_recorded_chord_runs_nothing_changes_the_menus_at_once_and_ok_keeps_a_custom_set() {
         let mut h = opened();
         let quick_apply = row(&mut h, "Quick Apply…", "app.palette");
