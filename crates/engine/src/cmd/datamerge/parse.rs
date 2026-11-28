@@ -370,12 +370,12 @@ fn decode_utf8(bytes: &[u8], name: &str) -> Result<String, String> {
 }
 
 fn sniff(name: &str, text: &str) -> Delimiter {
-    match craft_file_formats::detect(name, &[]) {
+    let detected = match craft_file_formats::detect(name, &[]) {
         Some(craft_file_formats::Format::Tsv) => return Delimiter::Tab,
-        Some(craft_file_formats::Format::Csv) => return Delimiter::Comma,
-        _ => {}
-    }
-    match craft_csv::sniff_delimiter(text, '"') {
+        Some(craft_file_formats::Format::Csv) => craft_csv::sniff_csv_delimiter(text, '"'),
+        _ => craft_csv::sniff_delimiter(text, '"'),
+    };
+    match detected {
         b'\t' => Delimiter::Tab,
         b';' => Delimiter::Semicolon,
         _ => Delimiter::Comma,

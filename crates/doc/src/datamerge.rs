@@ -72,6 +72,25 @@ impl Delimiter {
     }
 }
 
+/// How [`DataSource::delimiter`] was chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DelimiterOrigin {
+    /// Saved before provenance was recorded (legacy `.csv` sources forced comma).
+    #[default]
+    Legacy,
+    /// Detected by the delimiter sniffer.
+    Detected,
+    /// Explicitly chosen via the `delimiter` parameter.
+    Explicit,
+}
+
+impl DelimiterOrigin {
+    pub fn is_legacy(&self) -> bool {
+        *self == Self::Legacy
+    }
+}
+
 /// File size and modification time of the last successful read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +121,8 @@ pub struct DataSource {
     pub name: String,
     #[serde(default)]
     pub delimiter: Delimiter,
+    #[serde(default, skip_serializing_if = "DelimiterOrigin::is_legacy")]
+    pub delimiter_origin: DelimiterOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheet: Option<String>,
     pub fields: Vec<DataField>,
