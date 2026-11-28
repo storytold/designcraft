@@ -14,9 +14,11 @@ mod psd;
 mod resolution;
 mod tiff_reduced;
 mod tone;
+mod wmf;
 pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
+pub use wmf::{is_wmf, wmf_bitmap};
 
 /// CSS pixels (SVG user units) → points.
 pub const PT_PER_PX: f64 = 0.75;
