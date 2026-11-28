@@ -278,8 +278,8 @@ fn merge_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     // so this template edit does not push an undo step. The fingerprint stays the last read.
     if let Some(status) = linked_status {
         remember_source_status(s, status);
-        set_source_status(&mut merged, status);
     }
+    merged.data_merge.sources.clear();
     merged.data_merge.placeholders.clear();
     merged.title = format!("{} merged", src.title);
     let pages = merged.page_count();
