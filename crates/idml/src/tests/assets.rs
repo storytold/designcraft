@@ -362,8 +362,8 @@ fn a_pdf_page_placed_with_two_crops_imports_as_two_assets() {
 }
 
 /// The swatch applied to a placed image (`<Image FillColor FillTint>`) colours a greyscale or
-/// bitmap image in InDesign (#1094). Black at 100%, InDesign's own value for an image nobody
-/// coloured, and None leave the image as it is, like a missing attribute.
+/// bitmap image in InDesign (#1094). Keep Black too: for a bitmap image, its white pixels become
+/// transparent, revealing the frame's fill; None behaves like a missing attribute.
 #[test]
 fn the_swatch_applied_to_an_image_is_kept() {
     let bytes = vec![42u8; 300];
@@ -392,7 +392,7 @@ fn the_swatch_applied_to_an_image_is_kept() {
     let none = || (designcraft_color::swatch::NONE.to_string(), 1.0);
     let want = vec![
         ("Brand".to_string(), 0.5),
-        none(),
+        (designcraft_color::swatch::BLACK.to_string(), 1.0),
         none(),
         none(),
         ("C=10 M=20 Y=30 K=40".to_string(), 1.0),
@@ -405,8 +405,8 @@ fn the_swatch_applied_to_an_image_is_kept() {
     let spreads = zip_text(&out, "Spreads/");
     let images: Vec<&str> = spreads.split("<Image ").skip(1).map(|s| s.split('>').next().unwrap_or("")).collect();
     assert_eq!(images.len(), 6);
-    // Only an image with a swatch says so; none of them gets an invented `Swatch/None`.
-    assert_eq!(images.iter().filter(|e| e.contains("FillColor=")).count(), 3, "{images:?}");
+    // Only images with an applied swatch say so; none gets an invented `Swatch/None`.
+    assert_eq!(images.iter().filter(|e| e.contains("FillColor=")).count(), 4, "{images:?}");
     assert!(images.iter().any(|e| e.contains(r#"FillColor="Color/Brand""#) && e.contains(r#"FillTint="50""#)), "{images:?}");
     assert!(!images.iter().any(|e| e.contains("Swatch/None")), "{images:?}");
     assert_eq!(fills(&import_idml_with(&out, &reader).unwrap()), want);

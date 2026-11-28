@@ -280,14 +280,11 @@ impl<'r> Importer<'r> {
     }
 
     /// The swatch applied to a placed image (`FillColor`, `FillTint`): it colours a greyscale or
-    /// bitmap image. Black at 100% is how InDesign writes an image nobody coloured: no swatch.
+    /// bitmap image. Keep Black too: on bitmap images its white pixels become transparent.
     fn image_fill(&mut self, graphic: &craft_idml::model::Graphic) -> Fill {
         let Some(r) = graphic.fill_color() else { return Fill::none() };
         let swatch = self.swatch_ref(r);
         let tint = tint(graphic.fill_tint()).unwrap_or(1.0);
-        if swatch == swatch::BLACK && tint >= 1.0 {
-            return Fill::none();
-        }
         Fill { swatch, tint, ..Fill::none() }
     }
 
