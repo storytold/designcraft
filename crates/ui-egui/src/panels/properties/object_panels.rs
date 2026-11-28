@@ -16,17 +16,21 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         text_stroke_panel(app, ui, &a["chars"]);
         return;
     }
-    let Some(i) = sel_info(app) else {
-        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Select an object."));
-        return;
-    };
-    let Some(st) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).map(|it| it.stroke.clone())) else {
+    let st = if sel_info(app).is_some() {
+        let Some(st) = app.session.active().and_then(|d| d.selection.items.first().and_then(|id| d.doc.item(*id)).map(|it| it.stroke.clone())) else {
+            return;
+        };
+        st
+    } else if let Some(d) = app.session.active() {
+        d.doc.settings.new_object.to_stroke()
+    } else {
+        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "No document open"));
         return;
     };
     let t = Tokens::get(ui.ctx());
     egui::Grid::new("stroke_panel").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
         caption(ui, crate::i18n::tr(&app.ui.language, "Weight:"));
-        if let Some(v) = number(ui, "sw", Some(i.stroke_weight), " pt", 60.0, 3) {
+        if let Some(v) = number(ui, "sw", Some(st.weight), " pt", 60.0, 3) {
             let _ = app.run("object.stroke", json!({"weight": v.clamp(0.0, 1000.0)}));
         }
         ui.end_row();
@@ -134,7 +138,7 @@ pub fn stroke_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         });
         ui.end_row();
         caption(ui, crate::i18n::tr(&app.ui.language, "Color:"));
-        crate::panels::swatch_picker(app, ui, "spick", Some(i.stroke.clone()), |app, n| {
+        crate::panels::swatch_picker(app, ui, "spick", Some(st.swatch.clone()), |app, n| {
             let _ = app.run("object.stroke", json!({"swatch": n}));
         });
         ui.end_row();
@@ -548,9 +552,11 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         // Distance and Size in the document's unit, as in the Effects dialog: a bare `7` means the
         // same in both.
         let u = units(app);
+        // Room for a measurement with its unit (`35.278 mm`).
+        const MEASURE_W: f32 = 66.0;
         egui::Grid::new("dsg").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             caption(ui, crate::i18n::tr(&app.ui.language, "Distance"));
-            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, 56.0) {
+            if let Some(v) = measure(ui, "dsd", Some(ds.distance), u, MEASURE_W) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "distance": v}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Angle"));
@@ -577,7 +583,7 @@ pub fn effects_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "opacity": v / 100.0}));
             }
             caption(ui, crate::i18n::tr(&app.ui.language, "Size"));
-            if let Some(v) = measure(ui, "dss", Some(ds.size), u, 56.0) {
+            if let Some(v) = measure(ui, "dss", Some(ds.size), u, MEASURE_W) {
                 let _ = app.run("object.dropShadow", json!({"on": true, "size": v}));
             }
             ui.end_row();
