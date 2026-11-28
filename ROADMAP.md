@@ -407,6 +407,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 ## Progress log
 
+- **2026-11-18** · Pasted vector art keeps the holes of paths filled with the even-odd rule, such as a ring or a letter with a counter (#2201): when its contour checks succeed, `edit.pasteSvg` reverses the nested contours so the pasted path fills the same area. It pastes a path whose contours cross or touch, or that is too large to check, as drawn, with a warning. No readiness percentage change.
 - **2026-11-18** · View › Extras › Show/Hide Link Badge: frames showing a linked picture carry a link badge on their top edge, a warning when the file changed and a stop when it is missing; hidden in Preview. No readiness percentage change.
 - **2026-11-16** · Fitting a bottom-aligned text frame from its top handle keeps its bottom edge and text in place (#2880): double-clicking any selection handle passes the opposite local reference point (`ref` 0..=8) to `object.fit`, menu/panel/scripting fits without `ref` anchor to vertical justification (`Bottom`/`Center`/`Top`/`Justify`), and `transform.resize` keeps unchanged edges pinned across its `1e-3` scale clamp and flips. No readiness percentage change.
 - **2026-11-13** · A placed Photoshop file comes in at its own resolution (ResolutionInfo), as other rasters do since #1991: a 300 ppi PSD was placed four times too large at 72 ppi. No readiness percentage change.
