@@ -11,6 +11,8 @@ pub type DownloadFn = Box<dyn FnMut(&str, &[u8]) -> Result<(), String>>;
 
 pub type ClipboardFn = Box<dyn FnMut() -> Option<String>>;
 
+/// Open a file in its default application, or with `reveal`, show it in the file manager.
+pub type OpenPathFn = Box<dyn FnMut(&std::path::Path, bool) -> Result<(), String>>;
 /// An image on the system clipboard.
 pub enum ClipboardImage {
     /// A bitmap (a screenshot, an image copied in a browser): unpremultiplied RGBA, rows top to
@@ -71,6 +73,9 @@ pub struct Services {
     /// The system clipboard's text, for Paste chosen from a menu (egui only delivers it with the
     /// paste keys, which a native menu bar takes first).
     pub clipboard_text: Option<ClipboardFn>,
+    /// Open a linked file in its application or show it in the file manager (Edit Original,
+    /// Reveal in Explorer / Finder). Without it (the web build), Edit Original and Reveal are greyed out.
+    pub open_path: Option<OpenPathFn>,
     /// The system clipboard's image (a bitmap, else the first image file of a copied file list),
     /// for Paste chosen from a menu when the clipboard holds no text or only an image's address.
     pub clipboard_image: Option<ClipboardImageFn>,
