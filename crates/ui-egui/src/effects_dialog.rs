@@ -149,7 +149,10 @@ fn preview(app: &mut DesignApp, d: &mut Dialog) {
     if shown.as_ref() == Some(&p) {
         return;
     }
-    if shown.is_none() && app.session.begin_interaction("Effects").is_err() {
+    if shown.is_none()
+        && let Err(e) = app.session.begin_interaction("Effects")
+    {
+        d.fields.insert("status".into(), json!(e.to_string()));
         return;
     }
     match app.session.preview("object.effects", p.clone()) {
@@ -933,6 +936,26 @@ mod tests {
         let fx = app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.clone();
         assert!(fx.outer_glow.on);
         assert_eq!(fx.outer_glow.mode, designcraft_color::BlendMode::Normal);
+    }
+
+    /// While a tool's drag is open the preview does not start, and the dialog shows why.
+    #[test]
+    fn the_preview_shows_the_refusal_while_a_tool_drag_is_open() {
+        use designcraft_tools::{PointerEvent, PointerKind};
+        let (mut app, id) = app_with_frame();
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx, "en");
+        let v = designcraft_engine::ViewInfo::at_zoom(1.0);
+        app.session.set_tool("rectangle");
+        app.session.pointer(&PointerEvent::new(PointerKind::Down, 400.0, 400.0), v).unwrap();
+        app.session.pointer(&PointerEvent::new(PointerKind::Drag, 450.0, 450.0), v).unwrap();
+        let label = app.session.doc().unwrap().interaction.as_ref().map(|it| it.label.clone()).expect("the drag is open");
+        open(&mut app, "dropShadow");
+        frame(&mut app, &ctx);
+        let d = app.ui.dialog.as_ref().unwrap();
+        assert_eq!(d.fields.get("status"), Some(&json!(format!("{label} is in progress"))));
+        assert!(!d.fields.contains_key(PREVIEWED));
+        assert!(!app.session.doc().unwrap().doc.item(designcraft_doc::ItemId(id)).unwrap().effects.drop_shadow.on);
     }
 
     #[test]
