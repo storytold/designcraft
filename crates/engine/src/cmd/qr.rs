@@ -17,7 +17,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Generate QR Code…",
         ["Object"],
         None,
-        "{type?: url|text|sms|email|vcard (default url), content (url/text), number?, message?, to?, subject?, body?, name?, phone?, email?, org?, url?, color? (swatch, [Black]), rect? (new object; else into the selected frame, or re-encode a selected code), spread?} → {id, content}",
+        "{type?: url|text|sms|email|vcard (default url), content (url/text), number?, message?, to?, subject?, body?, name?, phone?, email?, org?, url?, color? (swatch, [Black]), rect? (new object), id? (the frame to fill; else the first selected), spread?}: without `rect`, into that frame, or re-encode a code there → {id, content}",
         has_doc,
         qr_code
     )]
@@ -66,7 +66,8 @@ fn qr_code(s: &mut Session, p: &Value) -> Result<Value> {
         if d.swatch(&color).is_none() {
             return Err(bad(ID, format!("no swatch `{color}`")));
         }
-        let target = if rect.is_some() { None } else { sel.first().copied() };
+        let named = p.get("id").and_then(Value::as_u64).map(ItemId);
+        let target = if rect.is_some() { None } else { named.or_else(|| sel.first().copied()) };
         let id = match (rect, target) {
             (Some(r), _) => {
                 let id = ItemId(d.alloc());
