@@ -806,6 +806,14 @@ fn the_argument_parser_refuses_what_it_cannot_mean() {
     assert!(err.contains("--scale needs a value"), "{err:?}");
     assert_eq!(std::fs::read(&first).unwrap(), b"older file", "the file that was already there is untouched");
     assert!(!dir.join("second.png").exists(), "and nothing else is written");
+
+    for unknown in ["--typo", "unexpected"] {
+        let out = cli().current_dir(&dir).args(["run", "--sample", "--export", first.to_str().unwrap(), unknown]).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{err:?}");
+        assert!(err.contains(&format!("unknown option {unknown}")), "{err:?}");
+        assert_eq!(std::fs::read(&first).unwrap(), b"older file", "an unknown token must be rejected before exporting");
+    }
     std::fs::remove_file(&first).unwrap();
 
     // A missing value is still a missing value, with the message it had.
