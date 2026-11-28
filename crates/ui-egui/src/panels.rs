@@ -13,6 +13,7 @@ pub mod notes;
 pub mod pages;
 pub mod properties;
 pub mod separations;
+pub mod spelling;
 pub mod story;
 pub mod styles;
 pub mod swatches;
