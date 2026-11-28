@@ -10508,3 +10508,19 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+/// A bulleted paragraph whose whole text is a drop cap composes a line holding only the list
+/// label (the cap is placed beside it): that line keeps the paragraph's leading instead of
+/// landing on the preceding line's baseline.
+#[test]
+fn a_label_only_line_keeps_the_paragraph_leading() {
+    let text = "one\nD";
+    let para =
+        ParaAttrs { list_type: Some(designcraft_doc::ListType::Bullets), drop_cap_lines: Some(2), drop_cap_chars: Some(1), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2, "{} lines", lines.len());
+    let gap = lines[1].baseline - lines[0].baseline;
+    assert!((gap - 14.4).abs() < 1e-6, "the label line sits {gap} below the previous line, not a paragraph leading 14.4");
+}

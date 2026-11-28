@@ -4817,10 +4817,12 @@ fn line_metrics(
         desc = desc.max(g.descent - shift.min(0.0));
     }
     if !own_text {
-        // Only a label (an empty list paragraph): as an empty paragraph.
+        // Only a label (an empty list paragraph, or a bulleted paragraph whose text is entirely
+        // drop cap): as an empty paragraph, with the paragraph's base leading.
         let face = face();
         tops.typo_ascent = face.typo_ascent * base_size / face.upem;
         tops.em = em_box_top(&face, base_size);
+        lead = base_leading;
     }
     (asc, tops, desc, lead)
 }
