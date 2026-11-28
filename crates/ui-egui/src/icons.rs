@@ -997,6 +997,34 @@ fn paint_page(pen: &mut Pen, name: &str) -> bool {
         }
         // Paragraph Direction: the pilcrow, with an arrow beside it at its middle pointing the way
         // its lines run (on its right for left to right, on its left for right to left).
+        // Story Direction: an arrow running out of a left text frame into the frame it threads to
+        // (from the right frame for right to left). Filled in convex pieces from the 200-unit
+        // artwork: rectangles for the frames and the shaft, the head as two arms and a notch.
+        "story-dir-ltr" | "story-dir-rtl" => {
+            let rtl = name == "story-dir-rtl";
+            let m = |x: f32| if rtl { 20.0 - x } else { x };
+            for (x0, y0, x1, y1) in [
+                // The frame the arrow enters, open toward it.
+                (10.71, 5.09, 17.09, 6.59),
+                (15.59, 5.09, 17.09, 15.01),
+                (10.71, 13.51, 17.09, 15.01),
+                // The frame the arrow leaves, with the gap it leaves through.
+                (2.91, 5.09, 9.29, 6.59),
+                (2.91, 5.09, 4.41, 15.01),
+                (2.91, 13.51, 9.29, 15.01),
+                (7.79, 5.09, 9.29, 7.8),
+                (7.79, 12.3, 9.29, 15.01),
+                // The shaft.
+                (7.79, 9.25, 11.08, 10.75),
+            ] {
+                pen.frect(m(x0).min(m(x1)), y0, m(x0).max(m(x1)), y1);
+            }
+            let upper = [(11.27, 7.36), (13.47, 9.46), (13.7, 10.0), (11.87, 10.0), (11.08, 9.25), (10.23, 8.44)];
+            let lower = upper.map(|(x, y)| (m(x), 20.0 - y));
+            pen.fill(&upper.map(|(x, y)| (m(x), y)));
+            pen.fill(&lower);
+            pen.fill(&[(m(11.08), 9.25), (m(11.87), 10.0), (m(11.08), 10.75)]);
+        }
         "pdir-ltr" | "pdir-rtl" => {
             let rtl = name == "pdir-rtl";
             // The pilcrow, drawn as text like the other ¶ icons; moved right for right to left.

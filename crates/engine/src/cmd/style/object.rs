@@ -161,6 +161,12 @@ pub(super) fn create_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(tf) = text_frame_param(CREATE, p, os.text_frame.as_ref())? {
         os.text_frame = tf;
     }
+    if let Some(d) = story_direction_param(CREATE, p)? {
+        os.story_direction = d;
+    }
+    if let Some(om) = optical_margin_param(CREATE, p, os.optical_margin)? {
+        os.optical_margin = om;
+    }
     if let Some(e) = effects_param("style.object.create", p, os.effects.as_ref().unwrap_or(&Effects::default()))? {
         os.effects = Some(e);
     }
@@ -187,6 +193,46 @@ fn check_swatches(cmd: &str, s: &Session, p: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `storyDirection`: leftToRight or rightToLeft, or null (the object style sets none).
+fn story_direction_param(cmd: &str, p: &Value) -> Result<Option<Option<designcraft_doc::TextDirection>>> {
+    match p.get("storyDirection") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(|d| Some(Some(d)))
+            .map_err(|_| bad(cmd, "`storyDirection` must be leftToRight, rightToLeft or null")),
+    }
+}
+
+/// `opticalMargin`: `{on?: bool, size?: pt (0.1–1296)}` merged over `base` (the default when the
+/// style set none), or null (the object style sets none).
+fn optical_margin_param(
+    cmd: &str,
+    p: &Value,
+    base: Option<designcraft_doc::OpticalMargin>,
+) -> Result<Option<Option<designcraft_doc::OpticalMargin>>> {
+    let v = match p.get("opticalMargin") {
+        None => return Ok(None),
+        Some(Value::Null) => return Ok(Some(None)),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad(cmd, "`opticalMargin` must be {on?, size?} or null")),
+    };
+    if let Some(k) = v.keys().find(|k| !matches!(k.as_str(), "on" | "size")) {
+        return Err(bad(cmd, format!("`opticalMargin` has no `{k}`")));
+    }
+    let mut om = base.unwrap_or_default();
+    if let Some(on) = v.get("on") {
+        om.on = on.as_bool().ok_or_else(|| bad(cmd, "`opticalMargin.on` must be a bool"))?;
+    }
+    if let Some(size) = v.get("size") {
+        om.size = size
+            .as_f64()
+            .and_then(designcraft_doc::OpticalMargin::clamp_size)
+            .ok_or_else(|| bad(cmd, "`opticalMargin.size` must be a finite number of points"))?;
+    }
+    Ok(Some(Some(om)))
 }
 
 /// `paragraphStyle`: a paragraph style's name, or null (the object style sets none).
@@ -376,6 +422,12 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(tf) = text_frame_param(CMD, p, old.text_frame.as_ref())? {
         new.text_frame = tf;
     }
+    if let Some(d) = story_direction_param(CMD, p)? {
+        new.story_direction = d;
+    }
+    if let Some(om) = optical_margin_param(CMD, p, old.optical_margin)? {
+        new.optical_margin = om;
+    }
     if p.get("rename").is_some_and(|r| !r.is_string()) {
         return Err(bad(CMD, "`rename` must be a style name"));
     }
@@ -495,6 +547,104 @@ pub(super) fn edit_object(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+        // A story of a frame using the style takes the new Story Options while it has the old
+        // ones (any, when the style set none before).
+        let new_dir = new.story_direction.filter(|_| new.story_direction != old.story_direction);
+        let new_om = new.optical_margin.filter(|_| new.optical_margin != old.optical_margin);
+        if new_dir.is_some() || new_om.is_some() {
+            let mut stories: Vec<_> =
+                d.placed_items().into_iter().filter(|i| i.object_style == new.name).filter_map(|i| i.text_frame().map(|tf| tf.story)).collect();
+            stories.sort_unstable();
+            stories.dedup();
+            for sid in stories {
+                let Some(st) = d.story_mut(sid) else { continue };
+                let mut changed = false;
+                if let Some(dir) = new_dir
+                    && st.direction != dir
+                    && old.story_direction.is_none_or(|was| st.direction == was)
+                {
+                    st.direction = dir;
+                    changed = true;
+                }
+                if let Some(om) = new_om
+                    && st.optical_margin != om
+                    && old.optical_margin.is_none_or(|was| st.optical_margin == was)
+                {
+                    st.optical_margin = om;
+                    changed = true;
+                }
+                if changed {
+                    st.rev = st.rev.wrapping_add(1);
+                    restyled += 1;
+                }
+            }
+        }
         Ok(json!({"name": new.name, "updated": updated, "restyled": restyled}))
     })
+}
+
+#[cfg(test)]
+mod story_direction_tests {
+    use crate::Session;
+    use designcraft_doc::{StoryId, TextDirection};
+    use serde_json::json;
+
+    fn direction(s: &Session, sid: StoryId) -> TextDirection {
+        s.doc().unwrap().doc.story(sid).unwrap().direction
+    }
+
+    /// An object style's Story Direction goes to the story of each text frame it is applied to;
+    /// editing it moves the stories still in the old direction; a bad value is refused.
+    #[test]
+    fn an_object_styles_story_direction_reaches_its_frames_stories() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
+        let g = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
+        let (a, b) = (StoryId(f["story"].as_u64().unwrap()), StoryId(g["story"].as_u64().unwrap()));
+        assert!(s.execute("style.object.create", &json!({"name": "Bad", "storyDirection": "upward"})).is_err());
+        s.execute("style.object.create", &json!({"name": "Hebrew Frame", "storyDirection": "rightToLeft"})).unwrap();
+        s.execute("style.object.apply", &json!({"name": "Hebrew Frame", "ids": [f["id"], g["id"]]})).unwrap();
+        assert_eq!((direction(&s, a), direction(&s, b)), (TextDirection::RightToLeft, TextDirection::RightToLeft));
+        // A story set by hand differs from its style; Clear Overrides puts it back.
+        s.execute("story.options", &json!({"story": b.0, "direction": "leftToRight"})).unwrap();
+        s.execute("style.object.clearOverrides", &json!({"ids": [g["id"]]})).unwrap();
+        assert_eq!(direction(&s, b), TextDirection::RightToLeft);
+        // Editing the style moves the stories still in its old direction.
+        s.execute("story.options", &json!({"story": b.0, "direction": "leftToRight"})).unwrap();
+        let r = s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "storyDirection": "leftToRight"})).unwrap();
+        assert_eq!(r["restyled"], 1, "{r}");
+        assert_eq!((direction(&s, a), direction(&s, b)), (TextDirection::LeftToRight, TextDirection::LeftToRight));
+        // Optical Margin Alignment goes to the stories the same way; a bad size or key is refused.
+        assert!(s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "opticalMargin": {"size": "big"}})).is_err());
+        assert!(s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "opticalMargin": {"hang": true}})).is_err());
+        s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "opticalMargin": {"on": true, "size": 18}})).unwrap();
+        let om = |s: &Session, sid: StoryId| s.doc().unwrap().doc.story(sid).unwrap().optical_margin;
+        assert_eq!((om(&s, a).on, om(&s, a).size, om(&s, b).on), (true, 18.0, true));
+        // null: the style sets none, and applying it leaves the story as it is.
+        s.execute("story.options", &json!({"story": a.0, "direction": "rightToLeft"})).unwrap();
+        s.execute("style.object.edit", &json!({"name": "Hebrew Frame", "storyDirection": null})).unwrap();
+        s.execute("style.object.apply", &json!({"name": "Hebrew Frame", "ids": [f["id"]]})).unwrap();
+        assert_eq!(direction(&s, a), TextDirection::RightToLeft);
+    }
+
+    /// A new text frame's story takes the default text frame style's Story Options (InDesign
+    /// doesn't: there a new frame needs Clear Overrides); a part the style doesn't set stays as a
+    /// new story has it (the direction by the binding).
+    #[test]
+    fn a_new_text_frame_takes_the_default_styles_story_options() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let basic = designcraft_doc::BASIC_TEXT_FRAME;
+        s.execute("style.object.edit", &json!({"name": basic, "storyDirection": "rightToLeft"})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 300, 200], "content": "text", "text": "One"})).unwrap();
+        let a = StoryId(f["story"].as_u64().unwrap());
+        assert_eq!(direction(&s, a), TextDirection::RightToLeft);
+        assert!(!s.doc().unwrap().doc.story(a).unwrap().optical_margin.on, "optical margin unset: as a new story has it");
+        s.execute("style.object.edit", &json!({"name": basic, "storyDirection": null, "opticalMargin": {"on": true, "size": 18}})).unwrap();
+        let g = s.execute("frame.create", &json!({"rect": [0, 300, 300, 500], "content": "text", "text": "Two"})).unwrap();
+        let b = StoryId(g["story"].as_u64().unwrap());
+        let st = s.doc().unwrap().doc.story(b).unwrap().clone();
+        assert_eq!((st.direction, st.optical_margin.on, st.optical_margin.size), (TextDirection::LeftToRight, true, 18.0));
+    }
 }

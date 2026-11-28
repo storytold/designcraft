@@ -4482,6 +4482,16 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
         "Right-to-Left Paragraph Direction",
         ["Absatzrichtung rechts nach links", "Paragraphe de droite à gauche", "Párrafo de derecha a izquierda", "右から左の段落", "从右到左段落"],
     ),
+    ("Story Direction:", ["Textabschnittsrichtung:", "Sens de l’article :", "Dirección del artículo:", "ストーリーの方向：", "文章方向："]),
+    (
+        "Left-to-Right Story Direction",
+        ["Textabschnitt links nach rechts", "Article de gauche à droite", "Artículo de izquierda a derecha", "左から右のストーリー", "从左到右文章"],
+    ),
+    (
+        "Right-to-Left Story Direction",
+        ["Textabschnitt rechts nach links", "Article de droite à gauche", "Artículo de derecha a izquierda", "右から左のストーリー", "从右到左文章"],
+    ),
+    ("Story Options", ["Textabschnittoptionen", "Options d’article", "Opciones de artículo", "ストーリーオプション", "文章选项"]),
     ("Missing Glyphs", ["Fehlende Glyphen", "Glyphes manquants", "Glifos que faltan", "欠落グリフ", "缺失字形"]),
     (
         "Draw Missing Glyphs from Fallback Fonts",

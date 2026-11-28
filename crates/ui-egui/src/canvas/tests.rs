@@ -1495,6 +1495,62 @@ fn a_selected_group_paints_both_ports_of_its_text_frame() {
     }
 }
 
+/// Show Text Threads draws a selected story's thread from the out port of each frame to the in
+/// port of the next (mirrored for a right-to-left story), only while it is on, and the ports are
+/// painted over the selection box.
+#[test]
+fn text_threads_run_port_to_port_only_while_shown() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let s = &mut app.session;
+    let text = "words that run on into the next frame, over and over again ".repeat(12);
+    let f = s.execute("frame.create", &json!({"rect": [300, 100, 450, 200], "content": "text", "text": text})).unwrap();
+    let g = s.execute("frame.create", &json!({"rect": [60, 100, 210, 200], "content": "text"})).unwrap();
+    let (a, b) = (f["id"].as_u64().unwrap(), g["id"].as_u64().unwrap());
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    s.execute("story.options", &json!({"story": f["story"], "direction": "rightToLeft"})).unwrap();
+    s.execute("selection.set", &json!({"ids": [a, b]})).unwrap();
+    let xf = Xf { min: pos2(0.0, 0.0), origin: Point::new(0.0, 0.0), zoom: 1.0, rot: 0, pivot: pos2(0.0, 0.0) };
+    let paint = |app: &DesignApp| {
+        let doc = app.session.doc().unwrap().doc.clone();
+        let layout = CanvasLayout::new(&doc, false);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_selection(app, ui.painter(), &xf, &doc, &layout);
+        });
+        output.textures_delta.clear();
+        let port =
+            |id: u64, out: bool| xf.to_screen(designcraft_tools::thread::port_center(&doc, &layout, designcraft_doc::ItemId(id), out, 1.0).unwrap());
+        (output.shapes, port(a, true), port(b, false))
+    };
+    let thread = |shapes: &[egui::epaint::ClippedShape], from: egui::Pos2, to: egui::Pos2| {
+        shapes
+            .iter()
+            .any(|c| matches!(&c.shape, egui::Shape::LineSegment { points: [p, q], .. } if (*p - from).length() < 0.01 && (*q - to).length() < 0.01))
+    };
+    app.ui.text_threads = false;
+    let (shapes, from, to) = paint(&app);
+    assert!(!thread(&shapes, from, to), "no thread while Show Text Threads is off");
+    app.ui.text_threads = true;
+    let (shapes, from, to) = paint(&app);
+    assert!(thread(&shapes, from, to), "out port to in port");
+    assert!(from.x < 310.0 && to.x > 200.0, "mirrored ports: out at the left of the first frame, in at the right of the next");
+    // The out port is painted after the selection box and the thread, so neither crosses it.
+    let white = shapes.iter().rposition(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == Color32::WHITE && r.rect.contains(from))).unwrap();
+    let line = shapes
+        .iter()
+        .rposition(
+            |c| matches!(&c.shape, egui::Shape::LineSegment { points: [p, q], .. } if (*p - from).length() < 0.01 && (*q - to).length() < 0.01),
+        )
+        .unwrap();
+    assert!(white > line, "the port is on top");
+    // Left to right, the same: from the out port at the right of the first frame.
+    app.session.execute("story.options", &json!({"story": f["story"], "direction": "leftToRight"})).unwrap();
+    let (shapes, from, to) = paint(&app);
+    assert!(thread(&shapes, from, to), "out port to in port, left to right");
+    assert!(from.x > 440.0 && to.x < 70.0, "out at the right of the first frame, in at the left of the next");
+}
+
 fn out_frame(doc: &Document, id: u64) -> &Item {
     doc.item(designcraft_doc::ItemId(id)).unwrap()
 }

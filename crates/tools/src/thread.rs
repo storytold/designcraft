@@ -25,14 +25,22 @@ const PORT_SLOP_PX: f64 = 2.0;
 const MIN_CLICK_FRAME_HEIGHT: f64 = 12.0;
 const CLICK_FRAME_HEIGHT: f64 = 72.0;
 
+/// Whether `it` is a text frame of a right-to-left story, whose ports sit on the other sides.
+pub fn right_to_left_ports(doc: &Document, it: &Item) -> bool {
+    it.text_frame().and_then(|tf| doc.story(tf.story)).is_some_and(|st| st.direction == designcraft_doc::TextDirection::RightToLeft)
+}
+
 /// Canvas centre of a text frame's in port (on its left edge below the top-left corner) or out
-/// port (on its right edge above the bottom-right corner), at `zoom` screen pixels per point.
+/// port (on its right edge above the bottom-right corner), at `zoom` screen pixels per point. A
+/// right-to-left story's frames have them mirrored, as in InDesign: the in port on the right edge
+/// below the top-right corner, the out port on the left edge above the bottom-left corner.
 pub fn port_center(doc: &Document, layout: &CanvasLayout, id: ItemId, out: bool, zoom: f64) -> Option<Point> {
     let it = doc.item(id)?;
     let loc = doc.find(id)?;
     let m = layout.xf(loc.spread) * doc.parent_xf(&loc) * it.xf;
     let r = it.inner_bounds();
-    let (corner, toward) = if out { (Point::new(r.x1, r.y1), Point::new(r.x1, r.y0)) } else { (Point::new(r.x0, r.y0), Point::new(r.x0, r.y1)) };
+    let (left, right) = if right_to_left_ports(doc, it) { (r.x1, r.x0) } else { (r.x0, r.x1) };
+    let (corner, toward) = if out { (Point::new(right, r.y1), Point::new(right, r.y0)) } else { (Point::new(left, r.y0), Point::new(left, r.y1)) };
     let c = m * corner;
     let edge = (m * toward) - c;
     let len = edge.hypot();

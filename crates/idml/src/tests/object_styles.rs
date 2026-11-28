@@ -426,3 +426,68 @@ fn a_style_with_legacy_all_corner_attributes_keeps_its_corners() {
     let c = style.corners.expect("the legacy corners").corners;
     assert!(c.iter().all(|c| c.shape == CornerShape::Rounded && c.size == 9.0), "{c:?}");
 }
+
+/// An object style's Story Options (`EnableStoryOptions` and its `StoryPreference`): Story
+/// Direction, Optical Margin Alignment and its size round-trip; a style that sets none keeps none.
+#[test]
+fn object_style_story_direction_round_trips() {
+    use designcraft_doc::TextDirection;
+    let mut d = small_doc();
+    let styles = std::sync::Arc::make_mut(&mut d.styles);
+    for (name, dir) in [("Hebrew Frame", Some(TextDirection::RightToLeft)), ("English Frame", Some(TextDirection::LeftToRight)), ("Plain", None)] {
+        styles.object.push(designcraft_doc::ObjectStyle { name: name.into(), story_direction: dir, ..Default::default() });
+    }
+    let hung = designcraft_doc::OpticalMargin { on: true, size: 18.0 };
+    styles.object.push(designcraft_doc::ObjectStyle {
+        name: "Hung".into(),
+        optical_margin: Some(hung),
+        story_direction: Some(TextDirection::RightToLeft),
+        ..Default::default()
+    });
+    // Optical margin only: the direction stays unset (`UnknownDirection`, as InDesign writes it).
+    styles.object.push(designcraft_doc::ObjectStyle { name: "Hung Only".into(), optical_margin: Some(hung), ..Default::default() });
+    let bytes = export_idml(&d);
+    // Object styles set no orientation: `Unknown`, so InDesign leaves a vertical story vertical.
+    let xml = zip_text(&bytes, "Resources/Styles.xml");
+    assert!(xml.contains(r#"StoryOrientation="Unknown""#) && !xml.contains(r#"StoryOrientation="Horizontal""#), "{xml}");
+    let back = import_idml(&bytes).unwrap();
+    let os = back.styles.object_style("Hung Only").unwrap();
+    assert_eq!((os.optical_margin, os.story_direction), (Some(hung), None));
+    for (name, dir) in [("Hebrew Frame", Some(TextDirection::RightToLeft)), ("English Frame", Some(TextDirection::LeftToRight)), ("Plain", None)] {
+        assert_eq!(back.styles.object_style(name).unwrap().story_direction, dir, "{name}");
+    }
+    // Optical Margin Alignment and its size come along in the same StoryPreference.
+    let os = back.styles.object_style("Hung").unwrap();
+    assert_eq!((os.optical_margin, os.story_direction), (Some(hung), Some(TextDirection::RightToLeft)));
+    assert_eq!(back.styles.object_style("Plain").unwrap().optical_margin, None);
+}
+
+/// Story Options as InDesign 2026 (Hebrew) writes them, values from one of its documents: a style
+/// with `EnableStoryOptions` takes its `StoryPreference` (here right to left, no optical margin),
+/// a style based on it takes its own, `UnknownDirection` sets no direction, and a style with the
+/// category off sets none.
+#[test]
+fn object_style_story_options_import_as_indesign_writes_them() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/$ID/[Normal Graphics Frame]" Name="$ID/[Normal Graphics Frame]" EnableStoryOptions="false">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <StoryPreference OpticalMarginAlignment="false" OpticalMarginSize="12" FrameType="Unknown" StoryOrientation="Unknown" StoryDirection="UnknownDirection"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Base" Name="Base" EnableStoryOptions="true">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <StoryPreference OpticalMarginAlignment="false" OpticalMarginSize="12" FrameType="TextFrameType" StoryOrientation="Horizontal" StoryDirection="RightToLeftDirection"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Hung" Name="Hung" EnableStoryOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Base</BasedOn></Properties>
+      <StoryPreference OpticalMarginAlignment="true" OpticalMarginSize="1296" FrameType="TextFrameType" StoryOrientation="Unknown" StoryDirection="UnknownDirection"/>
+    </ObjectStyle>"#;
+    let d = fixture(styles, &[]);
+    let os = |n: &str| d.styles.object_style(n).cloned().unwrap();
+    let base = os("Base");
+    assert_eq!(base.story_direction, Some(designcraft_doc::TextDirection::RightToLeft));
+    assert_eq!(base.optical_margin, Some(designcraft_doc::OpticalMargin { on: false, size: 12.0 }));
+    let hung = os("Hung");
+    assert_eq!(hung.optical_margin, Some(designcraft_doc::OpticalMargin { on: true, size: 1296.0 }));
+    assert_eq!(hung.story_direction, None, "UnknownDirection sets none");
+    let graphics = d.styles.object.iter().find(|o| o.name.contains("Graphics")).unwrap();
+    assert_eq!((graphics.story_direction, graphics.optical_margin), (None, None), "the category is off");
+}

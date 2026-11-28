@@ -112,6 +112,7 @@ impl<'a> Ex<'a> {
             el.set("EnableParagraphStyle", bool_s(os.paragraph_style.is_some()));
             el.set("EnableTextFrameGeneralOptions", bool_s(os.text_frame.is_some()));
             el.set("EnableStrokeAndCornerOptions", bool_s(os.corners.is_some()));
+            el.set("EnableStoryOptions", bool_s(os.story_direction.is_some() || os.optical_margin.is_some()));
             if let Some(c) = &os.corners {
                 for (n, c) in ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].iter().zip(c.corners) {
                     el.set(&format!("{n}CornerOption"), names::corner_out(c.shape));
@@ -139,6 +140,28 @@ impl<'a> Ex<'a> {
             }
             if let Some(tf) = &os.text_frame {
                 el.push(text_frame_pref(tf, &self.sw(&tf.column_rule_color)));
+            }
+            // Story Options: Optical Margin Alignment and its size (as a new story has them when
+            // the style doesn't set them), and Story Direction: `UnknownDirection` when the style
+            // sets none, as InDesign writes it. Object styles here set no orientation, so it is
+            // `Unknown` and InDesign leaves a vertical story vertical.
+            if os.story_direction.is_some() || os.optical_margin.is_some() {
+                let om = os.optical_margin.unwrap_or_default();
+                let mut pref = crate::xml::from_craft(
+                    craft_idml::model::StoryPreference {
+                        optical_margin_alignment: om.on,
+                        optical_margin_size: designcraft_doc::OpticalMargin::clamp_size(om.size)
+                            .unwrap_or(designcraft_doc::OpticalMargin::DEFAULT_SIZE),
+                        vertical: false,
+                        right_to_left: os.story_direction == Some(designcraft_doc::TextDirection::RightToLeft),
+                    }
+                    .to_el(),
+                );
+                pref.set("StoryOrientation", "Unknown");
+                if os.story_direction.is_none() {
+                    pref.set("StoryDirection", "UnknownDirection");
+                }
+                el.push(pref);
             }
             // Effects: a style with effects sets the drop shadow and feather, never blending.
             let has_fx = os.effects.is_some();

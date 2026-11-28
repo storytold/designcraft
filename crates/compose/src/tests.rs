@@ -10653,3 +10653,33 @@ fn editing_a_paragraph_style_rebuilds_the_numbering_starts() {
     basic.para = ParaAttrs { list_name: Some("Steps".into()), ..numbered(designcraft_doc::NumberStyle::Arabic, "^#.") };
     assert_eq!(cache.number_starts(&d).lists_in(sid).count(), 1);
 }
+
+/// The rule above footnotes starts on the story's start side, as in InDesign: at the right of the
+/// column in a right-to-left story, its indent measured from there; a right-to-left footnote in a
+/// left-to-right story keeps it at the left. After #2980, which followed the footnote's paragraph.
+#[test]
+fn the_footnote_rule_starts_on_the_story_direction_side() {
+    let rect = Rect::new(36.0, 36.0, 400.0, 400.0);
+    let rule = |story_dir, note_dir| {
+        let (mut d, sid, fid) = doc_with("Body text.", rect, ParaAttrs::default());
+        d.footnote_options.rule.width = 72.0;
+        d.footnote_options.rule.left_indent = 10.0;
+        let para = ParaFormat { para: ParaAttrs { direction: Some(note_dir), ..Default::default() }, ..Default::default() };
+        let st = d.story_mut(sid).unwrap();
+        st.direction = story_dir;
+        st.insert_note(5, "Note text.", para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let decos = &cs.frame(fid).unwrap().decos;
+        let r: Vec<Rect> = decos.iter().map(|x| x.rect).filter(|r| (r.width() - 72.0).abs() < 0.01).collect();
+        assert_eq!(r.len(), 1, "one rule: {decos:?}");
+        r[0]
+    };
+    use designcraft_doc::TextDirection::{LeftToRight, RightToLeft};
+    let ltr = rule(LeftToRight, LeftToRight);
+    assert!((ltr.x0 - (rect.x0 + 10.0)).abs() < 0.01, "left to right, from the left: {ltr:?}");
+    let rtl = rule(RightToLeft, RightToLeft);
+    assert!((rtl.x1 - (rect.x1 - 10.0)).abs() < 0.01, "right to left, from the right: {rtl:?}");
+    assert!((rtl.y0 - ltr.y0).abs() < 0.01, "at the same height");
+    let note_only = rule(LeftToRight, RightToLeft);
+    assert!((note_only.x0 - (rect.x0 + 10.0)).abs() < 0.01, "the story decides, not the note: {note_only:?}");
+}
