@@ -1,7 +1,7 @@
 //! Pages panel: parents at the top, document spreads with live thumbnails below.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use designcraft_doc::{SpreadId, SpreadRef};
 use egui::{Color32, Sense, Stroke, StrokeKind, vec2};
@@ -25,7 +25,54 @@ static THUMBS: Mutex<Option<HashMap<ThumbKey, Thumb>>> = Mutex::new(None);
 
 /// A rendered thumbnail: the document revision, and, when it drew images still decoding in the
 /// background, the image generation and time (s) it was rendered at.
-type Thumb = (u64, Option<(u64, f64)>, egui::TextureHandle);
+type Thumb = (u64, Option<(u64, f64)>, egui::TextureHandle, Drawn);
+
+/// The document and compositions a thumbnail was drawn from. Moving the caret or selecting gives
+/// the document a new revision without changing either, and an edit on one page leaves the
+/// others as they were: those thumbnails are still current. They are not kept alive for this.
+type Drawn = (Weak<designcraft_doc::Document>, Weak<designcraft_compose::Cache>);
+
+/// Whether a thumbnail of `of` drawn from `drawn` still shows `doc` composed in `cache`: the same
+/// document, or one whose changes (see [`designcraft_render::damage::damage_with`]) are all on
+/// other spreads.
+fn still_current(drawn: &Drawn, doc: &Arc<designcraft_doc::Document>, cache: &Arc<designcraft_compose::Cache>, of: ThumbOf) -> bool {
+    let (Some(old), Some(old_cache)) = (drawn.0.upgrade(), drawn.1.upgrade()) else { return false };
+    // Reloaded fonts compose the same document in a new cache.
+    if !Arc::ptr_eq(&old_cache, cache) {
+        return false;
+    }
+    if Arc::ptr_eq(&old, doc) {
+        return true;
+    }
+    // What composition and rendering read but damage doesn't compare: hidden conditions, named
+    // stroke styles, inks, document fonts, alpha contours, hyphenation exceptions and endnote options.
+    if old.conditions != doc.conditions
+        || old.stroke_styles != doc.stroke_styles
+        || old.inks != doc.inks
+        || old.font_scope != doc.font_scope
+        || old.hyphenation_exceptions != doc.hyphenation_exceptions
+        || old.endnote_options != doc.endnote_options
+        || old.alpha_outlines.len() != doc.alpha_outlines.len()
+        || old.alpha_outlines.iter().zip(&doc.alpha_outlines).any(|(a, b)| !Arc::ptr_eq(a, b))
+    {
+        return false;
+    }
+    // Endnote numbers and lists that continue across stories follow text on other pages.
+    if old.stories.values().chain(doc.stories.values()).any(|s| !s.endnotes.is_empty())
+        || doc.settings.lists.iter().any(|l| l.continue_across_stories)
+    {
+        return false;
+    }
+    // Any change to a parent spread gives no regions.
+    let Some(regions) = designcraft_render::damage::damage_with(&old, doc, Some(cache)) else { return false };
+    match of {
+        ThumbOf::Page(abs) => {
+            let (Some((si, _)), Some((old_si, _))) = (doc.page_loc(abs), old.page_loc(abs)) else { return false };
+            si == old_si && !regions.iter().any(|(r, _)| *r == SpreadRef::Doc(si))
+        }
+        ThumbOf::Parent(_) => true,
+    }
+}
 
 /// How soon (s) a thumbnail drawn with images still decoding is rendered again once more have
 /// finished: a page of photos decoding one after another re-renders a few times, not once each.
@@ -89,7 +136,15 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
                 }
         });
     }
-    if let Some((rev, pending, t)) = map.get(&key) {
+    if let Some((rev, _, _, drawn)) = map.get_mut(&key)
+        && *rev != st.revision
+        && still_current(drawn, &st.doc, &app.session.cache, of)
+    {
+        // Nothing it shows changed: it is of this revision too, and costs no render.
+        *rev = st.revision;
+        drawn.0 = Arc::downgrade(&st.doc);
+    }
+    if let Some((rev, pending, t, _)) = map.get(&key) {
         if *rev == st.revision {
             // Images it drew as decoding have finished since: draw it again, in batches.
             let stale = pending.and_then(|(images, at)| (images != designcraft_render::images::generation()).then_some(at + THUMB_IMAGES_SECS - now));
@@ -143,7 +198,8 @@ fn thumb(app: &mut DesignApp, ctx: &egui::Context, of: ThumbOf, h: f32) -> Optio
     };
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     let tex = crate::widgets::load_texture(ctx, format!("{name}_{}", h.round()), ci, egui::TextureOptions::LINEAR);
-    map.insert(key, (st.revision, r.images_pending().then_some((images, now)), tex.clone()));
+    let drawn = (Arc::downgrade(&st.doc), Arc::downgrade(&app.session.cache));
+    map.insert(key, (st.revision, r.images_pending().then_some((images, now)), tex.clone(), drawn));
     Some(tex)
 }
 
