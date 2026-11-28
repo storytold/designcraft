@@ -196,7 +196,7 @@ class TrustedSourcePreparation(unittest.TestCase):
             producer_platforms(source.replace("      " + current + "\n", ""))
 
     def test_continuation_lines_of_any_scalar_form_reach_the_guard_checks(self):
-        for name in ("nightly.yml", "nightly-sign.yml"):
+        for name in ("nightly.yml", "nightly-sign.yml", "nightly-dispatch.yml"):
             source = (ROOT / ".github/workflows" / name).read_text()
             expected = NightlyEnabledCallers.GUARDS[name]
             guard = re.search(r"(?m)^    if: >-\n(?:      [^\n]*\n)+", source)[0]
@@ -206,8 +206,13 @@ class TrustedSourcePreparation(unittest.TestCase):
                     (indicator, expression), = job_conditions(jobs)
                     self.assertFalse(indicator == ">-" and " ".join(expression.split()) == expected)
 
-    def test_no_nightly_schedule_is_registered(self):
-        for name, event in (("nightly.yml", "workflow_dispatch"), ("nightly-sign.yml", "workflow_dispatch")):
+    def test_nightly_triggers_and_schedule_match_review(self):
+        expected_triggers = {
+            "nightly.yml": ["  schedule:", "  workflow_dispatch:"],
+            "nightly-sign.yml": ["  workflow_dispatch:"],
+            "nightly-dispatch.yml": ["  workflow_run:"],
+        }
+        for name, expected in expected_triggers.items():
             source = (ROOT / ".github/workflows" / name).read_text()
             events = source.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
             triggers = [
@@ -219,7 +224,29 @@ class TrustedSourcePreparation(unittest.TestCase):
                 and not line.lstrip().startswith("#")
             ]
             with self.subTest(workflow=name):
-                self.assertEqual(triggers, [f"  {event}:"], "schedule/activation needs explicit review")
+                self.assertEqual(triggers, expected, "schedule/activation needs explicit review")
+        nightly = (ROOT / ".github/workflows/nightly.yml").read_text()
+        self.assertIn("    - cron: '30 1 * * *'\n", nightly)
+        dispatch = (ROOT / ".github/workflows/nightly-dispatch.yml").read_text()
+        self.assertIn("    workflows: [DesignCraft unsigned nightly]\n", dispatch)
+        self.assertIn("    types: [completed]\n", dispatch)
+        self.assertIn("    branches: [main]\n", dispatch)
+
+    def test_nightly_dispatch_stays_transport_only(self):
+        dispatch = (ROOT / ".github/workflows/nightly-dispatch.yml").read_text()
+        self.assertIn("\npermissions: {}\n", dispatch)
+        self.assertIn("    permissions:\n      actions: write\n", dispatch)
+        self.assertNotIn("false &&", dispatch)
+        self.assertNotRegex(dispatch, r"(?m)^\s*uses:")
+        self.assertNotRegex(dispatch, r"(?m)^\s*environment:")
+        self.assertNotRegex(dispatch, r"\bsecrets\b")
+        self.assertIn("refs/heads/nightly-signer", dispatch)
+        self.assertIn(
+            "https://api.github.com/repos/storytold/designcraft/actions/workflows/nightly-sign.yml/dispatches",
+            dispatch,
+        )
+        self.assertIn("producer.get('event') == 'schedule'", dispatch)
+        self.assertIn("attempt == 1", dispatch)
 
     def test_signer_serialization_contract_is_enforced(self):
         assert_nightly_serialization((ROOT / ".github/workflows/nightly-sign.yml").read_text())
@@ -240,7 +267,7 @@ class TrustedSourcePreparation(unittest.TestCase):
                 assert_nightly_serialization(source.replace(old, new))
 
     def test_no_cache_actions_or_cache_setup_options_in_app_trusted_closure(self):
-        for name in ("nightly.yml", "nightly-sign.yml"):
+        for name in ("nightly.yml", "nightly-sign.yml", "nightly-dispatch.yml"):
             source = (ROOT / ".github/workflows" / name).read_text()
             executable = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
             with self.subTest(workflow=name):
@@ -348,6 +375,9 @@ class NightlyEnabledCallers(unittest.TestCase):
             "github.repository == 'storytold/designcraft' && github.event_name == 'workflow_dispatch' && "
             "github.ref == 'refs/heads/" + SIGNER_BRANCH + "' && github.ref_type == 'branch'"
         ),
+        "nightly-dispatch.yml": (
+            "github.repository == 'storytold/designcraft' && github.event_name == 'workflow_run'"
+        ),
     }
 
     def test_enabled_jobs_keep_exact_context_guards(self):
@@ -364,7 +394,11 @@ class NightlyEnabledCallers(unittest.TestCase):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()
         policy = json.loads(INSTALLED_POLICY.read_text())
         self.assertEqual(reviewed_manual_actors(source, policy), RELEASE_MANAGERS)
-        self.assertEqual(policy["automatic_signer_actors"], [], "no automatic signer without a schedule")
+        self.assertEqual(
+            policy["automatic_signer_actors"],
+            ["github-actions[bot]"],
+            "automatic signer actor must be exactly github-actions[bot]",
+        )
 
     def test_an_actor_outside_the_release_managers_is_refused(self):
         source = (ROOT / ".github/workflows/nightly.yml").read_text()
