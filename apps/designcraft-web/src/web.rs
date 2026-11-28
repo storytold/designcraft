@@ -82,6 +82,9 @@ pub fn start() {
                         app.session.prefs = prefs;
                     }
                     let prefs_sync = PrefsSync::new(stored);
+                    if let Err(error) = crate::file_providers::install(app.file_providers.clone(), cc.egui_ctx.clone()) {
+                        log::error!("file provider capability could not be installed: {error:?}");
+                    }
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
@@ -373,6 +376,7 @@ impl eframe::App for WebShell {
             self.app.status(error);
         }
         let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        crate::file_providers::publish(&self.app.file_providers, ctx);
         // Changed preferences go to local storage, so they survive a reload.
         let now = ctx.input(|i| i.time);
         if let Some(wait) = self.prefs_sync.wait(now) {
@@ -445,6 +449,7 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let _ = self.graphics.run_if_healthy(|| self.app.ui(ui));
+        crate::file_providers::publish(&self.app.file_providers, ui.ctx());
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

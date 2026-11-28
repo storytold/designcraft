@@ -3,7 +3,14 @@ use super::{DesignApp, UiRequest, Value, canvas, dialogs, json, menus};
 impl DesignApp {
     /// THE entry point for every action (menus, shortcuts, palette, panels, control channel).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if let Err(error) = crate::file_provider_app::guard_command(self, id, &params) {
+            self.status(error.clone());
+            return Err(error);
+        }
         if let Some(r) = menus::run_ui(self, id, &params) {
+            if let Some(ctx) = self.egui_ctx.clone() {
+                crate::file_provider_app::observe_ui(self, &ctx);
+            }
             return r;
         }
         // Only user-initiated runs touch the system clipboard, never the control channel's.
@@ -37,6 +44,9 @@ impl DesignApp {
         }
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.after_engine();
+        if let Some(ctx) = self.egui_ctx.clone() {
+            crate::file_provider_app::observe_ui(self, &ctx);
+        }
         match &r {
             Err(e) => self.status(e.clone()),
             // Copied text goes to the system clipboard too, whichever way Copy was chosen.
