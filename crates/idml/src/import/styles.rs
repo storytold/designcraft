@@ -184,26 +184,31 @@ impl<'r> Importer<'r> {
                     .unwrap_or_else(|| names::style_name_in(OBJECT_BUILTINS, &unescape_id(b.trim_start_matches("ObjectStyle/"))))
             });
             let based_on = based_on.filter(|b| *b != designcraft_doc::NO_OBJECT_STYLE && *b != name);
-            let fill = values.fill_enabled.then(|| {
-                let sw = values.fill_color.as_deref().map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::NONE.into());
-                Fill { swatch: sw, tint: tint(values.fill_tint).unwrap_or(1.0), ..Fill::none() }
-            });
-            let stroke = values.stroke_enabled.then(|| self.stroke_from(e, None));
-            let paragraph_style = values.paragraph_style_enabled.then(|| values.paragraph_style.as_deref().map(|r| self.para_style_ref(r))).flatten();
             let levels = based_on_levels(e, &objects_by_self);
+            // Fill, stroke and paragraph style: each category as the nearest style that gives its
+            // flag (or, without one, its value) sets it, and each value from the nearest style that
+            // gives it, up to the first style that turns the category off.
+            let fill = category_on(&levels, "EnableFill", |l| l.get("FillColor").is_some()).then(|| {
+                let on = category_levels(&levels, "EnableFill");
+                let sw = on.iter().find_map(|l| l.get("FillColor")).map(|r| self.swatch_ref(r)).unwrap_or_else(|| swatch::NONE.into());
+                Fill { swatch: sw, tint: tint(on.iter().find_map(|l| l.num("FillTint"))).unwrap_or(1.0), ..Fill::none() }
+            });
+            let stroke = category_on(&levels, "EnableStroke", |l| l.get("StrokeColor").is_some())
+                .then(|| self.stroke_in(&category_levels(&levels, "EnableStroke")));
+            let para_levels = category_levels(&levels, "EnableParagraphStyle");
+            let paragraph_style = category_on(&levels, "EnableParagraphStyle", |l| l.get("AppliedParagraphStyle").is_some())
+                .then(|| para_levels.iter().find_map(|l| l.get("AppliedParagraphStyle")).map(|r| self.para_style_ref(r)))
+                .flatten();
             let text_frame = if category_on(&levels, "EnableTextFrameGeneralOptions", |_| false) {
-                let prefs: Vec<&El> = levels
-                    .iter()
-                    .filter(|l| l.get("EnableTextFrameGeneralOptions") != Some("false"))
-                    .filter_map(|l| l.find("TextFramePreference"))
-                    .collect();
+                let prefs: Vec<&El> =
+                    category_levels(&levels, "EnableTextFrameGeneralOptions").into_iter().filter_map(|l| l.find("TextFramePreference")).collect();
                 (!prefs.is_empty()).then(|| self.frame_options(&prefs))
             } else {
                 None
             };
             let effects = self.style_effects(e);
             let corners = style_corners(&levels);
-            let apply_next_style = paragraph_style.is_some() && e.get("ApplyNextParagraphStyle") == Some("true");
+            let apply_next_style = paragraph_style.is_some() && para_levels.iter().find_map(|l| l.get("ApplyNextParagraphStyle")) == Some("true");
             let s = ObjectStyle { name: name.clone(), based_on, fill, stroke, paragraph_style, apply_next_style, text_frame, effects, corners };
             match self.styles.object.iter_mut().find(|o| o.name == name) {
                 Some(slot) => *slot = s,
@@ -408,22 +413,20 @@ impl<'r> Importer<'r> {
 /// The corner options (Stroke & Corner Options) of the object style that starts `levels` (the
 /// style, then the styles it is based on), by name, when it sets them. A style that sets some
 /// corners, or turns the category on (itself or through the style it is based on), takes the
-/// others from the styles in `levels` that don't turn the category off.
+/// others from the styles in `levels` before the first one that turns the category off.
 fn style_corners(levels: &[&El]) -> Option<CornerOptions> {
     if !category_on(levels, "EnableStrokeAndCornerOptions", |l| corners(l, "").is_some()) {
         return None;
     }
-    let on: Vec<&El> = levels.iter().copied().filter(|l| l.get("EnableStrokeAndCornerOptions") != Some("false")).collect();
-    corners_in(&on, "").map(|c| CornerOptions { corners: c })
+    corners_in(&category_levels(levels, "EnableStrokeAndCornerOptions"), "").map(|c| CornerOptions { corners: c })
 }
 
 /// Whether the style chain `levels` (a style, then the styles it is based on) turns the category
 /// whose flag is `flag` on. The nearest style that gives the flag decides; a style without it
 /// turns the category on when `own` finds settings of its own. A `[None]` after the first style
-/// ends the chain, as a `BasedOn` of `[None]` names no style.
+/// ends the chain ([`chain`]).
 fn category_on(levels: &[&El], flag: &str, own: impl Fn(&El) -> bool) -> bool {
-    let none = |l: &&El| l.get("Self") == Some("ObjectStyle/$ID/[None]");
-    for l in levels.iter().take(1).chain(levels.iter().skip(1).take_while(|l| !none(l))) {
+    for l in chain(levels) {
         match l.get(flag) {
             Some(v) => return v == "true",
             None if own(l) => return true,
@@ -431,6 +434,19 @@ fn category_on(levels: &[&El], flag: &str, own: impl Fn(&El) -> bool) -> bool {
         }
     }
     false
+}
+
+/// The styles in `levels` (a style, then the styles it is based on) that give the values of the
+/// category whose flag is `flag`, nearest first: those before the first one that turns it off, and
+/// before a `[None]` after the first style.
+fn category_levels<'e>(levels: &[&'e El], flag: &str) -> Vec<&'e El> {
+    chain(levels).take_while(|l| l.get(flag) != Some("false")).collect()
+}
+
+/// `levels` up to a `[None]` after the first style, as a `BasedOn` of `[None]` names no style.
+fn chain<'a, 'e>(levels: &'a [&'e El]) -> impl Iterator<Item = &'e El> + 'a {
+    let more = levels.iter().skip(1).take_while(|l| l.get("Self") != Some("ObjectStyle/$ID/[None]"));
+    levels.iter().take(1).chain(more).copied()
 }
 
 /// Object style `e`, then the styles it is based on, nearest first (cycle-safe, at most 16). A

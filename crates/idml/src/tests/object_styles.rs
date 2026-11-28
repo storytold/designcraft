@@ -414,6 +414,93 @@ fn a_style_without_category_flags_takes_them_from_its_based_on_style() {
     assert!(style(designcraft_doc::NO_OBJECT_STYLE).corners.is_some(), "[None] keeps the corners it sets itself");
 }
 
+/// A style without a Fill, Stroke or Paragraph Styles flag or value of its own takes each category
+/// from the style it is based on, and a style turning a category on takes the values it leaves out
+/// from there; a based-on style that turns a category off gives nothing.
+#[test]
+fn fill_stroke_and_paragraph_style_categories_come_through_the_based_on_chain() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/Brand" Name="Brand" EnableFill="true" FillColor="Color/Black" FillTint="40"
+      EnableStroke="true" StrokeColor="Color/Black" StrokeWeight="3" EnableParagraphStyle="true"
+      AppliedParagraphStyle="ParagraphStyle/Opener" ApplyNextParagraphStyle="true">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Kid" Name="Kid">
+      <Properties><BasedOn type="object">ObjectStyle/Brand</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Tint" Name="Tint" EnableFill="true" FillTint="70" EnableStroke="true" StrokeWeight="5">
+      <Properties><BasedOn type="object">ObjectStyle/Brand</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Off" Name="Off" EnableFill="false" EnableStroke="false" EnableParagraphStyle="false">
+      <Properties><BasedOn type="object">ObjectStyle/Brand</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/OffKid" Name="OffKid">
+      <Properties><BasedOn type="object">ObjectStyle/Off</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(styles, &[]);
+    let style = |n: &str| d.styles.object_style(n).cloned().unwrap();
+    let brand = style("Brand");
+    let (brand_fill, brand_stroke) = (brand.fill.clone().expect("Brand sets a fill"), brand.stroke.clone().expect("Brand sets a stroke"));
+    let kid = style("Kid");
+    assert_eq!((kid.fill.as_ref(), kid.stroke.as_ref()), (Some(&brand_fill), Some(&brand_stroke)), "Kid inherits Brand's fill and stroke");
+    assert_eq!((kid.paragraph_style.as_deref(), kid.apply_next_style), (Some("Opener"), true), "Kid inherits Brand's paragraph style");
+    let t = style("Tint");
+    let (fill, stroke) = (t.fill.expect("Tint sets a fill"), t.stroke.expect("Tint sets a stroke"));
+    assert_eq!(fill.swatch, brand_fill.swatch, "Tint takes Brand's fill color");
+    assert!((fill.tint - 0.7).abs() < 1e-6 && (brand_fill.tint - 0.4).abs() < 1e-6, "{fill:?} {brand_fill:?}");
+    assert_eq!((stroke.swatch, stroke.weight), (brand_stroke.swatch.clone(), 5.0), "Tint takes Brand's stroke color");
+    for n in ["Off", "OffKid"] {
+        let s = style(n);
+        assert!(s.fill.is_none() && s.stroke.is_none() && s.paragraph_style.is_none(), "{n}: {s:?}");
+    }
+}
+
+/// A style that turns a category on takes none of its values from beyond a based-on style that
+/// turns the category off.
+#[test]
+fn category_values_stop_at_a_based_on_style_that_turns_the_category_off() {
+    let styles = r#"<ObjectStyle Self="ObjectStyle/Full" Name="Full" EnableFill="true" FillColor="Color/Black"
+      EnableTextFrameGeneralOptions="true" EnableStrokeAndCornerOptions="true" TopLeftCornerOption="RoundedCorner" TopLeftCornerRadius="17">
+      <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+      <TextFramePreference TextColumnCount="3"/>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Off" Name="Off" EnableFill="false" EnableTextFrameGeneralOptions="false" EnableStrokeAndCornerOptions="false">
+      <Properties><BasedOn type="object">ObjectStyle/Full</BasedOn></Properties>
+    </ObjectStyle>
+    <ObjectStyle Self="ObjectStyle/Gap" Name="Gap" EnableFill="true" EnableTextFrameGeneralOptions="true" EnableStrokeAndCornerOptions="true">
+      <Properties><BasedOn type="object">ObjectStyle/Off</BasedOn></Properties>
+    </ObjectStyle>"#;
+    let d = fixture(styles, &[]);
+    let gap = d.styles.object_style("Gap").cloned().unwrap();
+    assert_eq!(gap.fill.as_ref().map(|f| f.swatch.as_str()), Some(designcraft_color::swatch::NONE), "{:?}", gap.fill);
+    assert_ne!(gap.text_frame.as_ref().map(|t| t.columns), Some(3), "{:?}", gap.text_frame);
+    assert!(gap.corners.is_none(), "{:?}", gap.corners);
+}
+
+/// A style based on `[None]` that turns a category on takes none of that category's values from
+/// `[None]`, which keeps its own.
+#[test]
+fn category_values_stop_at_none() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <RootObjectStyleGroup Self="ro">
+        <ObjectStyle Self="ObjectStyle/$ID/[None]" Name="$ID/[None]" EnableFill="true" FillColor="Color/Black" EnableStroke="true"
+          StrokeColor="Color/Black" StrokeWeight="0"/>
+        <ObjectStyle Self="ObjectStyle/Plain" Name="Plain" EnableFill="true" FillTint="70" EnableStroke="true" StrokeColor="Color/Black">
+          <Properties><BasedOn type="string">$ID/[None]</BasedOn></Properties>
+        </ObjectStyle>
+      </RootObjectStyleGroup>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s"><Page Self="p" GeometricBounds="0 0 200 200" ItemTransform="1 0 0 1 0 0"/></Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let plain = d.styles.object_style("Plain").cloned().unwrap();
+    assert_eq!(plain.fill.as_ref().map(|f| f.swatch.as_str()), Some(designcraft_color::swatch::NONE), "{:?}", plain.fill);
+    assert_eq!(plain.stroke.as_ref().map(|s| s.weight), Some(designcraft_doc::Stroke::none().weight), "{:?}", plain.stroke);
+    let none = d.styles.object_style(designcraft_doc::NO_OBJECT_STYLE).cloned().unwrap();
+    assert_eq!(none.stroke.map(|s| s.weight), Some(0.0), "[None] keeps its own stroke weight");
+}
+
 /// An object style giving its corners only with the legacy all-corners `CornerOption` and
 /// `CornerRadius` keeps them, so applying it to another frame rounds it.
 #[test]
