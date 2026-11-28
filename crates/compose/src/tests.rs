@@ -10519,3 +10519,146 @@ fn cross_reference_text_breaks_at_its_spaces() {
         }
     }
 }
+
+// ---------- ragged overrun allowance (issue #3034) ----------
+
+/// The narrowest frame width that keeps `text` on one line, halved 40 times (lo breaks, hi fits).
+fn narrowest_one_line_width(text: &str, para: ParaAttrs) -> f64 {
+    let fits_one_line = |w: f64| tracked_lines(text, w, para.clone(), 0.0).len() == 1;
+    let natural = tracked_lines(text, 1e5, para.clone(), 0.0)[0].glyphs.iter().map(|g| g.adv).sum::<f64>();
+    let (mut lo, mut hi) = (0.0, natural);
+    assert!(fits_one_line(hi), "the natural width must fit on one line");
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if fits_one_line(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+fn line_texts(cs: &ComposedStory) -> Vec<String> {
+    all_lines(cs).into_iter().map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char).collect::<String>()).collect()
+}
+
+fn ragged_para(composer: Composer) -> ParaAttrs {
+    ParaAttrs { composer: Some(composer), align: Some(Align::Left), hyphenate: Some(false), ..Default::default() }
+}
+
+/// The paragraph composer tolerates the overrun on every ragged line, so a one-line paragraph
+/// fits at the issue's reference width: 1% of the trailing word together with the space before
+/// it, plus 1% of one more word space for each further word space in the line.
+#[test]
+fn the_paragraph_composer_tolerates_the_overrun_on_a_one_line_paragraph() {
+    let text = "nu nu nun";
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    let space = one.glyphs.iter().find(|g| g.rendered_char == ' ').unwrap().adv;
+    let last_space = one.glyphs.iter().rposition(|g| g.rendered_char == ' ').unwrap();
+    let trailing_word: f64 = one.glyphs[last_space + 1..].iter().map(|g| g.adv).sum();
+    let spaces_in_line = one.glyphs.iter().filter(|g| g.rendered_char == ' ').count();
+    // The trailing word, plus one word space per word space in the line.
+    let allowance = 0.01 * (trailing_word + space * spaces_in_line as f64);
+    let natural = one.end_x - one.x0;
+    let minimal = narrowest_one_line_width(text, ragged_para(Composer::Paragraph));
+    assert!(
+        (minimal - (natural - allowance)).abs() < 0.02,
+        "paragraph composer needs {minimal}; the allowance fits about {} (natural {natural}, trailing {trailing_word}, space {space})",
+        natural - allowance
+    );
+}
+
+/// A non-final line of a multi-line ragged story breaks with the allowance too: `aa bb` overruns
+/// the measure by half its allowance and must stay whole instead of breaking after `aa`.
+#[test]
+fn the_paragraph_composer_tolerates_the_overrun_on_a_non_final_line() {
+    let text = "aa bb c";
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    let adv = |from: char| one.glyphs.iter().find(|g| g.rendered_char == from).unwrap().adv;
+    let (a, b, space) = (adv('a'), adv('b'), adv(' '));
+    let first_line = 2.0 * a + space + 2.0 * b;
+    // `aa bb` has two word spaces: the allowance grows per word space.
+    let allowance = 0.01 * (2.0 * b + 2.0 * space);
+    let width = first_line + 0.5 * allowance;
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), ragged_para(Composer::Paragraph));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let texts = line_texts(&cs);
+    assert_eq!(texts, vec!["aa bb".to_string(), "c".to_string()], "at width {width}");
+}
+
+/// The greedy push-out (追い出し優先) break yields to the overrun allowance: a line overrunning
+/// its measure by less than the allowance keeps its last glyph instead of breaking at the last
+/// natural opportunity.
+#[test]
+fn the_cjk_push_out_break_respects_the_overrun_allowance() {
+    let text = "甲乙 甲乙丙";
+    let para = ParaAttrs { composer: Some(Composer::SingleLine), kinsoku_type: Some("KinsokuPushOutFirst".into()), ..Default::default() };
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    let natural = one.end_x - one.x0;
+    let space = one.glyphs.iter().find(|g| g.rendered_char == ' ').map_or(0.0, |g| g.adv);
+    let last_space = one.glyphs.iter().rposition(|g| g.rendered_char == ' ').unwrap();
+    let trailing: f64 = one.glyphs[last_space..].iter().map(|g| g.adv).sum();
+    let overrun = 0.5 * 0.01 * trailing;
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, natural - overrun, 4000.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let texts = line_texts(&cs);
+    assert_eq!(texts.len(), 1, "overrun {overrun} within the allowance {}: {texts:?}", 0.01 * (space + trailing));
+}
+
+/// A right-indent tab (no literal tab) reaches the paragraph composer, and its line keeps the
+/// fixed epsilon: the tab's breaking advance differs from where it is finally placed.
+#[test]
+fn a_right_indent_tab_paragraph_gets_no_overrun_allowance() {
+    let text = "aa\u{E006}bb ccdddd";
+    let one = &tracked_lines(text, 1e5, ParaAttrs::default(), 0.0)[0];
+    // The tab is placed at line layout; its breaking width is zero, so the breaking width of the
+    // whole line is the sum of the other advances.
+    let natural: f64 = one.glyphs.iter().filter(|g| g.rendered_char != '\u{E006}').map(|g| g.adv).sum();
+    let space = one.glyphs.iter().find(|g| g.rendered_char == ' ').unwrap().adv;
+    let last_space = one.glyphs.iter().rposition(|g| g.rendered_char == ' ').unwrap();
+    let trailing: f64 = one.glyphs[last_space..].iter().map(|g| g.adv).sum();
+    // Overrun by half the allowance the paragraph would get without the tab.
+    let width = natural - 0.5 * 0.01 * trailing;
+    assert!(width > natural - 0.01 * (space + trailing), "the case must be inside the would-be allowance");
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), ragged_para(Composer::Paragraph));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let texts = line_texts(&cs);
+    assert_eq!(texts.len(), 2, "at width {width}: {texts:?}");
+}
+
+/// Hanging spaces at the paragraph end take no room on the line, so the allowance ignores them:
+/// a paragraph with trailing spaces fits at the same width as without them.
+#[test]
+fn trailing_spaces_do_not_change_the_overrun_allowance() {
+    let bare = "nu nu nun";
+    let spaced = "nu nu nun  ";
+    let one = &tracked_lines(bare, 1e5, ParaAttrs::default(), 0.0)[0];
+    let natural = one.end_x - one.x0;
+    assert_eq!(
+        tracked_lines(spaced, 1e5, ParaAttrs::default(), 0.0)[0].end_x - tracked_lines(spaced, 1e5, ParaAttrs::default(), 0.0)[0].x0,
+        natural,
+        "hanging spaces add no width"
+    );
+    let minimal = narrowest_one_line_width(spaced, ragged_para(Composer::Paragraph));
+    let minimal_bare = narrowest_one_line_width(bare, ragged_para(Composer::Paragraph));
+    assert!((minimal - minimal_bare).abs() < 0.02, "with trailing spaces the allowance is {minimal}, without {minimal_bare} (natural {natural})");
+}
+
+/// The allowance span stays on the current line: the single word after a forced break gets no
+/// allowance from an earlier line's space, so it splits at its hyphen instead of overrunning.
+#[test]
+fn the_overrun_allowance_does_not_cross_a_forced_break() {
+    let text = "aa bbbbb\u{2028}cccc-cccccc";
+    let lines = tracked_lines(text, 1e5, ParaAttrs::default(), 0.0);
+    assert_eq!(lines.len(), 2, "the unbroken story has two lines");
+    let first_line: f64 = lines[0].glyphs.iter().map(|g| g.adv).sum();
+    let last_word: f64 = lines[1].glyphs.iter().map(|g| g.adv).sum();
+    // The last word alone overruns the measure by 0.1pt; the first line fits.
+    let width = last_word - 0.1;
+    assert!(first_line < width, "the first line must fit at {width}");
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 4000.0), ragged_para(Composer::Paragraph));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let texts = line_texts(&cs);
+    assert_eq!(texts, vec!["aa bbbbb".to_string(), "cccc-".to_string(), "cccccc".to_string()], "at width {width}");
+}
