@@ -169,7 +169,7 @@ pub(super) fn guide_spot(app: &DesignApp, xf: &Xf, g: &GuideDrag) -> Option<Guid
 /// The nearest ruler tick to spread point `sp` along a guide of `orientation`'s axis, in spread
 /// coordinates: the horizontal ruler's (the piece under the point) where that axis runs across the
 /// screen, else the vertical ruler's. `None` when the ruler has no ticks there.
-fn ruler_tick_of(doc: &Document, slot: &SpreadSlot, orientation: designcraft_doc::Orientation, zoom: f64, sp: Point) -> Option<f64> {
+pub(super) fn ruler_tick_of(doc: &Document, slot: &SpreadSlot, orientation: designcraft_doc::Orientation, zoom: f64, sp: Point) -> Option<f64> {
     let vertical = matches!(orientation, designcraft_doc::Orientation::Vertical);
     // A quarter-turned spread runs its x axis down the screen.
     let across = vertical == slot.rotation.is_multiple_of(2);
