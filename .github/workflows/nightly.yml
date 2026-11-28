@@ -1,8 +1,9 @@
 name: DesignCraft unsigned nightly
 
-# Enabled for supervised manual runs by the reviewed manual actors only; no schedule yet.
-# A later explicit opt-in may add a cadence (and turn on nightly-dispatch.yml with it).
+# Automated daily schedule at 01:30 UTC plus supervised manual runs by the reviewed manual actors.
 on:
+  schedule:
+    - cron: '30 1 * * *'
   workflow_dispatch:
 
 permissions:
