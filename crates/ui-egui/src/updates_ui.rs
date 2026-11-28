@@ -25,6 +25,13 @@ pub(crate) struct Runtime {
     /// The web build has no updater; its Help ▸ Check for Updates opens a window with a fixed message.
     #[cfg(target_arch = "wasm32")]
     pub(crate) manual_window_open: bool,
+    /// A copy whose updates another program installs (a Launcher Nightly): Help ▸ Check for Updates
+    /// says so, and the updater never runs or offers a build that would replace this channel.
+    #[cfg(not(target_arch = "wasm32"))]
+    managed: Option<&'static str>,
+    /// The managed-copy message window is open.
+    #[cfg(not(target_arch = "wasm32"))]
+    managed_window_open: bool,
 }
 
 impl Default for Runtime {
@@ -40,6 +47,10 @@ impl Default for Runtime {
             repaint: None,
             #[cfg(target_arch = "wasm32")]
             manual_window_open: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            managed: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            managed_window_open: false,
         }
     }
 }
@@ -50,11 +61,36 @@ impl DesignApp {
     pub fn set_startup_update_check(&mut self, on: bool) {
         self.updates_rt.startup_check = on;
     }
+
+    /// This copy's updates are installed by `who` (the Launcher for a Nightly): no check, no offer,
+    /// and Help ▸ Check for Updates explains who updates it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_updates_managed(&mut self, who: Option<&'static str>) {
+        self.updates_rt.managed = who;
+        if who.is_some() {
+            self.updates_rt.startup_check = false;
+            self.updates_rt.check_requested = false;
+        }
+    }
+
+    /// Whether another program installs this copy's updates.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn updates_managed(&self) -> bool {
+        self.updates_rt.managed.is_some()
+    }
 }
 
 pub(crate) fn check(app: &mut DesignApp) -> Result<Value, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if app.updates_rt.managed.is_some() {
+            // Explain the Launcher instead of offering a build that would replace this channel.
+            app.updates_rt.managed_window_open = true;
+            if let Some(ctx) = &app.updates_rt.repaint {
+                ctx.request_repaint();
+            }
+            return Ok(Value::Null);
+        }
         app.updates_rt.check_requested = true;
         if let Some(ctx) = &app.updates_rt.repaint {
             ctx.request_repaint();
@@ -73,6 +109,10 @@ pub(crate) fn tick(app: &mut DesignApp, ctx: &egui::Context) {
     {
         let rt = &mut app.updates_rt;
         rt.repaint = Some(ctx.clone());
+        if rt.managed.is_some() {
+            // Never tick a managed copy's updater: it would offer the stable channel's build.
+            return;
+        }
         if std::mem::take(&mut rt.check_requested) {
             rt.updater.check_now(ctx);
         } else if rt.startup_check {
@@ -95,6 +135,32 @@ fn result_window_shows(status: &Status, prompt_open: bool) -> bool {
 pub(crate) fn show(app: &mut DesignApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        if let Some(who) = app.updates_rt.managed
+            && app.updates_rt.managed_window_open
+        {
+            let mut open = true;
+            let title = crate::i18n::tr(&app.ui.language, "DesignCraft Updates");
+            let ok_label = crate::i18n::tr(&app.ui.language, "OK");
+            egui::Window::new(title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.content_rect().center())
+                .show(ctx, |ui| {
+                    ui.label(format!("Updates are managed by {who}."));
+                    ui.add_space(8.0);
+                    if ui.button(ok_label).clicked() {
+                        app.updates_rt.managed_window_open = false;
+                    }
+                });
+            if !open {
+                app.updates_rt.managed_window_open = false;
+            }
+        }
+        if app.updates_rt.managed.is_some() {
+            return;
+        }
         // The updater asks to close only when no document has unsaved changes; the install starts when the app exits.
         let clean = !app.session.documents().iter().any(|d| d.is_dirty());
         match app.updates_rt.updater.show_if(ctx, clean) {
@@ -145,6 +211,22 @@ mod tests {
     use designcraft_engine::Session;
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_managed_copy_never_checks_and_explains_who_updates_it() {
+        let mut app = DesignApp::new(Session::new(), Default::default());
+        app.set_startup_update_check(true);
+        app.set_updates_managed(Some("ArtCraft Launcher"));
+        assert!(app.updates_managed());
+        check(&mut app).unwrap();
+        assert!(app.updates_rt.managed_window_open, "Help ▸ Check for Updates explains the Launcher");
+        assert!(!app.updates_rt.check_requested, "a managed copy must not ask the stable feed");
+        tick(&mut app, &egui::Context::default());
+        assert!(!app.updates_rt.startup_check, "a managed copy never checks at start");
+        app.set_updates_managed(None);
+        assert!(!app.updates_managed());
+    }
+
+    #[test]
     fn default_runtime_is_idle() {
         let rt = Runtime::default();
         #[cfg(target_arch = "wasm32")]
@@ -155,6 +237,31 @@ mod tests {
             assert!(!rt.updater.prompt_open());
             assert_eq!(rt.updater.status(), &Status::Idle);
         }
+    }
+
+    /// Offers `release` and returns once its prompt is open. The updater reads the installed files
+    /// for an offer on a thread of its own. That thread sends its answer and then asks the context
+    /// the updater keeps for an immediate repaint, and the next tick opens the prompt. The test
+    /// fails when the offer opens no prompt, for example when the launcher manages this copy.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn offer_and_wait(updater: &mut Updater, release: craft_update::Release) {
+        let ctx = egui::Context::default();
+        let (answered, wait) = std::sync::mpsc::channel();
+        ctx.set_request_repaint_callback(move |info| {
+            if info.delay.is_zero() {
+                let _ = answered.send(());
+            }
+        });
+        // Keeps `ctx` for the offer's thread.
+        updater.tick(&ctx);
+        updater.offer(release);
+        assert!(updater.managed().is_none(), "the launcher manages this copy, so it ignored the offer");
+        // Without its thread, the offer opens the prompt at once.
+        if !updater.prompt_open() {
+            wait.recv().unwrap();
+            updater.tick(&ctx);
+        }
+        assert!(updater.prompt_open(), "the offer opened no prompt (launcher choice: {:?})", updater.managed());
     }
 
     #[test]
@@ -169,7 +276,7 @@ mod tests {
             html_url: "https://github.com/storytold/designcraft/releases/tag/v99.0.0".into(),
             ..Default::default()
         };
-        app.updates_rt.updater.offer(release);
+        offer_and_wait(&mut app.updates_rt.updater, release);
 
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             show(&mut app, ui.ctx());

@@ -249,6 +249,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     return set_new_object(s, |c| {
                         std::mem::swap(&mut c.fill, &mut c.stroke);
                         std::mem::swap(&mut c.fill_tint, &mut c.stroke_tint);
+                        if c.stroke != designcraft_color::swatch::NONE && c.stroke_weight <= 0.0 {
+                            c.stroke_weight = Stroke::default().weight;
+                        }
                     });
                 }
                 has_editable_selection(s).map_err(|e| bad("object.swapFillStroke", e))?;
@@ -264,7 +267,13 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             |s, p| {
                 if nothing_targeted(s, p)? {
-                    return set_new_object(s, |c| *c = designcraft_doc::NewObjectColors::default());
+                    return set_new_object(s, |c| {
+                        let d = designcraft_doc::NewObjectColors::default();
+                        (c.fill, c.fill_tint, c.stroke, c.stroke_tint) = (d.fill, d.fill_tint, d.stroke, d.stroke_tint);
+                        if c.stroke_weight <= 0.0 {
+                            c.stroke_weight = d.stroke_weight;
+                        }
+                    });
                 }
                 has_editable_selection(s).map_err(|e| bad("object.defaultFillStroke", e))?;
                 edit_unlocked(s, p, default_fill_stroke)
@@ -275,7 +284,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Stroke",
             [],
             None,
-            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error)",
+            "{swatch?, tint?: 0–1, weight?: 0–1000 pt, align?: center|inside|outside, type?: {kind: solid|dashed|dotted|thickThin|thinThick|thinThin|thickThick|thinThickThin|thickThinThick|wavy|hashed|stripes|style, pattern?: [dash, gap, …] (dashed: required, points), bands?: [[start, width], …] (stripes: required, fractions of stroke weight), name?: string (style: required, document stroke style name)} (other kinds take no extra fields; unknown type fields are errors), cap?: butt|round|projecting, join?: miter|round|bevel, miterLimit?: 1–500, start?, end?: none|simple|simpleWide|triangle|triangleWide|barbed|curved|circle|circleSolid|square|squareSolid|bar, gapSwatch?, gapTint?: 0–1, gapOverprint?: bool, ids?} (a value out of range or not listed is an error). With nothing selected: the stroke of new shapes",
             has_doc,
             |s, p| {
                 let kind: Option<designcraft_doc::StrokeType> = p
@@ -312,18 +321,68 @@ pub fn specs() -> Vec<CommandSpec> {
                 let arrowheads = "none, simple, simpleWide, triangle, triangleWide, barbed, curved, circle, circleSolid, square, squareSolid or bar";
                 let start = stroke_choice_param(p, "start", arrowheads)?;
                 let end = stroke_choice_param(p, "end", arrowheads)?;
-                // With nothing selected, the swatch and tint are those of new shapes.
+                // With nothing selected, the stroke settings become the defaults for new shapes.
                 if nothing_targeted(s, p)? {
                     let sw = str_param(p, "swatch").map(str::to_string);
-                    if sw.is_none() && tint.is_none() {
+                    let gap_sw = str_param(p, "gapSwatch").map(str::to_string);
+                    if sw.is_none()
+                        && tint.is_none()
+                        && weight.is_none()
+                        && miter_limit.is_none()
+                        && gap_sw.is_none()
+                        && gap_tint.is_none()
+                        && gap_overprint.is_none()
+                        && kind.is_none()
+                        && align.is_none()
+                        && cap.is_none()
+                        && join.is_none()
+                        && start.is_none()
+                        && end.is_none()
+                    {
                         return Err(bad("object.stroke", super::NOTHING_SELECTED));
                     }
+                    let activates_stroke = weight != Some(0.0)
+                        && (weight.is_some()
+                            || kind.is_some()
+                            || align.is_some()
+                            || cap.is_some()
+                            || join.is_some()
+                            || miter_limit.is_some()
+                            || start.is_some()
+                            || end.is_some());
                     return set_new_object(s, |c| {
-                        if let Some(sw) = &sw {
-                            c.stroke = sw.clone();
-                            c.stroke_tint = 1.0;
+                        let mut st = c.to_stroke();
+                        if st.swatch == designcraft_color::swatch::NONE && sw.is_none() && activates_stroke {
+                            let def = Stroke::default();
+                            st.swatch = def.swatch;
+                            st.tint = def.tint;
+                            if st.weight <= 0.0 {
+                                st.weight = def.weight;
+                            }
                         }
-                        c.stroke_tint = tint.unwrap_or(c.stroke_tint);
+                        if let Some(sw) = &sw {
+                            st.swatch = sw.clone();
+                            st.tint = 1.0;
+                        }
+                        if st.swatch != designcraft_color::swatch::NONE {
+                            st.tint = tint.unwrap_or(st.tint);
+                        }
+                        st.weight = weight.unwrap_or(st.weight);
+                        st.miter_limit = miter_limit.unwrap_or(st.miter_limit);
+                        if let Some(gap_sw) = &gap_sw {
+                            st.gap_swatch = gap_sw.clone();
+                        }
+                        st.gap_tint = gap_tint.unwrap_or(st.gap_tint);
+                        st.gap_overprint = gap_overprint.unwrap_or(st.gap_overprint);
+                        if let Some(kind) = &kind {
+                            st.kind = kind.clone();
+                        }
+                        st.align = align.unwrap_or(st.align);
+                        st.cap = cap.unwrap_or(st.cap);
+                        st.join = join.unwrap_or(st.join);
+                        st.start = start.unwrap_or(st.start);
+                        st.end = end.unwrap_or(st.end);
+                        c.set_stroke(&st);
                     });
                 }
                 let p2 = p.clone();
@@ -646,7 +705,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fitting",
             ["Object", "Fitting"],
             None,
-            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ids?} — locked objects and objects on locked layers are left as they are",
+            "{mode: fillProportionally (preserves aspect ratio, covers frame, clips overflow)|fitProportionally (preserves aspect ratio, shows whole image, may leave empty space)|fitContentToFrame (stretches content to frame)|centerContent (keeps current size, positions at fitting alignment)|fitFrameToContent (resizes frame to content), axis?: both|height|width (frame-local sides Fit Frame to Content moves; default both), ref?: 0..8 (reference point 0..=8, row-major from top-left, kept fixed when fitting text frames; default follows vertical justification), ids?} — locked objects and objects on locked layers are left as they are",
             has_selection,
             fit
         ),
@@ -978,16 +1037,24 @@ pub(crate) fn nothing_targeted(s: &Session, p: &Value) -> Result<bool> {
         && st.selection.cells.is_none())
 }
 
-/// Change the colours new shapes are drawn with (one undo step).
+/// Change the fill and stroke defaults new shapes are drawn with (one undo step).
 pub(crate) fn set_new_object(s: &mut Session, f: impl FnOnce(&mut designcraft_doc::NewObjectColors)) -> Result<Value> {
     s.edit(|d, _| {
         f(&mut d.settings.new_object);
         let c = &d.settings.new_object;
-        Ok(json!({"newObject": {"fill": c.fill, "fillTint": c.fill_tint, "stroke": c.stroke, "strokeTint": c.stroke_tint}}))
+        Ok(json!({
+            "newObject": {
+                "fill": c.fill,
+                "fillTint": c.fill_tint,
+                "stroke": c.stroke,
+                "strokeTint": c.stroke_tint,
+                "strokeWeight": c.stroke_weight,
+            }
+        }))
     })
 }
 
-/// A new shape's fill and stroke: the document's colours for new objects (a swatch deleted
+/// A new shape's fill and stroke: the document's defaults for new objects (a swatch deleted
 /// since leaves the shape's own).
 fn new_object_colors(d: &designcraft_doc::Document, it: &mut Item) {
     let c = &d.settings.new_object;
@@ -995,10 +1062,16 @@ fn new_object_colors(d: &designcraft_doc::Document, it: &mut Item) {
     if known(&c.fill) {
         it.fill = Fill { swatch: c.fill.clone(), tint: c.fill_tint, ..it.fill.clone() };
     }
-    if known(&c.stroke) {
-        it.stroke.swatch = c.stroke.clone();
-        it.stroke.tint = c.stroke_tint;
+    let mut st = c.to_stroke();
+    if !known(&st.swatch) {
+        st.swatch = it.stroke.swatch.clone();
+        st.tint = it.stroke.tint;
     }
+    if !known(&st.gap_swatch) {
+        st.gap_swatch = designcraft_color::swatch::NONE.into();
+        st.gap_tint = 1.0;
+    }
+    it.stroke = st;
 }
 
 fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1044,8 +1117,8 @@ fn frame_create(s: &mut Session, p: &Value) -> Result<Value> {
                 it.effects = e.clone();
             }
         } else {
-            // Shapes drawn with Rectangle/Ellipse/Polygon get a 1 pt stroke in the document's
-            // colours for new objects (no fill and black at first).
+            // Shapes drawn with Rectangle/Ellipse/Polygon get the document's fill and stroke
+            // defaults for new objects (no fill and 1 pt black stroke at first).
             it.stroke = Stroke::default();
             new_object_colors(d, &mut it);
         }
@@ -1090,11 +1163,12 @@ fn line_create(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: SpreadRef, off: Vec2) -> Result<Vec<ItemId>> {
     let mut out = Vec::new();
     let mut story_map: HashMap<StoryId, StoryId> = HashMap::new();
+    let mut item_ids = HashMap::new();
     for id in ids {
         let Some(it) = src.item(*id) else { continue };
         let mut copy = it.clone();
         copy.xf = Affine::translate(off) * copy.xf;
-        if !renumber(dst, src, &mut copy, &mut story_map) {
+        if !renumber_in(dst, src, &mut copy, &mut story_map, 0, true, &mut item_ids) {
             return Err(designcraft_doc::DocError::Invalid(format!("{id} nests groups or tables too deeply to copy")).into());
         }
         if dst.layer(copy.layer).is_none() {
@@ -1104,6 +1178,7 @@ pub fn duplicate_from(dst: &mut Document, src: &Document, ids: &[ItemId], to: Sp
         dst.insert_item(to, copy, None)?;
         out.push(nid);
     }
+    reorder_copied_threads(dst, src, &story_map, &item_ids);
     retarget_copied_xrefs(dst, src, &story_map);
     Ok(out)
 }
@@ -1125,14 +1200,48 @@ fn adopt_or_dangle(dst: &mut Document, src: &Document, id: AssetId) -> AssetId {
 /// that keep their ids, and the copy must not be used.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
 pub(crate) fn renumber(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>) -> bool {
-    renumber_in(dst, src, it, stories, 0, true)
+    renumber_in(dst, src, it, stories, 0, true, &mut HashMap::new())
+}
+
+/// Preserve source thread order after all copied frames have received new ids.
+pub(crate) fn reorder_copied_threads(dst: &mut Document, src: &Document, stories: &HashMap<StoryId, StoryId>, ids: &HashMap<ItemId, ItemId>) {
+    for (old, new) in stories {
+        if let (Some(source), Some(copy)) = (src.story(*old), dst.story_mut(*new)) {
+            let frames: Vec<_> = source.frames.iter().filter_map(|id| ids.get(id).copied()).collect();
+            if !frames.is_empty() {
+                copy.frames = frames;
+            }
+        }
+    }
+}
+
+/// Renumber several copied items together so their source thread order can be restored.
+pub(crate) fn renumber_items(dst: &mut Document, src: &Document, items: &mut [Item], stories: &mut HashMap<StoryId, StoryId>) -> bool {
+    let mut ids = HashMap::new();
+    let mut complete = true;
+    for item in items {
+        complete &= renumber_in(dst, src, item, stories, 0, true, &mut ids);
+    }
+    reorder_copied_threads(dst, src, stories, &ids);
+    complete
 }
 
 /// [`renumber`] for an item `depth` groups deep. `adopt` is false inside a story copy, whose asset references the copy
 /// has already adopted.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut HashMap<StoryId, StoryId>, depth: usize, adopt: bool) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn renumber_in(
+    dst: &mut Document,
+    src: &Document,
+    it: &mut Item,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    adopt: bool,
+    ids: &mut HashMap<ItemId, ItemId>,
+) -> bool {
+    let old = it.id;
     it.id = ItemId(dst.alloc());
+    ids.insert(old, it.id);
     let my_id = it.id;
     if adopt
         && let Some(m) = it.media.as_mut()
@@ -1161,7 +1270,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
                     st.frames.clear();
                     // Mapped first: the map is the seen-set that stops story recursion.
                     stories.insert(tf.story, n);
-                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1) && marked;
+                    complete = renumber_anchored(dst, src, &mut st, stories, depth + 1, ids) && marked;
                     dst.stories.insert(n, Arc::new(st));
                     n
                 }
@@ -1183,7 +1292,7 @@ fn renumber_in(dst: &mut Document, src: &Document, it: &mut Item, stories: &mut 
             }
             let mut complete = true;
             for c in items.iter_mut() {
-                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt);
+                complete &= renumber_in(dst, src, Arc::make_mut(c), stories, depth + 1, adopt, ids);
             }
             return complete;
         }
@@ -1294,12 +1403,20 @@ fn retarget_xrefs(copy: &mut Story, orig: &Story, map: &HashMap<u64, u64>, depth
 /// [`MAX_COPY_DEPTH`] levels (#1522), each `depth` levels deep. False when one of them nests groups deeper than
 /// [`MAX_COPY_DEPTH`], or when the stories below that level hold anchored objects, tables or notes.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
-fn renumber_anchored(dst: &mut Document, src: &Document, st: &mut Story, stories: &mut HashMap<StoryId, StoryId>, depth: usize) -> bool {
-    renumber_anchored_in(dst, src, st, stories, depth, 0)
+fn renumber_anchored(
+    dst: &mut Document,
+    src: &Document,
+    st: &mut Story,
+    stories: &mut HashMap<StoryId, StoryId>,
+    depth: usize,
+    ids: &mut HashMap<ItemId, ItemId>,
+) -> bool {
+    renumber_anchored_in(dst, src, st, stories, depth, 0, ids)
 }
 
 /// [`renumber_anchored`] for a story `level` table cells and notes below the story copy.
 #[must_use = "false means the copy is incomplete and must not be inserted"]
+#[allow(clippy::too_many_arguments)]
 fn renumber_anchored_in(
     dst: &mut Document,
     src: &Document,
@@ -1307,10 +1424,11 @@ fn renumber_anchored_in(
     stories: &mut HashMap<StoryId, StoryId>,
     depth: usize,
     level: usize,
+    ids: &mut HashMap<ItemId, ItemId>,
 ) -> bool {
     let mut complete = true;
     for o in &mut st.objects {
-        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false);
+        complete &= renumber_in(dst, src, &mut Arc::make_mut(o).item, stories, depth, false, ids);
     }
     if level >= MAX_COPY_DEPTH {
         let leaf = |s: &Story| s.objects.is_empty() && s.tables.is_empty() && s.notes.is_empty() && s.endnotes.is_empty();
@@ -1320,11 +1438,11 @@ fn renumber_anchored_in(
     }
     for t in st.tables.values_mut() {
         for c in &mut Arc::make_mut(t).cells {
-            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1);
+            complete &= renumber_anchored_in(dst, src, &mut c.text, stories, depth, level + 1, ids);
         }
     }
     for n in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
-        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1);
+        complete &= renumber_anchored_in(dst, src, &mut Arc::make_mut(n).text, stories, depth, level + 1, ids);
     }
     complete
 }
@@ -1424,19 +1542,41 @@ fn move_content(s: &mut Session, ids: &[ItemId], d: Vec2) -> Result<Value> {
     })
 }
 
+/// One-axis affine `(scale, from_anchor, to_anchor)` mapping `[f0, f1]` toward `[t0, t1]`.
+/// Anchors the unchanged edge (before clamping or flipping) so near-zero clamps never drift it,
+/// and leaves an unchanged axis as exact identity.
+fn resize_axis_transform(f0: f64, f1: f64, t0: f64, t1: f64) -> (f64, f64, f64) {
+    if t0 == f0 && t1 == f1 {
+        return (1.0, 0.0, 0.0);
+    }
+    let old = f1 - f0;
+    // A flat source (a horizontal or vertical line) has no size to scale on its flat axis: that axis only moves.
+    if old.abs() < 1e-9 {
+        return (1.0, f0, t0);
+    }
+    let raw = (t1 - t0) / old;
+    let s = if raw.abs() < 1e-3 { 1e-3f64.copysign(raw) } else { raw };
+    if (t1 - f1).abs() <= 1e-9 && (t0 - f0).abs() > 1e-9 {
+        (s, f1, t1)
+    } else if (t0 - f0).abs() <= 1e-9 && (t1 - f1).abs() > 1e-9 {
+        (s, f0, t0)
+    } else {
+        (s, (f0 + f1) * 0.5, (t0 + t1) * 0.5)
+    }
+}
+
 fn transform_resize(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    let from = rect_param(p, "from").ok_or_else(|| bad("transform.resize", "missing from"))?;
-    let to = rect_param(p, "to").ok_or_else(|| bad("transform.resize", "missing to"))?;
+    let from = super::finite_rect("transform.resize", rect_param(p, "from").ok_or_else(|| bad("transform.resize", "missing from"))?)?;
+    let to = super::finite_rect("transform.resize", rect_param(p, "to").ok_or_else(|| bad("transform.resize", "missing to"))?)?;
     let scale_content = bool_or(p, "content", false);
     let distribute = bool_or(p, "distribute", false);
-    // A flat source (a horizontal or vertical line) has no size to scale on its flat axis: that axis only moves.
-    let ratio = |new: f64, old: f64| if old.abs() < 1e-9 { 1.0 } else { new / old };
-    let sx = ratio(to.width(), from.width());
-    let sy = ratio(to.height(), from.height());
-    let sx = if sx.abs() < 1e-3 { 1e-3f64.copysign(sx) } else { sx };
-    let sy = if sy.abs() < 1e-3 { 1e-3f64.copysign(sy) } else { sy };
-    let m = Affine::translate((to.x0, to.y0)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-from.x0, -from.y0));
+    let (sx, fx, tx) = resize_axis_transform(from.x0, from.x1, to.x0, to.x1);
+    let (sy, fy, ty) = resize_axis_transform(from.y0, from.y1, to.y0, to.y1);
+    let m = Affine::translate((tx, ty)) * Affine::scale_non_uniform(sx, sy) * Affine::translate((-fx, -fy));
+    if !m.as_coeffs().iter().all(|v| v.is_finite()) {
+        return Err(bad("transform.resize", "the position and size must stay finite numbers"));
+    }
     let strokes = s.prefs.scale_strokes;
     s.edit(|d, _| {
         for id in &ids {
@@ -3388,23 +3528,34 @@ fn clear_fitting_options(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+fn fit_ref_param(p: &Value) -> Result<Option<usize>> {
+    let Some(v) = p.get("ref").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let Some(r) = v.as_u64().and_then(|n| usize::try_from(n).ok()).filter(|&n| n <= 8) else {
+        return Err(bad("object.fit", "ref must be an integer from 0 to 8"));
+    };
+    Ok(Some(r))
+}
+
 fn fit(s: &mut Session, p: &Value) -> Result<Value> {
-    let doc = &s.doc()?.doc;
-    let ids: Vec<_> =
-        targets(s, p)?.into_iter().filter(|id| doc.item(*id).is_some_and(|it| !it.locked && doc.layer(it.layer).is_none_or(|l| !l.locked))).collect();
-    let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
+    let ref_pt = fit_ref_param(p)?;
     let (height, width) = match str_param(p, "axis").unwrap_or("both") {
         "height" => (true, false),
         "width" => (false, true),
         "both" => (true, true),
         other => return Err(bad("object.fit", format!("unknown axis `{other}`"))),
     };
+    let mode = str_param(p, "mode").unwrap_or("fitProportionally").to_string();
+    let doc = &s.doc()?.doc;
+    let ids: Vec<_> =
+        targets(s, p)?.into_iter().filter(|id| doc.item(*id).is_some_and(|it| !it.locked && doc.layer(it.layer).is_none_or(|l| !l.locked))).collect();
     // Text frames: Fit Frame to Content fits the frame to its composed text.
     let mut text_fits = Vec::new();
     if mode == "fitFrameToContent" {
         let d = s.doc()?.doc.clone();
         for id in &ids {
-            if let Some(r) = fitted_text_frame(&d, *id, height, width)? {
+            if let Some(r) = fitted_text_frame(&d, *id, height, width, ref_pt)? {
                 text_fits.push((*id, r));
             }
         }
@@ -3441,12 +3592,82 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum FitSide {
+    Start,
+    Center,
+    End,
+}
+
+#[derive(Clone, Copy)]
+struct FitAnchors {
+    x: FitSide,
+    y: FitSide,
+}
+
+fn fit_text_anchors(tf: &TextFrame, ref_pt: Option<usize>) -> FitAnchors {
+    if let Some(r) = ref_pt {
+        let side = |k: usize| match k {
+            0 => FitSide::Start,
+            1 => FitSide::Center,
+            _ => FitSide::End,
+        };
+        return FitAnchors { x: side(r % 3), y: side(r / 3) };
+    }
+    let y = match tf.options.vertical_justification {
+        designcraft_doc::VerticalJustification::Bottom => FitSide::End,
+        designcraft_doc::VerticalJustification::Center => FitSide::Center,
+        designcraft_doc::VerticalJustification::Top | designcraft_doc::VerticalJustification::Justify => FitSide::Start,
+    };
+    FitAnchors { x: FitSide::Start, y }
+}
+
+fn anchored_span(start: f64, end: f64, size: f64, side: FitSide) -> (f64, f64) {
+    match side {
+        FitSide::Start => (start, start + size),
+        FitSide::Center => {
+            let mid = (start + end) * 0.5;
+            let half = size * 0.5;
+            (mid - half, mid + half)
+        }
+        FitSide::End => (end - size, end),
+    }
+}
+
+fn rect_with_width(cur: Rect, width: f64, side: FitSide) -> Rect {
+    let (x0, x1) = anchored_span(cur.x0, cur.x1, width, side);
+    Rect::new(x0, cur.y0, x1, cur.y1)
+}
+
+fn rect_with_height(cur: Rect, height: f64, side: FitSide) -> Rect {
+    let (y0, y1) = anchored_span(cur.y0, cur.y1, height, side);
+    Rect::new(cur.x0, y0, cur.x1, y1)
+}
+
+fn line_h_indents(d: &Document, story: &designcraft_doc::Story, para_idx: usize, first_in_para: bool) -> (f64, f64) {
+    let Some(pf) = story.paras.get(para_idx) else {
+        return (0.0, 0.0);
+    };
+    let (pp, _) = d.styles.resolve_para(pf);
+    let left = if pp.left_indent.is_finite() { pp.left_indent } else { 0.0 };
+    let right = if pp.right_indent.is_finite() { pp.right_indent } else { 0.0 };
+    let first = if first_in_para && pp.first_line_indent.is_finite() { pp.first_line_indent } else { 0.0 };
+    if pp.direction == designcraft_doc::TextDirection::RightToLeft {
+        let ind_r = right + first;
+        (left.max(0.0), if ind_r.is_finite() { ind_r.max(0.0) } else { 0.0 })
+    } else {
+        let ind_l = left + first;
+        (if ind_l.is_finite() { ind_l.max(0.0) } else { 0.0 }, right.max(0.0))
+    }
+}
+
 /// The inner rectangle that fits text frame `id` to its text (Fit Frame to Content): the smallest
-/// fitting height and the right side at the longest line's end (`width`, one column only),
-/// including insets; the top-left stays. Overset text grows the frame first. None for
-/// frames that aren't horizontal text frames, have no text, or are threaded on to another frame,
-/// and for auto-size frames, which already fit their text around their reference point.
-fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Result<Option<Rect>> {
+/// fitting height and column width (`width`, one column only), including insets, keeping `ref_pt`
+/// (or, when omitted, the vertical edge implied by vertical justification) fixed. Overset text
+/// grows the frame first. None for frames that aren't horizontal text frames, have no text, or are
+/// threaded on to another frame, and for auto-size frames, which already fit their text around
+/// their reference point.
+fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool, ref_pt: Option<usize>) -> Result<Option<Rect>> {
     let Some(it) = d.item(id) else { return Ok(None) };
     let Some(tf) = it.text_frame() else { return Ok(None) };
     if tf.options.auto_size != designcraft_doc::AutoSize::Off {
@@ -3464,6 +3685,17 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Res
     if !(r.width().is_finite() && r.height().is_finite() && r.width() > 0.0 && r.height() > 0.0) {
         return Err(bad("object.fit", "text frame bounds must be finite and nonempty"));
     }
+    // Composition reserves `stroke_inside()` inside every edge before applying the frame's text
+    // insets (`Item::text_area()`). Include the same allowance so stroked frames do not overset.
+    let stroke_in = it.stroke_inside();
+    let edge_inset = |v: f64| {
+        let total = if v.is_finite() { v + stroke_in } else { stroke_in };
+        if total.is_finite() { total } else { 0.0 }
+    };
+    let inset_l = edge_inset(tf.options.inset[1]);
+    let inset_b = edge_inset(tf.options.inset[2]);
+    let inset_r = edge_inset(tf.options.inset[3]);
+    let anchors = fit_text_anchors(tf, ref_pt);
     // Keep trial layouts out of the session cache. Search with the actual columns and frame
     // options: measuring a very tall frame collapses columns and includes vertical alignment's
     // extra space. A fitting trial must compose all the text, regardless of its justification.
@@ -3483,40 +3715,78 @@ fn fitted_text_frame(d: &Document, id: ItemId, height: bool, width: bool) -> Res
     // First fit the height at the existing width, then measure the complete text's width.
     // Recheck height after fitting width, since a small width change can change a line break.
     if height {
-        out = fit_text_height(out, id, tf.options.inset[2], &mut compose)?;
+        out = fit_text_height(out, id, inset_b, anchors.y, &mut compose)?;
     }
     if width && tf.options.columns <= 1 {
         let cs = compose(out);
         if let Some(ft) = cs.frame(id) {
-            let right = ft.lines.iter().map(|l| l.end_x).fold(f64::NEG_INFINITY, f64::max);
-            if right.is_finite() {
-                out.x1 = (right + tf.options.inset[3] + 0.001).max(r.x0 + 1.0);
+            let measure_start = !matches!(anchors.x, FitSide::Start);
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for l in &ft.lines {
+                // Tables ignore first_line_indent in composition even when their first fragment is
+                // marked first_in_para; applying it here would inflate RTL table widths.
+                let first_in_para = l.first_in_para && story.para_table(l.para).is_none();
+                let (ind_l, ind_r) = line_h_indents(d, story, l.para, first_in_para);
+                if l.end_x.is_finite() {
+                    hi = hi.max(l.end_x + ind_r);
+                }
+                if measure_start {
+                    for g in l.glyphs.iter().filter(|g| g.visible || (g.rendered_char == '\t' && g.adv > 0.0)) {
+                        let pen = g.x - g.dx;
+                        if pen.is_finite() && g.adv.is_finite() {
+                            let edge = pen.min(pen + g.adv);
+                            if edge.is_finite() {
+                                lo = lo.min(edge - ind_l);
+                            }
+                        }
+                    }
+                }
+            }
+            for t in &ft.tables {
+                let (ind_l, ind_r) = ft.lines.get(t.line).map_or((0.0, 0.0), |l| line_h_indents(d, story, l.para, false));
+                if measure_start && t.rect.x0.is_finite() {
+                    lo = lo.min(t.rect.x0 - ind_l);
+                }
+                if t.rect.x1.is_finite() {
+                    hi = hi.max(t.rect.x1 + ind_r);
+                }
+            }
+            // Keep measuring from out.x0 when left-anchored or when `ref` is omitted so menu
+            // Fit Frame to Content does not shift right- or center-aligned text leftward.
+            let start = if measure_start && lo.is_finite() { lo - inset_l } else { out.x0 };
+            if hi.is_finite() && start.is_finite() {
+                let span_w = (hi - start + inset_r + 0.001).max(1.0);
+                if span_w.is_finite() {
+                    out = rect_with_width(out, span_w, anchors.x);
+                }
             }
         }
         if height {
-            out = fit_text_height(out, id, tf.options.inset[2], &mut compose)?;
+            out = fit_text_height(out, id, inset_b, anchors.y, &mut compose)?;
         }
     }
-    Ok(Some(out))
+    super::finite_rect("object.fit", out).map(Some)
 }
 
 fn fit_text_height(
-    mut rect: Rect,
+    rect: Rect,
     id: ItemId,
     inset_bottom: f64,
+    anchor_y: FitSide,
     compose: &mut impl FnMut(Rect) -> Arc<designcraft_compose::ComposedStory>,
 ) -> Result<Rect> {
     let mut low = 1.0;
     let limit = 20_000.0;
     let mut high = rect.height().clamp(1.0, limit);
-    rect.y1 = rect.y0 + high;
-    while compose(rect).is_overset() {
+    let mut cur = rect_with_height(rect, high, anchor_y);
+    while compose(cur).is_overset() {
         if high >= limit {
             return Err(bad("object.fit", "text does not fit within the 20,000 pt fitting limit"));
         }
         low = high;
         high = (high * 2.0).min(limit);
-        rect.y1 = rect.y0 + high;
+        cur = rect_with_height(rect, high, anchor_y);
     }
     // Bounded search, always retaining a verified fitting upper bound.
     for _ in 0..32 {
@@ -3524,22 +3794,23 @@ fn fit_text_height(
             break;
         }
         let mid = low + (high - low) / 2.0;
-        rect.y1 = rect.y0 + mid;
-        if compose(rect).is_overset() {
+        let candidate = rect_with_height(rect, mid, anchor_y);
+        if compose(candidate).is_overset() {
             low = mid;
         } else {
             high = mid;
         }
     }
-    rect.y1 = rect.y0 + high;
+    cur = rect_with_height(rect, high, anchor_y);
     // A line is set when its baseline is within 0.01 pt of the bottom, so the search stops just
-    // short of the lowest baseline. The bottom goes onto it (plus the inset): the frame then fits
-    // its text exactly and still does when it is scaled up.
-    let lowest = compose(rect).frame(id).and_then(|ft| ft.lines.iter().map(|l| l.baseline).reduce(f64::max));
-    if let Some(b) = lowest.map(|b| b + inset_bottom).filter(|b| b.is_finite() && *b > rect.y1 && *b - rect.y1 <= 0.02) {
-        rect.y1 = b;
+    // short of the lowest baseline. Growing height along `anchor_y` by that residual keeps the
+    // pinned edge in place while making the frame fit exactly, even when scaled up.
+    let cs = compose(cur);
+    let lowest = cs.frame(id).and_then(|ft| ft.lines.iter().map(|l| l.baseline).reduce(f64::max));
+    if let Some(extra) = lowest.map(|b| b + inset_bottom - cur.y1).filter(|e| e.is_finite() && *e > 0.0 && *e <= 0.02) {
+        cur = rect_with_height(rect, high + extra, anchor_y);
     }
-    Ok(rect)
+    Ok(cur)
 }
 
 pub(crate) trait RemoveKeep {
@@ -4274,6 +4545,257 @@ mod step_repeat_tests {
         assert_eq!(s.doc().unwrap().doc.settings.new_object.fill, "[Paper]");
     }
 
+    /// Regression test for #2858: with nothing selected, setting stroke weight and style attributes
+    /// updates the document defaults for newly drawn Pencil, Pen, Line, and shape items without
+    /// altering existing items.
+    #[test]
+    fn with_nothing_selected_stroke_defaults_apply_to_pencil_pen_line_and_shapes() {
+        use designcraft_doc::{Arrowhead, Cap, Join, StrokeAlign, StrokeType};
+        use designcraft_tools::{PointerEvent, PointerKind};
+
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let existing = s.execute("frame.create", &json!({"rect": [20, 20, 80, 80], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(existing)).unwrap().stroke.weight, 1.0);
+
+        // Deselect all objects and change stroke defaults.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let res = s
+            .execute(
+                "object.stroke",
+                &json!({
+                    "weight": 6,
+                    "cap": "round",
+                    "join": "bevel",
+                    "align": "inside",
+                    "miterLimit": 12,
+                    "start": "circle",
+                    "end": "triangle",
+                    "type": {"kind": "dashed", "pattern": [8.0, 3.0]},
+                    "gapSwatch": "[Paper]",
+                    "gapTint": 0.5,
+                    "gapOverprint": true
+                }),
+            )
+            .unwrap();
+        assert_eq!(res["newObject"]["strokeWeight"], 6.0);
+        // Existing item is unchanged.
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(existing)).unwrap().stroke.weight, 1.0);
+
+        // Draw with the Pencil tool: the created path inherits the 6 pt stroke and all attributes.
+        s.set_tool("pencil");
+        let v = crate::ViewInfo::at_zoom(1.0);
+        s.pointer(&PointerEvent::new(PointerKind::Down, 120.0, 120.0), v).unwrap();
+        for i in 1..=20 {
+            s.pointer(&PointerEvent::new(PointerKind::Drag, 120.0 + i as f64 * 5.0, 120.0 + (i as f64 * 0.4).sin() * 15.0), v).unwrap();
+        }
+        s.pointer(&PointerEvent::new(PointerKind::Up, 220.0, 125.0), v).unwrap();
+        let pencil_id = *s.doc().unwrap().selection.items.first().expect("pencil stroke should select created path");
+        let pencil_stroke = s.doc().unwrap().doc.item(pencil_id).unwrap().stroke.clone();
+        assert_eq!(pencil_stroke.weight, 6.0);
+        assert_eq!(pencil_stroke.cap, Cap::Round);
+        assert_eq!(pencil_stroke.join, Join::Bevel);
+        assert_eq!(pencil_stroke.align, StrokeAlign::Inside);
+        assert_eq!(pencil_stroke.miter_limit, 12.0);
+        assert_eq!(pencil_stroke.start, Arrowhead::Circle);
+        assert_eq!(pencil_stroke.end, Arrowhead::Triangle);
+        assert_eq!(pencil_stroke.kind, StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+        assert_eq!(pencil_stroke.gap_swatch, "[Paper]");
+        assert_eq!(pencil_stroke.gap_tint, 0.5);
+        assert!(pencil_stroke.gap_overprint);
+
+        // New Pen path, Line, and unassigned shape also inherit the defaults.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        let pen_id =
+            ItemId(s.execute("path.create", &json!({"anchors": [{"p": [0, 0]}, {"p": [50, 20]}, {"p": [100, 0]}]})).unwrap()["id"].as_u64().unwrap());
+        let line_id = ItemId(s.execute("line.create", &json!({"a": [0, 0], "b": [100, 0]})).unwrap()["id"].as_u64().unwrap());
+        let rect_id = ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        for id in [pen_id, line_id, rect_id] {
+            let st = &s.doc().unwrap().doc.item(id).unwrap().stroke;
+            assert_eq!(st.weight, 6.0, "{id:?}");
+            assert_eq!(st.cap, Cap::Round, "{id:?}");
+        }
+
+        // Editing a selected object leaves the document defaults alone.
+        s.execute("selection.set", &json!({"ids": [existing]})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 2})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(existing)).unwrap().stroke.weight, 2.0);
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 6.0);
+
+        // Save/load round-trips the stroke defaults.
+        let reloaded = designcraft_format::load(&designcraft_format::save(&s.doc().unwrap().doc).unwrap()).unwrap();
+        assert_eq!(reloaded.settings.new_object, s.doc().unwrap().doc.settings.new_object);
+
+        // Undo/redo restores and re-applies default stroke changes.
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 9})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 9.0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 6.0);
+        s.execute("edit.redo", &json!({})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 9.0);
+    }
+
+    #[test]
+    fn with_nothing_selected_stroke_edge_cases_and_validation() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        // Empty `object.stroke {}` still requires a parameter or selection.
+        let err = s.execute("object.stroke", &json!({})).unwrap_err();
+        assert!(matches!(err, crate::EngineError::BadParams { .. }));
+
+        // Out-of-range weight with nothing selected is refused without mutating defaults.
+        let before = s.doc().unwrap().doc.settings.new_object.clone();
+        assert!(s.execute("object.stroke", &json!({"weight": 1500})).is_err());
+        assert_eq!(s.doc().unwrap().doc.settings.new_object, before);
+
+        // When default stroke swatch is [None], tint alone does not add a stroke, whereas setting
+        // weight activates a [Black] stroke at that weight.
+        s.execute("object.stroke", &json!({"swatch": "[None]"})).unwrap();
+        s.execute("object.stroke", &json!({"tint": 0.5})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke, "[None]");
+        s.execute("object.stroke", &json!({"weight": 4})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke, "[Black]");
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.stroke_weight, 4.0);
+        s.execute("object.fill", &json!({"swatch": "[Paper]", "tint": 0.5})).unwrap();
+        s.execute(
+            "object.stroke",
+            &json!({"swatch": "[Paper]", "tint": 0.25, "weight": 6, "cap": "round", "type": {"kind": "dashed", "pattern": [8.0, 3.0]}}),
+        )
+        .unwrap();
+        s.execute("object.defaultFillStroke", &json!({})).unwrap();
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!((c.fill.as_str(), c.fill_tint, c.stroke.as_str(), c.stroke_tint), ("[None]", 1.0, "[Black]", 1.0));
+        assert_eq!(c.stroke_weight, 6.0);
+        assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
+        assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+
+        // Visible-weight rule: resetting to a black stroke restores a 0 pt default weight to 1 pt
+        // while keeping the other stroke attributes intact.
+        s.execute("object.stroke", &json!({"weight": 0})).unwrap();
+        s.execute("object.defaultFillStroke", &json!({})).unwrap();
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke_weight, 1.0);
+        assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
+        assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+    }
+
+    #[test]
+    fn restoring_zero_default_stroke_weight_preserves_stroke_style() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        s.execute(
+            "object.stroke",
+            &json!({
+                "swatch": "[Paper]",
+                "tint": 0.5,
+                "weight": 6,
+                "cap": "round",
+                "type": {"kind": "dashed", "pattern": [8.0, 3.0]}
+            }),
+        )
+        .unwrap();
+        s.execute("object.stroke", &json!({"weight": 0})).unwrap();
+        s.execute("object.stroke", &json!({"weight": 6})).unwrap();
+
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke, "[Paper]");
+        assert_eq!(c.stroke_tint, 0.5);
+        assert_eq!(c.stroke_weight, 6.0);
+        assert_eq!(c.stroke_cap, designcraft_doc::Cap::Round);
+        assert_eq!(c.stroke_type, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let st = &s.doc().unwrap().doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.swatch, "[Paper]");
+        assert_eq!(st.tint, 0.5);
+        assert_eq!(st.weight, 6.0);
+        assert_eq!(st.cap, designcraft_doc::Cap::Round);
+        assert_eq!(st.kind, designcraft_doc::StrokeType::Dashed { pattern: vec![8.0, 3.0] });
+    }
+
+    #[test]
+    fn gap_only_default_stroke_edits_keep_disabled_stroke_none() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        s.execute("object.stroke", &json!({"swatch": "[None]"})).unwrap();
+        s.execute("object.stroke", &json!({"gapSwatch": "[Paper]"})).unwrap();
+        s.execute("object.stroke", &json!({"gapTint": 0.5})).unwrap();
+        s.execute("object.stroke", &json!({"gapOverprint": true})).unwrap();
+
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke, "[None]");
+        assert_eq!(c.gap_swatch, "[Paper]");
+        assert_eq!(c.gap_tint, 0.5);
+        assert!(c.gap_overprint);
+
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let st = &s.doc().unwrap().doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.swatch, "[None]");
+        assert!(st.is_none());
+        assert_eq!(st.gap_swatch, "[Paper]");
+        assert_eq!(st.gap_tint, 0.5);
+        assert!(st.gap_overprint);
+    }
+
+    #[test]
+    fn tint_edit_at_zero_default_stroke_weight_applies_when_weight_restored() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+
+        s.execute("object.stroke", &json!({"weight": 0})).unwrap();
+        s.execute("object.stroke", &json!({"tint": 0.25})).unwrap();
+        let c = &s.doc().unwrap().doc.settings.new_object;
+        assert_eq!(c.stroke, "[Black]");
+        assert_eq!(c.stroke_tint, 0.25);
+        assert_eq!(c.stroke_weight, 0.0);
+
+        s.execute("object.stroke", &json!({"weight": 6})).unwrap();
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let st = &s.doc().unwrap().doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.swatch, "[Black]");
+        assert_eq!(st.tint, 0.25);
+        assert_eq!(st.weight, 6.0);
+    }
+
+    #[test]
+    fn renaming_default_gap_swatch_applies_to_next_shape() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("swatch.create", &json!({"name": "Gap", "color": "#ff4020"})).unwrap();
+        let expected_color = s.doc().unwrap().doc.resolve_color("Gap", 1.0).unwrap();
+
+        s.execute("selection.set", &json!({"ids": []})).unwrap();
+        s.execute(
+            "object.stroke",
+            &json!({
+                "type": {"kind": "dashed", "pattern": [6.0, 2.0]},
+                "gapSwatch": "Gap"
+            }),
+        )
+        .unwrap();
+
+        s.execute("swatch.options", &json!({"name": "Gap", "to": "Renamed Gap"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.settings.new_object.gap_swatch, "Renamed Gap");
+
+        let shape_id =
+            ItemId(s.execute("frame.create", &json!({"rect": [10, 10, 90, 90], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap());
+        let doc = &s.doc().unwrap().doc;
+        let st = &doc.item(shape_id).unwrap().stroke;
+        assert_eq!(st.gap_swatch, "Renamed Gap");
+        assert_eq!(doc.resolve_color(&st.gap_swatch, st.gap_tint), Some(expected_color));
+    }
+
     #[test]
     fn swap_and_default_fill_stroke_are_one_undo_step_per_object() {
         let mut s = Session::new();
@@ -4834,6 +5356,39 @@ mod fitting_tests {
         s.execute("transform.resize", &json!({"ids": [id], "from": [100, 100, 200, 100], "to": [100, 100, 300, 100]})).unwrap();
         let r = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
         assert!((r.x0 - 100.0).abs() < 1e-9 && (r.x1 - 300.0).abs() < 1e-9 && (r.y0 - 100.0).abs() < 1e-9 && r.height().abs() < 1e-9, "{r:?}");
+    }
+
+    #[test]
+    fn transform_resize_pins_unchanged_edge_across_clamp_and_flip() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = s.execute("frame.create", &json!({"rect": [100, 100, 400, 300], "content": "text", "text": "Bottom anchored"})).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [id], "verticalJustification": "bottom"})).unwrap();
+        let baselines = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let sid = d.item(ItemId(id)).unwrap().text_frame().unwrap().story;
+            s.cache.get(d, sid, None).frame(ItemId(id)).unwrap().lines.iter().map(|l| l.baseline).collect::<Vec<_>>()
+        };
+        let before_y = baselines(&s);
+        // Dragging the top edge down while keeping room for the text leaves text and y1 fixed.
+        s.execute("transform.resize", &json!({"ids": [id], "from": [100, 100, 400, 300], "to": [100, 200, 400, 300]})).unwrap();
+        let mid = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+        assert!((mid.y0 - 200.0).abs() < 1e-9 && (mid.y1 - 300.0).abs() < 1e-9, "{mid:?}");
+        assert!((baselines(&s)[0] - before_y[0]).abs() < 1e-9);
+        // Dragging near the bottom edge hits the 1e-3 clamp: y1 must stay pinned instead of drifting.
+        s.execute("transform.resize", &json!({"ids": [id], "from": [100, 200, 400, 300], "to": [100, 299.99, 400, 300]})).unwrap();
+        let tiny = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+        assert!((tiny.y1 - 300.0).abs() < 1e-9, "bottom edge drifted under clamp: {tiny:?}");
+        // Flipping the top edge past the bottom keeps the fixed bottom edge at y = 300.
+        s.execute("transform.resize", &json!({"ids": [id], "from": [tiny.x0, tiny.y0, tiny.x1, tiny.y1], "to": [100, 340, 400, 300]})).unwrap();
+        let flipped = s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds();
+        assert!((flipped.y0 - 300.0).abs() < 1e-9 && (flipped.y1 - 340.0).abs() < 1e-9, "{flipped:?}");
+        // Non-finite or overflowing target bounds are refused without changing the frame.
+        assert!(s.execute("transform.resize", &json!({"ids": [id], "from": [100, 300, 400, 340], "to": [100, 1e308, 400, 340]})).is_err());
+        assert!(s.execute("transform.resize", &json!({"ids": [id], "from": [100, 300, 400, 340], "to": [100, null, 400, 340]})).is_err());
+        assert_eq!(s.doc().unwrap().doc.item(ItemId(id)).unwrap().bounds(), flipped);
     }
 
     #[test]
@@ -6555,6 +7110,352 @@ mod fit_text_frame_tests {
         assert!(s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ids": [a.0, b.0]})).is_err());
         assert_eq!([bounds(&s, a), bounds(&s, b)], before);
     }
+
+    #[test]
+    fn bottom_aligned_fit_keeps_bottom_edge_and_text_in_place() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let id = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Line one\nLine two");
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+        let baselines = |s: &Session| {
+            let d = &s.doc().unwrap().doc;
+            let sid = d.item(id).unwrap().text_frame().unwrap().story;
+            let cs = s.cache.get(d, sid, None);
+            (!cs.is_overset(), cs.frame(id).unwrap().lines.iter().map(|l| l.baseline).collect::<Vec<_>>())
+        };
+        let (ok0, lines0) = baselines(&s);
+        assert!(ok0 && lines0.len() == 2);
+
+        // Top-edge double click sends ref = 7 (bottom-center fixed): top edge drops onto the text.
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [id.0]})).unwrap();
+        let b1 = bounds(&s, id);
+        let (ok1, lines1) = baselines(&s);
+        assert!(ok1 && (b1.y1 - 300.0).abs() < 1e-9 && b1.y0 > 200.0 && b1.x0 == 100.0 && b1.x1 == 500.0, "{b1:?}");
+        assert!((lines1[0] - lines0[0]).abs() < 1e-6 && (lines1[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines1:?}");
+
+        // Without an explicit ref (menu Fit Frame to Content), bottom-aligned frames also keep their bottom edge.
+        s.execute("transform.resize", &json!({"ids": [id.0], "from": [b1.x0, b1.y0, b1.x1, b1.y1], "to": [100.0, 100.0, 500.0, 300.0]})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [id.0]})).unwrap();
+        let b2 = bounds(&s, id);
+        let (ok2, lines2) = baselines(&s);
+        assert!(ok2 && (b2.y1 - 300.0).abs() < 1e-9 && (b2.y0 - b1.y0).abs() < 1e-6, "{b2:?} vs {b1:?}");
+        assert!((lines2[0] - lines0[0]).abs() < 1e-6 && (lines2[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines2:?}");
+
+        // Invalid `ref` is rejected without touching the frame.
+        for bad_ref in [json!(9), json!(-1), json!("bottom")] {
+            assert!(s.execute("object.fit", &json!({"mode": "fitFrameToContent", "ref": bad_ref, "ids": [id.0]})).is_err(), "{bad_ref}");
+        }
+        assert_eq!(bounds(&s, id), b2);
+    }
+
+    #[test]
+    fn fit_frame_keeps_anchor_for_overset_corners_center_and_rotation() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        // Overset bottom-aligned frame grows upward while bottom edge stays put.
+        let id = frame(&mut s, [100.0, 265.0, 500.0, 300.0], "one\ntwo\nthree\nfour");
+        s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        let d = s.doc().unwrap().doc.clone();
+        let sid = d.item(id).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&d, sid, None).is_overset() && (b.y1 - 300.0).abs() < 1e-9 && b.y0 < 200.0, "{b:?}");
+
+        // Top-left corner double-click (ref = 8) on bottom-aligned text keeps bottom-right fixed.
+        let corner = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("object.textFrameOptions", &json!({"ids": [corner.0], "verticalJustification": "bottom", "inset": [4, 6, 8, 10]})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [corner.0]})).unwrap();
+        let cb = bounds(&s, corner);
+        assert!((cb.x1 - 500.0).abs() < 1e-9 && (cb.y1 - 300.0).abs() < 1e-9, "bottom-right pinned: {cb:?}");
+        assert!(cb.width() < 200.0 && cb.height() < 60.0, "shrunk flush around short line: {cb:?}");
+        let d = s.doc().unwrap().doc.clone();
+        let it = d.item(corner).unwrap();
+        let sid = it.text_frame().unwrap().story;
+        let cs = s.cache.get(&d, sid, None);
+        assert!(!cs.is_overset());
+        assert!((cs.frame(corner).unwrap().lines[0].baseline - it.text_area().y1).abs() < 1e-6);
+
+        // Center-justified without ref keeps vertical center and text baselines in place.
+        let ctr = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Centered");
+        s.execute("object.textFrameOptions", &json!({"ids": [ctr.0], "verticalJustification": "center"})).unwrap();
+        let ctr_sid = s.doc().unwrap().doc.item(ctr).unwrap().text_frame().unwrap().story;
+        let ctr_y0 = s.cache.get(&s.doc().unwrap().doc, ctr_sid, None).frame(ctr).unwrap().lines[0].baseline;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [ctr.0]})).unwrap();
+        let ctr_b = bounds(&s, ctr);
+        let ctr_cs = s.cache.get(&s.doc().unwrap().doc, ctr_sid, None);
+        assert!(!ctr_cs.is_overset() && (ctr_b.center().y - 200.0).abs() < 1e-6 && ctr_b.height() < 50.0, "{ctr_b:?}");
+        let ctr_y1 = ctr_cs.frame(ctr).unwrap().lines[0].baseline;
+        assert!((ctr_y1 - ctr_y0).abs() < 1e-3, "center-VJ baseline shifted: {ctr_y0} -> {ctr_y1}");
+
+        // Top and Justify without ref stay anchored to the top edge.
+        for vj in ["top", "justify"] {
+            let f = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Anchored top\nLine two");
+            s.execute("object.textFrameOptions", &json!({"ids": [f.0], "verticalJustification": vj})).unwrap();
+            s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ids": [f.0]})).unwrap();
+            let fb = bounds(&s, f);
+            let f_sid = s.doc().unwrap().doc.item(f).unwrap().text_frame().unwrap().story;
+            assert!(!s.cache.get(&s.doc().unwrap().doc, f_sid, None).is_overset());
+            assert!((fb.y0 - 100.0).abs() < 1e-9 && fb.height() < 100.0, "{vj}: {fb:?}");
+        }
+
+        // Right-aligned text fitted without ref keeps its right edge (does not shift left).
+        let right = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [right.0], "verticalJustification": "bottom"})).unwrap();
+        let right_sid = s.doc().unwrap().doc.item(right).unwrap().text_frame().unwrap().story;
+        let glyph_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ids": [right.0]})).unwrap();
+        let rb = bounds(&s, right);
+        let after_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        assert!((rb.x1 - 500.001).abs() < 1e-6 && (after_x0 - glyph_x0).abs() < 0.002, "right-aligned text moved: {rb:?}, {glyph_x0} -> {after_x0}");
+
+        // Rotated 90° bottom-aligned frame: fitting keeps its local bottom-center pinned in spread space.
+        let rot = frame(&mut s, [200.0, 100.0, 500.0, 300.0], "Rotated bottom");
+        s.execute("object.textFrameOptions", &json!({"ids": [rot.0], "verticalJustification": "bottom"})).unwrap();
+        s.execute("transform.rotate", &json!({"angle": 90, "ids": [rot.0]})).unwrap();
+        let bottom_spread = |s: &Session| {
+            let it = s.doc().unwrap().doc.item(rot).unwrap();
+            let r = it.inner_bounds();
+            it.xf * Point::new(r.center().x, r.y1)
+        };
+        let p0 = bottom_spread(&s);
+        let h0 = s.doc().unwrap().doc.item(rot).unwrap().inner_bounds().height();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [rot.0]})).unwrap();
+        let p1 = bottom_spread(&s);
+        let h1 = s.doc().unwrap().doc.item(rot).unwrap().inner_bounds().height();
+        assert!(h1 < h0 * 0.5 && (p1 - p0).hypot() < 1e-9, "{p0:?} vs {p1:?}, h: {h0} -> {h1}");
+    }
+
+    #[test]
+    fn right_and_center_anchored_width_fit_starts_from_text() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Right-aligned bottom-aligned frame [100,100,500,300] fitted with ref=8 (bottom-right fixed)
+        // shrinks from the left flush to the text instead of keeping empty space from out.x0.
+        let right = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [right.0], "verticalJustification": "bottom", "inset": [4, 6, 8, 10]})).unwrap();
+        let right_sid = s.doc().unwrap().doc.item(right).unwrap().text_frame().unwrap().story;
+        let glyph_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [right.0]})).unwrap();
+        let rb = bounds(&s, right);
+        let after_x0 = s.cache.get(&s.doc().unwrap().doc, right_sid, None).frame(right).unwrap().lines[0].glyphs[0].x;
+        let cs = s.cache.get(&s.doc().unwrap().doc, right_sid, None);
+        assert!(!cs.is_overset());
+        assert!((rb.x1 - 500.0).abs() < 1e-9 && (rb.y1 - 300.0).abs() < 1e-9, "{rb:?}");
+        assert!(rb.width() < 200.0 && rb.height() < 60.0, "did not shrink flush around right-aligned text: {rb:?}");
+        assert!((after_x0 - glyph_x0).abs() < 0.002, "right-aligned text moved: {glyph_x0} -> {after_x0}");
+        assert!((cs.frame(right).unwrap().lines[0].baseline - s.doc().unwrap().doc.item(right).unwrap().text_area().y1).abs() < 1e-6);
+
+        // Width-only fit with ref=5 (right edge pinned) shrinks from the left without moving height or glyphs.
+        let w_only = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        let w_sid = s.doc().unwrap().doc.item(w_only).unwrap().text_frame().unwrap().story;
+        let w_x0 = s.cache.get(&s.doc().unwrap().doc, w_sid, None).frame(w_only).unwrap().lines[0].glyphs[0].x;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [w_only.0]})).unwrap();
+        let wb = bounds(&s, w_only);
+        let w_after = s.cache.get(&s.doc().unwrap().doc, w_sid, None).frame(w_only).unwrap().lines[0].glyphs[0].x;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, w_sid, None).is_overset());
+        assert!((wb.x1 - 500.0).abs() < 1e-9 && (wb.y0 - 100.0).abs() < 1e-9 && (wb.y1 - 300.0).abs() < 1e-9, "{wb:?}");
+        assert!(wb.width() < 200.0 && (w_after - w_x0).abs() < 0.002, "{wb:?}, {w_x0} -> {w_after}");
+
+        // Center-aligned frame fitted around center (ref=4) shrinks symmetrically from both sides.
+        let center = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"align": "center"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 4, "ids": [center.0]})).unwrap();
+        let cb = bounds(&s, center);
+        let c_sid = s.doc().unwrap().doc.item(center).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, c_sid, None).is_overset());
+        assert!((cb.center().x - 300.0).abs() < 1e-6 && (cb.center().y - 200.0).abs() < 1e-6 && cb.width() < 200.0, "{cb:?}");
+
+        // Paragraph indents remain accounted for so left-indented text does not wrap when shrunk.
+        let indented = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "SHORT");
+        s.execute("type.para", &json!({"attrs": {"leftIndent": 20.0, "rightIndent": 15.0}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [indented.0]})).unwrap();
+        let ib = bounds(&s, indented);
+        let i_sid = s.doc().unwrap().doc.item(indented).unwrap().text_frame().unwrap().story;
+        let i_cs = s.cache.get(&s.doc().unwrap().doc, i_sid, None);
+        assert!(!i_cs.is_overset() && i_cs.frame(indented).unwrap().lines.len() == 1);
+        assert!((ib.x1 - 500.0).abs() < 1e-9 && ib.width() < 250.0, "{ib:?}");
+
+        // Whitespace-only frame (no visible glyphs) falls back cleanly to finite bounds.
+        let blank = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "   ");
+        s.execute("type.para", &json!({"attrs": {"align": "right"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "both", "ref": 8, "ids": [blank.0]})).unwrap();
+        let bb = bounds(&s, blank);
+        let b_sid = s.doc().unwrap().doc.item(blank).unwrap().text_frame().unwrap().story;
+        assert!(bb.is_finite() && (bb.x1 - 500.0).abs() < 1e-9 && !s.cache.get(&s.doc().unwrap().doc, b_sid, None).is_overset(), "{bb:?}");
+    }
+
+    #[test]
+    fn leading_tab_width_fit_keeps_tab_advance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Left-aligned leading-tab text in a one-line frame with axis="width", ref=5 retains
+        // the tab's 36 pt advance so recomposition keeps one line and stays non-overset.
+        let tabbed = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "\tSHORT");
+        let t_sid = s.doc().unwrap().doc.item(tabbed).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, t_sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, t_sid, None).frame(tabbed).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tabbed.0]})).unwrap();
+        let tb = bounds(&s, tabbed);
+        let t_cs = s.cache.get(&s.doc().unwrap().doc, t_sid, None);
+        assert!(!t_cs.is_overset(), "leading tab caused overset after width fit: {tb:?}");
+        assert_eq!(t_cs.frame(tabbed).unwrap().lines.len(), 1, "leading tab wrapped after width fit: {tb:?}");
+        assert!((tb.x1 - 500.0).abs() < 1e-9 && tb.width() < 250.0, "{tb:?}");
+
+        // Stretchy right-indent tab still allows shrinking down to the visible content width.
+        let rtab_text = format!("{}SHORT", designcraft_doc::story::RIGHT_INDENT_TAB);
+        let rtab = frame(&mut s, [100.0, 100.0, 500.0, 145.0], &rtab_text);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [rtab.0]})).unwrap();
+        let rb = bounds(&s, rtab);
+        let r_sid = s.doc().unwrap().doc.item(rtab).unwrap().text_frame().unwrap().story;
+        let r_cs = s.cache.get(&s.doc().unwrap().doc, r_sid, None);
+        assert!(!r_cs.is_overset() && r_cs.frame(rtab).unwrap().lines.len() == 1);
+        assert!((rb.x1 - 500.0).abs() < 1e-9 && rb.width() < 200.0, "{rb:?}");
+        assert!(tb.width() > rb.width() + 25.0, "leading tab advance missing: tb={tb:?} vs rb={rb:?}");
+    }
+
+    #[test]
+    fn left_anchored_width_fit_keeps_right_indent() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // Left-anchored width fit (e.g. double-clicking the right handle, ref=3) accounts for
+        // paragraph right indent so a one-line paragraph does not rewrap or overset.
+        let id = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"rightIndent": 24.0}})).unwrap();
+        let sid = s.doc().unwrap().doc.item(id).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, sid, None).frame(id).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 3, "ids": [id.0]})).unwrap();
+        let b = bounds(&s, id);
+        let cs = s.cache.get(&s.doc().unwrap().doc, sid, None);
+        assert!(!cs.is_overset(), "right indent caused overset after left-anchored width fit: {b:?}");
+        assert_eq!(cs.frame(id).unwrap().lines.len(), 1, "right indent caused rewrap after left-anchored width fit: {b:?}");
+        assert!((b.x0 - 100.0).abs() < 1e-9 && b.width() < 300.0, "{b:?}");
+
+        // Baseline-grid aligned bottom-justified text keeps its bottom edge and grid baselines.
+        let grid = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "Grid line one\nGrid line two");
+        s.execute("type.para", &json!({"attrs": {"gridAlign": "allLines"}})).unwrap();
+        s.execute("object.textFrameOptions", &json!({"ids": [grid.0], "verticalJustification": "bottom"})).unwrap();
+        let g_sid = s.doc().unwrap().doc.item(grid).unwrap().text_frame().unwrap().story;
+        let before: Vec<f64> = s.cache.get(&s.doc().unwrap().doc, g_sid, None).frame(grid).unwrap().lines.iter().map(|l| l.baseline).collect();
+        assert_eq!(before.len(), 2);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "height", "ref": 7, "ids": [grid.0]})).unwrap();
+        let gb = bounds(&s, grid);
+        let g_cs = s.cache.get(&s.doc().unwrap().doc, g_sid, None);
+        let after: Vec<f64> = g_cs.frame(grid).unwrap().lines.iter().map(|l| l.baseline).collect();
+        assert!(!g_cs.is_overset() && (gb.y1 - 300.0).abs() < 1e-9 && gb.height() < 120.0, "{gb:?}");
+        assert_eq!(after.len(), 2);
+        for (a, b) in before.iter().zip(after.iter()) {
+            assert!((a - b).abs() < 1e-6, "baseline-grid line shifted: {before:?} -> {after:?}");
+        }
+    }
+
+    #[test]
+    fn rtl_table_width_fit_ignores_first_line_indent_while_text_keeps_it() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // A 100-pt table in an RTL paragraph with firstLineIndent=24 must not retain 24 pt of
+        // unused width when fitted, because the compositor ignores first_line_indent for tables.
+        let tbl = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "");
+        let t_sid = s.doc().unwrap().doc.item(tbl).unwrap().text_frame().unwrap().story;
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "firstLineIndent": 24.0}})).unwrap();
+        s.execute("text.select", &json!({"story": t_sid.0, "anchor": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tbl.0]})).unwrap();
+        let tb = bounds(&s, tbl);
+        let t_cs = s.cache.get(&s.doc().unwrap().doc, t_sid, None);
+        assert!(!t_cs.is_overset(), "table overset after width fit: {tb:?}");
+        assert!((tb.x1 - 500.0).abs() < 1e-9, "{tb:?}");
+        assert!((tb.width() - 100.0).abs() < 0.01, "table fit retained unused first-line indent width: {tb:?}");
+        assert!((t_cs.frame(tbl).unwrap().tables[0].rect.width() - 100.0).abs() < 0.01);
+
+        // Paragraph left/right indents still apply to tables, while firstLineIndent is ignored.
+        let tbl_ind = frame(&mut s, [100.0, 100.0, 500.0, 300.0], "");
+        let ti_sid = s.doc().unwrap().doc.item(tbl_ind).unwrap().text_frame().unwrap().story;
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "leftIndent": 10.0, "rightIndent": 12.0, "firstLineIndent": 24.0}}))
+            .unwrap();
+        s.execute("text.select", &json!({"story": ti_sid.0, "anchor": 0})).unwrap();
+        s.execute("table.insert", &json!({"rows": 1, "cols": 2, "width": 100.0})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [tbl_ind.0]})).unwrap();
+        let tib = bounds(&s, tbl_ind);
+        let ti_cs = s.cache.get(&s.doc().unwrap().doc, ti_sid, None);
+        assert!(!ti_cs.is_overset(), "indented table overset after width fit: {tib:?}");
+        assert!((tib.x1 - 500.0).abs() < 1e-9, "{tib:?}");
+        assert!((tib.width() - 122.0).abs() < 0.01, "table fit should keep left+right indents only: {tib:?}");
+        assert!((ti_cs.frame(tbl_ind).unwrap().tables[0].rect.width() - 100.0).abs() < 0.01);
+
+        // Actual RTL text lines still keep first_line_indent so a single-line paragraph does not wrap.
+        let plain = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft"}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [plain.0]})).unwrap();
+        let pb = bounds(&s, plain);
+
+        let rtl_first = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("type.para", &json!({"attrs": {"direction": "rightToLeft", "firstLineIndent": 24.0}})).unwrap();
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [rtl_first.0]})).unwrap();
+        let rfb = bounds(&s, rtl_first);
+        let rf_sid = s.doc().unwrap().doc.item(rtl_first).unwrap().text_frame().unwrap().story;
+        let rf_cs = s.cache.get(&s.doc().unwrap().doc, rf_sid, None);
+        assert!(!rf_cs.is_overset() && rf_cs.frame(rtl_first).unwrap().lines.len() == 1, "RTL text wrapped/overset: {rfb:?}");
+        assert!((rfb.width() - (pb.width() + 24.0)).abs() < 0.5, "RTL text lost first_line_indent: rfb={rfb:?} vs pb={pb:?}");
+    }
+
+    #[test]
+    fn stroked_frame_width_fit_preserves_inside_stroke_allowance() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+
+        // One-line frame with a 4 pt inside stroke: width fit from the left handle (ref=5) must
+        // keep both sides' inside-stroke allowance so recomposition stays one line and non-overset.
+        let inside_l = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [inside_l.0], "swatch": "[Black]", "weight": 4.0, "align": "inside"})).unwrap();
+        let il_sid = s.doc().unwrap().doc.item(inside_l).unwrap().text_frame().unwrap().story;
+        assert!(!s.cache.get(&s.doc().unwrap().doc, il_sid, None).is_overset());
+        assert_eq!(s.cache.get(&s.doc().unwrap().doc, il_sid, None).frame(inside_l).unwrap().lines.len(), 1);
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [inside_l.0]})).unwrap();
+        let il_b = bounds(&s, inside_l);
+        let il_cs = s.cache.get(&s.doc().unwrap().doc, il_sid, None);
+        assert!(!il_cs.is_overset(), "4 pt inside stroke caused overset on ref=5 width fit: {il_b:?}");
+        assert_eq!(il_cs.frame(inside_l).unwrap().lines.len(), 1, "4 pt inside stroke caused wrap on ref=5 width fit: {il_b:?}");
+        assert!((il_b.x1 - 500.0).abs() < 1e-9 && il_b.width() < 250.0, "{il_b:?}");
+
+        // Left-anchored width fit (right handle, ref=3) also keeps the inside-stroke allowance.
+        let inside_r = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [inside_r.0], "swatch": "[Black]", "weight": 4.0, "align": "inside"})).unwrap();
+        let ir_sid = s.doc().unwrap().doc.item(inside_r).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 3, "ids": [inside_r.0]})).unwrap();
+        let ir_b = bounds(&s, inside_r);
+        let ir_cs = s.cache.get(&s.doc().unwrap().doc, ir_sid, None);
+        assert!(!ir_cs.is_overset(), "4 pt inside stroke caused overset on ref=3 width fit: {ir_b:?}");
+        assert_eq!(ir_cs.frame(inside_r).unwrap().lines.len(), 1, "4 pt inside stroke caused wrap on ref=3 width fit: {ir_b:?}");
+        assert!((ir_b.x0 - 100.0).abs() < 1e-9 && (ir_b.width() - il_b.width()).abs() < 0.01, "ir={ir_b:?} vs il={il_b:?}");
+
+        // Centered 8 pt stroke reaches 4 pt inside (same inner width as 4 pt inside); outside 8 pt
+        // reaches 0 pt inside (~8 pt narrower inner rect).
+        let centered = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [centered.0], "swatch": "[Black]", "weight": 8.0, "align": "center"})).unwrap();
+        let c_sid = s.doc().unwrap().doc.item(centered).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [centered.0]})).unwrap();
+        let c_inner = s.doc().unwrap().doc.item(centered).unwrap().inner_bounds();
+        let c_cs = s.cache.get(&s.doc().unwrap().doc, c_sid, None);
+        assert!(!c_cs.is_overset() && c_cs.frame(centered).unwrap().lines.len() == 1, "{c_inner:?}");
+        assert!((c_inner.width() - il_b.width()).abs() < 0.01, "centered={c_inner:?} vs inside={il_b:?}");
+
+        let outside = frame(&mut s, [100.0, 100.0, 500.0, 145.0], "Hello world");
+        s.execute("object.stroke", &json!({"ids": [outside.0], "swatch": "[Black]", "weight": 8.0, "align": "outside"})).unwrap();
+        let o_sid = s.doc().unwrap().doc.item(outside).unwrap().text_frame().unwrap().story;
+        s.execute("object.fit", &json!({"mode": "fitFrameToContent", "axis": "width", "ref": 5, "ids": [outside.0]})).unwrap();
+        let o_inner = s.doc().unwrap().doc.item(outside).unwrap().inner_bounds();
+        let o_cs = s.cache.get(&s.doc().unwrap().doc, o_sid, None);
+        assert!(!o_cs.is_overset() && o_cs.frame(outside).unwrap().lines.len() == 1, "{o_inner:?}");
+        assert!((il_b.width() - o_inner.width() - 8.0).abs() < 0.01, "inside={il_b:?} vs outside={o_inner:?}");
+    }
 }
 
 #[cfg(test)]
@@ -6971,6 +7872,75 @@ mod frame_baseline_grid_tests {
 
 #[cfg(test)]
 mod anchored_copy_tests {
+    #[test]
+    fn duplicating_reversed_threaded_frames_keeps_the_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 100, 100], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        let src = s.doc().unwrap().doc.clone();
+        let mut dst = (*src).clone();
+        let copy = duplicate_from(&mut dst, &src, &[second_id, first_id], SpreadRef::Doc(0), Vec2::new(10.0, 10.0)).unwrap();
+        assert_eq!(copy.len(), 2);
+        let story = dst.item(copy[1]).unwrap().text_frame().unwrap().story;
+        assert_eq!(dst.story(story).unwrap().frames, [copy[1], copy[0]], "the copy keeps first → second flow");
+        dst.check().unwrap();
+    }
+
+    #[test]
+    fn pasted_frames_keep_their_source_thread_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host =
+            s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Before after and more words."})).unwrap();
+        let host_sid = designcraft_doc::StoryId(host["story"].as_u64().unwrap());
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "One\nTwo\nThree\nFour"})).unwrap();
+        let first_id = ItemId(first["id"].as_u64().unwrap());
+        let story = designcraft_doc::StoryId(first["story"].as_u64().unwrap());
+        let second = s.execute("frame.create", &json!({"rect": [300, 400, 500, 600], "content": "unassigned"})).unwrap();
+        let second_id = ItemId(second["id"].as_u64().unwrap());
+        s.execute("text.thread", &json!({"from": first_id.0, "to": second_id.0})).unwrap();
+        // Anchor them in the opposite order from their thread: second first, then first.
+        s.execute("anchored.insert", &json!({"ids": [second_id.0], "story": host_sid.0, "pos": 0})).unwrap();
+        s.execute("anchored.insert", &json!({"ids": [first_id.0], "story": host_sid.0, "pos": 7})).unwrap();
+        let len = s.doc().unwrap().doc.story(host_sid).unwrap().len();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": 0, "focus": len})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host_sid.0, "anchor": len, "focus": len})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let objects = &d.story(host_sid).unwrap().objects;
+        assert_eq!(objects.len(), 4);
+        let (second_copy, first_copy) = (&objects[2].item, &objects[3].item);
+        let copied = first_copy.text_frame().unwrap().story;
+        assert_eq!(second_copy.text_frame().unwrap().story, copied);
+        assert_eq!(d.story(copied).unwrap().frames, [first_copy.id, second_copy.id], "source thread order");
+        assert_eq!(d.story(story).unwrap().frames, [first_id, second_id]);
+        assert_reopens(d);
+    }
+
+    #[test]
+    fn pasting_reversed_threaded_objects_into_text_preserves_order() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let host = s.execute("frame.create", &json!({"rect": [72, 72, 400, 400], "content": "text", "text": "Host"})).unwrap();
+        let first = s.execute("frame.create", &json!({"rect": [0, 0, 60, 40], "content": "text", "text": "One"})).unwrap();
+        let second = s.execute("frame.create", &json!({"rect": [120, 0, 220, 100], "content": "unassigned"})).unwrap();
+        s.execute("text.thread", &json!({"from": first["id"], "to": second["id"]})).unwrap();
+        s.execute("selection.set", &json!({"ids": [second["id"], first["id"]]})).unwrap();
+        s.execute("edit.copy", &json!({})).unwrap();
+        s.execute("text.select", &json!({"story": host["story"], "anchor": 0, "focus": 0})).unwrap();
+        s.execute("edit.paste", &json!({})).unwrap();
+        let d = &s.doc().unwrap().doc;
+        let objects = &d.story(designcraft_doc::StoryId(host["story"].as_u64().unwrap())).unwrap().objects;
+        let story = objects[0].item.text_frame().unwrap().story;
+        assert_eq!(d.story(story).unwrap().frames, [objects[1].item.id, objects[0].item.id]);
+        d.check().unwrap();
+    }
+
     use super::*;
     use designcraft_doc::AnchoredObject;
 

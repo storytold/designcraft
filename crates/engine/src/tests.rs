@@ -217,24 +217,24 @@ fn a_command_that_fails_partway_strands_no_edits() {
     assert_eq!(s.doc().unwrap().history.undo.len(), 1);
 }
 
-/// The same for a command that fails after a command it ran changed the document: that one
-/// leaves the step to it, so it has to record one.
+/// The same for a command that fails after a command it ran changed the document: that one leaves the
+/// step to it, so it has to record one. `test.nestedFailure` is test-only scaffolding (`cmd.rs`): no
+/// shipping command fails after a nested edit, now that Fill with Placeholder Text checks its target
+/// before converting a frame.
 #[test]
 fn a_command_that_fails_after_the_one_it_ran_can_be_undone() {
     let mut s = session();
     let empty = s.execute("frame.create", &json!({"rect": [36, 36, 136, 136], "content": "unassigned"})).unwrap()["id"].clone();
-    let text = s.execute("frame.create", &json!({"rect": [36, 300, 300, 400], "content": "text", "text": "abc"})).unwrap()["id"].clone();
-    s.execute("selection.set", &json!({"ids": [text]})).unwrap();
     let (before, steps) = {
         let st = s.doc().unwrap();
         (st.doc.clone(), st.history.undo.len())
     };
-    // Fill with Placeholder Text turns the empty frame into a text frame, then finds no such story.
-    assert!(s.execute("type.fillWithPlaceholder", &json!({"frame": empty, "story": 99999})).is_err());
+    // It turns the empty frame into a text frame, then fails.
+    assert!(s.execute("test.nestedFailure", &json!({"ids": [empty]})).is_err());
     let st = s.doc().unwrap();
     assert_ne!(st.doc, before, "the frame was converted");
     assert_eq!(st.history.undo.len(), steps + 1);
-    assert_eq!(st.history.undo.last().unwrap().label, "Fill with Placeholder Text");
+    assert_eq!(st.history.undo.last().unwrap().label, "Nested Failure");
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.doc().unwrap().doc, before);
 }
@@ -1116,7 +1116,7 @@ fn object_style_effects_reach_grouped_and_anchored_items() {
 }
 
 /// Unicode text per page, through hayro's interpreter (ToUnicode / ActualText).
-fn pdf_text(bytes: &[u8]) -> Vec<String> {
+pub(crate) fn pdf_text(bytes: &[u8]) -> Vec<String> {
     use hayro_interpret::font::Glyph;
     use hayro_interpret::{
         BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
@@ -2717,4 +2717,118 @@ fn deleting_the_active_layer_moves_to_a_usable_layer() {
     s.active_mut().unwrap().active_layer = bottom;
     s.execute("layer.delete", &json!({"id": bottom.0})).unwrap();
     assert_eq!(s.doc().unwrap().active_layer, artwork);
+}
+
+#[test]
+fn dragging_a_frame_across_its_spread_renumbers_continuing_lists() {
+    // Regression: the composition cache keyed list numbering by spread address, and each preview of
+    // a drag frees the last preview's spread, so the next copy reused its address and the numbers
+    // kept the order from before the drag.
+    use designcraft_doc::{ListType, NumberStyle, NumberedList, ParaAttrs, ParaFormat, SpreadRef};
+    let mut s = Session::new();
+    s.execute("file.new", &json!({"pages": 3, "facingPages": true})).unwrap();
+    let (fa, a, b, dx) = {
+        let d = Arc::make_mut(&mut s.doc_mut().unwrap().doc);
+        let lid = d.default_layer();
+        d.settings.lists.push(NumberedList { name: "Steps".into(), continue_across_stories: true });
+        let para = ParaAttrs {
+            list_type: Some(ListType::Numbers),
+            list_name: Some("Steps".into()),
+            number_style: Some(NumberStyle::Arabic),
+            number_expression: Some("^#.".into()),
+            ..Default::default()
+        };
+        let fmt = ParaFormat { para, ..Default::default() };
+        let (left, right) = (d.spreads[1].pages[0].x, d.spreads[1].pages[1].x);
+        let rect = |x: f64| designcraft_geom::Rect::new(x + 36.0, 36.0, x + 200.0, 200.0);
+        // `b` (lower id) on the right page, `a` on the left page: `a` numbers first.
+        let (_, b) = d.add_text_frame(SpreadRef::Doc(1), rect(right), lid, "b1\nb2", fmt.clone()).unwrap();
+        let (fa, a) = d.add_text_frame(SpreadRef::Doc(1), rect(left), lid, "a1\na2", fmt).unwrap();
+        (fa, a, b, right - left)
+    };
+    let cache = designcraft_compose::Cache::new();
+    let numbers = |s: &Session, sid| -> String {
+        let cs = cache.get(&s.doc().unwrap().doc, sid, None);
+        cs.frames
+            .iter()
+            .flat_map(|f| &f.lines)
+            .flat_map(|l| &l.glyphs)
+            .filter(|g| g.len == 0 && g.visible)
+            .map(|g| g.rendered_char)
+            .filter(char::is_ascii_digit)
+            .collect()
+    };
+    assert_eq!((numbers(&s, a), numbers(&s, b)), ("12".into(), "34".into()));
+    // Drag `a` onto the right page, where `b` comes first by id; the cache sees every preview.
+    s.begin_interaction("Move").unwrap();
+    for k in 1..=10 {
+        s.preview("transform.move", json!({"dx": dx * f64::from(k) / 10.0, "dy": 0, "ids": [fa.0]})).unwrap();
+        numbers(&s, a);
+        numbers(&s, b);
+    }
+    s.commit_interaction().unwrap();
+    assert_eq!((numbers(&s, b), numbers(&s, a)), ("12".into(), "34".into()));
+}
+
+#[test]
+fn selection_tool_drag_and_double_click_at_top_keeps_bottom_aligned_text_in_place() {
+    use designcraft_doc::{ItemId, SpreadRef};
+    use designcraft_geom::{Point, Rect};
+    use designcraft_tools::{PointerEvent, PointerKind};
+
+    let mut s = session();
+    let r = s.execute("frame.create", &json!({"rect": [100, 100, 500, 300], "content": "text", "text": "Line one\nLine two"})).unwrap();
+    let id = ItemId(r["id"].as_u64().unwrap());
+    let sid = designcraft_doc::StoryId(r["story"].as_u64().unwrap());
+    s.execute("object.textFrameOptions", &json!({"ids": [id.0], "verticalJustification": "bottom"})).unwrap();
+    s.execute("selection.set", &json!({"ids": [id.0]})).unwrap();
+    s.set_tool("selection");
+
+    let baselines = |s: &Session| {
+        let d = &s.doc().unwrap().doc;
+        let cs = s.cache.get(d, sid, None);
+        (!cs.is_overset(), cs.frame(id).unwrap().lines.iter().map(|l| l.baseline).collect::<Vec<_>>())
+    };
+    let (ok0, lines0) = baselines(&s);
+    assert!(ok0 && lines0.len() == 2);
+    let original = Rect::new(100.0, 100.0, 500.0, 300.0);
+
+    let v = ViewInfo { snap: designcraft_tools::SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let canvas_pt = |s: &Session, x: f64, y: f64| s.layout().to_canvas(SpreadRef::Doc(0), Point::new(x, y));
+
+    // Drag the top-center handle down to y = 200: bottom edge and text stay anchored.
+    let top = canvas_pt(&s, 300.0, 100.0);
+    let mid = canvas_pt(&s, 300.0, 200.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, top.x, top.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, mid.x, mid.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, mid.x, mid.y), v).unwrap();
+    let dragged = s.doc().unwrap().doc.item(id).unwrap().bounds();
+    let (ok1, lines1) = baselines(&s);
+    assert!(ok1 && (dragged.y0 - 200.0).abs() < 1e-6 && (dragged.y1 - 300.0).abs() < 1e-9, "{dragged:?}");
+    assert!((lines1[0] - lines0[0]).abs() < 1e-6 && (lines1[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines1:?}");
+
+    // Undo and drag near the bottom edge (triggering the 1e-3 clamp): y1 still does not drift.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().bounds(), original);
+    let top = canvas_pt(&s, 300.0, 100.0);
+    let near_bottom = canvas_pt(&s, 300.0, 299.99);
+    s.pointer(&PointerEvent::new(PointerKind::Down, top.x, top.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, near_bottom.x, near_bottom.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, near_bottom.x, near_bottom.y), v).unwrap();
+    let clamped = s.doc().unwrap().doc.item(id).unwrap().bounds();
+    assert!((clamped.y1 - 300.0).abs() < 1e-9, "bottom edge drifted on clamped drag: {clamped:?}");
+
+    // Undo and double-click the top-center handle: aligns flush with the text while bottom stays pinned.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().bounds(), original);
+    let top = canvas_pt(&s, 300.0, 100.0);
+    let undo_before = s.doc().unwrap().history.undo.len();
+    s.pointer(&PointerEvent::new(PointerKind::DoubleClick, top.x, top.y), v).unwrap();
+    let fitted = s.doc().unwrap().doc.item(id).unwrap().bounds();
+    let (ok2, lines2) = baselines(&s);
+    assert!(ok2 && (fitted.y1 - 300.0).abs() < 1e-9 && fitted.y0 > 200.0 && fitted.x0 == 100.0 && fitted.x1 == 500.0, "{fitted:?}");
+    assert!((lines2[0] - lines0[0]).abs() < 1e-6 && (lines2[1] - lines0[1]).abs() < 1e-6, "{lines0:?} vs {lines2:?}");
+    assert_eq!(s.doc().unwrap().history.undo.len(), undo_before + 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.item(id).unwrap().bounds(), original);
 }
