@@ -283,11 +283,12 @@ impl Item {
     }
 
     /// A frame a placed or dropped graphic fills: an empty one, one holding a graphic, or one
-    /// holding only graphics pasted into it (as a document from InDesign keeps a frame's image).
+    /// holding one graphic pasted into it (as a document from InDesign keeps a frame's image). One
+    /// holding several isn't: a single graphic would replace them all.
     pub fn takes_graphic(&self) -> bool {
         match &self.content {
             Content::Unassigned | Content::Graphic(_) => true,
-            Content::Group { items } => self.has_nested_items() && items.iter().all(|c| matches!(c.content, Content::Graphic(_))),
+            Content::Group { items } => self.has_nested_items() && matches!(items.as_slice(), [c] if matches!(c.content, Content::Graphic(_))),
             _ => false,
         }
     }
