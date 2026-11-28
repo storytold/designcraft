@@ -83,28 +83,46 @@ impl Story {
     /// Mutable endnote (copy-on-write); bumps the story revision.
     pub fn endnote_mut(&mut self, id: u64) -> Option<&mut Footnote> {
         let n = self.endnotes.iter_mut().find(|n| n.id == id)?;
-        self.rev += 1;
+        self.rev = self.rev.wrapping_add(1);
         Some(Arc::make_mut(n))
     }
 
-    /// Insert an endnote reference at `pos` with the given text. Returns the endnote id.
-    pub fn insert_endnote(&mut self, pos: usize, text: &str, para: ParaFormat) -> u64 {
+    /// Insert an endnote reference at `pos` with the given text. Returns the endnote id, or
+    /// `None` if the story has no endnote for the new reference.
+    pub fn insert_endnote(&mut self, pos: usize, text: &str, para: ParaFormat) -> Option<u64> {
         let pos = crate::story::floor_char_boundary(&self.text, pos.min(self.len()));
         let fmt = self.char_format_at(pos).clone();
         self.insert_with(pos, &ENDNOTE_REF.to_string(), fmt);
+        // A file may hold fewer endnotes than references; give every reference one.
+        self.fix_endnotes();
         let k = self.endnotes_before(pos);
-        let note = Arc::make_mut(&mut self.endnotes[k]);
+        let note = Arc::make_mut(self.endnotes.get_mut(k)?);
         note.text = Story::with_text(StoryId(0), text, para);
-        note.id
+        Some(note.id)
     }
 
     /// Insert empty endnotes for `n` new reference characters before which `k` references sit.
     pub(crate) fn endnotes_inserted(&mut self, k: usize, n: usize) {
+        // As for footnotes: the largest id kept as ids are given out, and the free-id search past
+        // the largest one (`+ 1` overflowed there).
+        let mut max = self.endnotes.iter().map(|x| x.id).max().unwrap_or(0);
         for i in 0..n {
-            let id = self.endnotes.iter().map(|x| x.id).max().unwrap_or(0) + 1;
+            let id = max.checked_add(1).unwrap_or_else(|| crate::ids::next_local_id(self.endnotes.iter().map(|x| x.id)));
+            max = max.max(id);
             let mut text = Story::new(StoryId(0));
             text.chars[0].format = CharFormat::default();
             self.endnotes.insert((k + i).min(self.endnotes.len()), Arc::new(Footnote { id, text }));
+        }
+    }
+
+    /// Make the endnote list match the reference characters (after wholesale text changes).
+    pub fn fix_endnotes(&mut self) {
+        let n = self.text.matches(ENDNOTE_REF).count();
+        if n < self.endnotes.len() {
+            self.endnotes.truncate(n);
+        } else if n > self.endnotes.len() {
+            let k = self.endnotes.len();
+            self.endnotes_inserted(k, n - k);
         }
     }
 
@@ -118,24 +136,9 @@ impl Story {
 }
 
 impl crate::Document {
-    /// Stories with endnotes in numbering order (page of their first frame, then id).
-    fn endnote_order(&self) -> Vec<&Story> {
-        let key = |st: &Story| -> (usize, u64) { (st.frames.first().and_then(|f| self.page_of_item(*f)).unwrap_or(usize::MAX), st.id.0) };
-        let mut v: Vec<&Story> = self.stories.values().map(|s| s.as_ref()).filter(|s| !s.endnotes.is_empty()).collect();
-        v.sort_by_key(|s| key(s));
-        v
-    }
-
     /// Number of the first endnote of story `sid`.
     pub fn endnote_start(&self, sid: StoryId) -> u32 {
-        let mut n = self.endnote_options.start_at;
-        for st in self.endnote_order() {
-            if st.id == sid {
-                break;
-            }
-            n += st.endnotes.len() as u32;
-        }
-        n
+        self.number_starts().endnote(sid)
     }
 
     /// The endnote frame's text: the heading, then "number separator text" per endnote, in order.
@@ -144,7 +147,7 @@ impl crate::Document {
         let para = |style: &str| ParaFormat { style: style.to_string(), ..Default::default() };
         let mut out = Story::with_text(id, &o.heading, para(&o.heading_style));
         let mut n = o.start_at;
-        for st in self.endnote_order() {
+        for st in self.stories_in_page_order() {
             for note in &st.endnotes {
                 let at = out.len();
                 let first = at == 0 && o.heading.is_empty();
@@ -159,7 +162,7 @@ impl crate::Document {
                     let at = out.len();
                     out.insert_with(at, &note.text.text[r].replace('\n', " "), f.clone());
                 }
-                n += 1;
+                n = n.saturating_add(1);
             }
         }
         out
@@ -179,6 +182,6 @@ impl crate::Document {
         let Some(st) = self.stories.get_mut(&sid) else { return };
         let st = Arc::make_mut(st);
         let (frames, rev) = (std::mem::take(&mut st.frames), st.rev);
-        *st = Story { frames, rev: rev + 1, ..fresh };
+        *st = Story { frames, rev: rev.wrapping_add(1), ..fresh };
     }
 }

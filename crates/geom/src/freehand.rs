@@ -3,6 +3,10 @@
 use crate::Point;
 use crate::path::{Anchor, AnchorKind};
 
+/// Distance tests [`simplify`] may make. Worst-case input splits one point off at a time (quadratic);
+/// past this the spans still waiting keep only their end points, a coarser fit rather than a stall.
+const MAX_SIMPLIFY_STEPS: usize = 16 * 1024 * 1024;
+
 /// Ramer–Douglas–Peucker: the points that keep the polyline within `tol`.
 fn simplify(pts: &[Point], tol: f64) -> Vec<Point> {
     if pts.len() < 3 {
@@ -12,7 +16,12 @@ fn simplify(pts: &[Point], tol: f64) -> Vec<Point> {
     keep[0] = true;
     keep[pts.len() - 1] = true;
     let mut stack = vec![(0, pts.len() - 1)];
+    let mut steps = 0usize;
     while let Some((a, b)) = stack.pop() {
+        steps = steps.saturating_add(b - a);
+        if steps > MAX_SIMPLIFY_STEPS {
+            break;
+        }
         let (pa, pb) = (pts[a], pts[b]);
         let d = pb - pa;
         let len = d.hypot();
@@ -112,5 +121,14 @@ mod tests {
         let c = fit(&circle, 1.0, true);
         assert!(c.iter().all(|x| x.kind == AnchorKind::Smooth));
         assert!((c[0].p - c[c.len() - 1].p).hypot() > 1.0);
+    }
+
+    /// A convex curve splits one point at a time (quadratic): fitting stops at the step budget.
+    #[test]
+    fn unbalanced_input_stops_at_the_step_budget() {
+        let n = 100_000;
+        let curve: Vec<Point> = (0..n).map(|i| Point::new(f64::from(i), (f64::from(i) * 1e-3).powi(4))).collect();
+        let a = fit(&curve, 1e-9, false);
+        assert!(a.len() >= 2 && a.len() < n as usize);
     }
 }

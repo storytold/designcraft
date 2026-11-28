@@ -23,12 +23,71 @@ fn intents_parse_and_name() {
 }
 
 #[test]
-fn srgb_via_moxcms_matches_analytic() {
-    // The built-in sRGB ICC profile through moxcms agrees with our analytic sRGB maths.
+fn srgb_profile_matches_analytic() {
+    // The built-in sRGB ICC profile agrees with our analytic sRGB maths.
     let p = icc::builtin_rgb(SRGB).unwrap();
     for rgb in [[0.2, 0.5, 0.8], [1.0, 0.0, 0.0], [0.5, 0.5, 0.5]] {
-        let out = p.to_srgb(&rgb, Intent::RelativeColorimetric).unwrap();
+        let out = p.to_srgb(&rgb, Intent::RelativeColorimetric, false).unwrap();
         assert!(de(out, rgb) < 0.5, "{rgb:?} → {out:?}");
+    }
+}
+
+/// sRGB 0..255 of CMYK percentages.
+fn shown(c: &Cms, [cy, m, y, k]: [f32; 4]) -> [f32; 3] {
+    c.display_rgb(&Color::cmyk(cy / 100.0, m / 100.0, y / 100.0, k / 100.0)).map(|v| v * 255.0)
+}
+
+/// Swatches in the default CMYK space (Coated FOGRA39), shown relative colorimetric with black
+/// point compensation, and the sRGB reference values they show as (u8, within 2).
+const FOGRA39_ANCHORS: [([f32; 4], [f32; 3]); 4] = [
+    ([0.0, 50.0, 100.0, 0.0], [243.0, 146.0, 0.0]),
+    ([0.0, 60.0, 100.0, 0.0], [239.0, 123.0, 0.0]),
+    // Independent reference in craft-cms/tests/fogra39.rs (predates the new profile).
+    ([0.0, 0.0, 0.0, 100.0], [29.0, 29.0, 27.0]),
+    ([100.0, 100.0, 0.0, 0.0], [48.0, 38.0, 131.0]),
+];
+
+#[test]
+fn default_cmyk_swatches_show_as_coated_fogra39() {
+    assert_eq!(ColorSettings::default().cmyk, COATED_FOGRA39);
+    for c in [Cms::default(), cms()] {
+        for (cmyk, want) in FOGRA39_ANCHORS {
+            let got = shown(&c, cmyk);
+            assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 2.0), "{cmyk:?}: {got:?} vs {want:?}");
+        }
+    }
+}
+
+#[test]
+fn saved_cmyk_names_still_load() {
+    for name in [GENERIC_CMYK, DEVICE_CMYK, COATED_FOGRA39] {
+        let s = ColorSettings { cmyk: name.into(), ..Default::default() };
+        assert!(Cms::new(&s).is_ok(), "{name}");
+        assert_eq!(s.with_known_profiles(), s);
+    }
+    // The names of the profiles the built-in stands in for show the same colours.
+    let stand_in = Cms::new(&ColorSettings { cmyk: "Coated FOGRA39 (ISO 12647-2:2004)".into(), ..Default::default() }).unwrap();
+    assert_eq!(shown(&stand_in, [0.0, 50.0, 100.0, 0.0]), shown(&cms(), [0.0, 50.0, 100.0, 0.0]));
+    // A related press condition with a different ink limit has no stand-in.
+    let iso300 = ColorSettings { cmyk: "ISO Coated v2 300% (ECI)".into(), ..Default::default() };
+    assert!(matches!(Cms::new(&iso300), Err(CmsError::UnknownProfile(_))));
+    // A name that isn't available falls back to the default, keeping the other settings.
+    let saved = ColorSettings { rgb: ADOBE_RGB.into(), cmyk: "Some Press (gone)".into(), bpc: false, ..Default::default() };
+    assert!(Cms::new(&saved).is_err());
+    let loaded = saved.with_known_profiles();
+    assert_eq!(loaded, ColorSettings { rgb: ADOBE_RGB.into(), cmyk: COATED_FOGRA39.into(), bpc: false, ..Default::default() });
+    assert!(Cms::new(&loaded).is_ok());
+}
+
+#[test]
+fn output_intent_follows_the_working_cmyk_space() {
+    let fogra = cms().output_intent().unwrap();
+    assert_eq!((fogra.identifier, fogra.condition.as_str()), ("FOGRA39", COATED_FOGRA39));
+    assert_eq!(&*fogra.icc, craft_cms::builtin::COATED_FOGRA39_ICC);
+    for name in [GENERIC_CMYK, DEVICE_CMYK] {
+        let g = Cms::new(&ColorSettings { cmyk: name.into(), ..Default::default() }).unwrap().output_intent().unwrap();
+        assert_eq!((g.identifier, g.condition.as_str()), ("Custom", GENERIC_CMYK), "{name}");
+        assert_eq!(&*g.icc, icc_out::generic_cmyk_icc().unwrap());
     }
 }
 
@@ -36,9 +95,12 @@ fn srgb_via_moxcms_matches_analytic() {
 fn paper_white_and_rich_black() {
     let c = cms();
     assert_eq!(c.srgb_to_cmyk([1.0, 1.0, 1.0], Intent::RelativeColorimetric), [0.0; 4]);
+    for intent in [Intent::Perceptual, Intent::RelativeColorimetric, Intent::Saturation] {
+        assert_eq!(c.lab_to_cmyk(lab::Lab::new(100.0, 0.0, 0.0), intent), [0.0; 4], "{intent:?}");
+    }
     let k = c.srgb_to_cmyk([0.0, 0.0, 0.0], Intent::RelativeColorimetric);
     assert!(k[3] > 0.8, "black generation puts most of the black in K: {k:?}");
-    assert!(k.iter().sum::<f32>() <= 3.0 + 1e-3, "TAC limit: {k:?}");
+    assert!(k.iter().sum::<f32>() <= 3.3 + 1e-3, "Coated FOGRA39 total ink limit (330 %): {k:?}");
     assert!(k[0] > 0.3 && k[1] > 0.3 && k[2] > 0.3, "rich black: {k:?}");
     assert_eq!(c.cmyk_to_srgb([0.0; 4], false), [1.0, 1.0, 1.0]);
 }
@@ -99,7 +161,10 @@ fn intents_differ() {
     let rel = c.srgb_to_cmyk(g, Intent::RelativeColorimetric);
     let abs = c.srgb_to_cmyk(g, Intent::AbsoluteColorimetric);
     assert!(rel.iter().sum::<f32>() > abs.iter().sum::<f32>() + 0.02, "{rel:?} vs {abs:?}");
+    // Compare media-relative accuracy without BPC: BPC deliberately moves even in-gamut
+    // colours, while perceptual mapping may preserve this chromatic colour more closely.
     // Perceptual compresses in-gamut saturated colours too (relative leaves them alone).
+    let c = cms_no_bpc();
     let red = lab::srgb_to_lab([0.8, 0.25, 0.25]);
     let pr = c.cmyk_to_lab(c.srgb_to_cmyk([0.8, 0.25, 0.25], Intent::Perceptual));
     let rr = c.cmyk_to_lab(c.srgb_to_cmyk([0.8, 0.25, 0.25], Intent::RelativeColorimetric));
@@ -112,6 +177,10 @@ fn simulate_paper_tints_white() {
     let rel = c.cmyk_to_srgb([0.0; 4], false);
     let abs = c.cmyk_to_srgb([0.0; 4], true);
     assert_eq!(rel, [1.0; 3]);
+    // FOGRA39 paper is slightly blue (b* -2); Generic CMYK's slightly warm.
+    assert!(abs.iter().all(|v| *v < 0.97) && abs[2] > abs[0], "paper is darker and slightly blue: {abs:?}");
+    let g = Cms::new(&ColorSettings { cmyk: GENERIC_CMYK.into(), ..Default::default() }).unwrap();
+    let abs = g.cmyk_to_srgb([0.0; 4], true);
     assert!(abs[0] < 0.98 && abs[2] < abs[0], "paper is darker and slightly warm: {abs:?}");
 }
 

@@ -22,10 +22,8 @@ transparent margin.
 
 ## Provenance
 
-The owner drew the cat in ArtCraft. The 2880 px drawing, keyed to the three-colour palette, lives
-outside this repo in craftrules at `assets/app-icons/designcraft/source.png`. It was vectorised with
-craftrules' `assets/logo-options/_tools/vectorize_tile.py`: `designcraft.svg` is traced at 2048 px and
-`designcraft-small.svg` at 1024 px. Design rules: craftrules `standards/icon-design.md`.
+The owner drew the cat in ArtCraft. `designcraft.svg` is traced from the drawing at 2048 px and
+`designcraft-small.svg` at 1024 px.
 
 ## Files
 
@@ -48,3 +46,14 @@ The app ID is `ai.storyteller.designcraft`. It's used for the hicolor icon names
 
 Edit `designcraft.svg` (or `designcraft-small.svg`), then run `packaging/icons.sh`. It needs `resvg`, and
 `iconutil` for the `.icns` (macOS only). It packs the `.ico` with `cargo xtask ico`.
+
+## Nightly channel
+
+`designcraft-nightly.png`, `-1024.png`, `.ico` and `.icns` are the Launcher Nightly's icons. They keep
+the artwork, alpha and Mac padding unchanged and change only the background field, from the app
+green `#7bb51c` to the deeper `#26400f`; there is no letter badge or crescent, and the app and the
+Launcher identify the channel in text. The 1024 master is derived from the native 1024 tile onto
+Apple's 824/1024 grid, never upscaled from 256. Hashes, the palette-fit method and the container
+members are in [`nightly-provenance.json`](nightly-provenance.json); the stable files are not
+recoloured. `build.rs` embeds `designcraft-nightly.ico` into a nightly `designcraft.exe`, and the
+nightly bundle uses `designcraft-nightly.icns`.

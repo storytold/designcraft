@@ -55,9 +55,52 @@ pub struct CornerOptions {
     pub corners: [Corner; 4],
 }
 
+/// The named corner (0 top left, 1 top right, 2 bottom right, 3 bottom left) each of a path's
+/// four anchors is, by its place on the path's bounds. A path that isn't one subpath of four
+/// anchors at four different corners keeps a rectangle's order.
+pub fn named_slots(path: &PathData) -> [usize; 4] {
+    let rect_order = [0, 1, 2, 3];
+    let [sp] = path.subpaths.as_slice() else { return rect_order };
+    let Some(b) = path.bounds() else { return rect_order };
+    if sp.anchors.len() != 4 {
+        return rect_order;
+    }
+    let c = b.center();
+    let mut out = rect_order;
+    let mut seen = [false; 4];
+    for (i, a) in sp.anchors.iter().enumerate() {
+        let k = match (a.p.y < c.y, a.p.x < c.x) {
+            (true, true) => 0,
+            (true, false) => 1,
+            (false, false) => 2,
+            (false, true) => 3,
+        };
+        if std::mem::replace(&mut seen[k], true) {
+            return rect_order;
+        }
+        out[i] = k;
+    }
+    out
+}
+
 impl CornerOptions {
     pub fn uniform(shape: CornerShape, size: f64) -> Self {
         Self { corners: [Corner { shape, size }; 4] }
+    }
+
+    /// Named corners (top left, top right, bottom right, bottom left), as an object style holds
+    /// them, in `path`'s order.
+    pub fn named_to_path(&self, path: &PathData) -> Self {
+        Self { corners: named_slots(path).map(|k| self.corners[k]) }
+    }
+
+    /// `path`-order corners as named corners (top left, top right, bottom right, bottom left).
+    pub fn path_to_named(&self, path: &PathData) -> Self {
+        let mut corners = self.corners;
+        for (i, k) in named_slots(path).into_iter().enumerate() {
+            corners[k] = self.corners[i];
+        }
+        Self { corners }
     }
     pub fn is_none(&self) -> bool {
         self.corners.iter().all(Corner::is_none)
@@ -160,6 +203,64 @@ fn apply_subpath(sp: &SubPath, opts: &CornerOptions, out: &mut BezPath) {
     out.close_path();
 }
 
+/// The outline of rectangle `r` with the edges in `edges` (top, right, bottom, left) and the
+/// corners in `corners` (top left, top right, bottom right, bottom left). A corner gets its shape
+/// only where both its edges are drawn; with an edge missing the outline is open there.
+pub fn box_outline(r: kurbo::Rect, corners: &[Corner; 4], edges: [bool; 4]) -> BezPath {
+    let r = r.abs();
+    let v = [Point::new(r.x0, r.y0), Point::new(r.x1, r.y0), Point::new(r.x1, r.y1), Point::new(r.x0, r.y1)];
+    let mut out = BezPath::new();
+    // Vertex i joins edge i - 1 (in) and edge i (out); edge i runs from v[i] to v[i + 1].
+    let corner = |out: &mut BezPath, i: usize, start: bool| {
+        let c = corners[i];
+        let (p, prev, next) = (v[i], v[(i + 3) % 4], v[(i + 1) % 4]);
+        let (din, dout) = (prev - p, next - p);
+        let (lin, lout) = (din.hypot(), dout.hypot());
+        if c.is_none() || lin < 1e-9 || lout < 1e-9 {
+            if start {
+                out.move_to(p)
+            } else {
+                out.line_to(p)
+            }
+            return;
+        }
+        let s = c.size.min(lin / 2.0).min(lout / 2.0);
+        let (ui, uo) = (din / lin, dout / lout);
+        let (a, b) = (p + ui * s, p + uo * s);
+        if start {
+            out.move_to(a)
+        } else {
+            out.line_to(a)
+        }
+        corner_shape(out, c.shape, p, a, b, ui, uo, s);
+    };
+    if edges.iter().all(|e| *e) {
+        for i in 0..4 {
+            corner(&mut out, i, i == 0);
+        }
+        out.close_path();
+        return out;
+    }
+    // Runs of drawn edges, each starting after a missing one.
+    let Some(first) = (0..4).find(|&i| edges[i] && !edges[(i + 3) % 4]) else { return out };
+    for k in 0..4 {
+        let i = (first + k) % 4;
+        if !edges[i] {
+            continue;
+        }
+        if !edges[(i + 3) % 4] {
+            out.move_to(v[i]);
+        }
+        let j = (i + 1) % 4;
+        if edges[j] {
+            corner(&mut out, j, false);
+        } else {
+            out.line_to(v[j]);
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn corner_shape(out: &mut BezPath, shape: CornerShape, p: Point, a: Point, b: Point, ui: Vec2, uo: Vec2, s: f64) {
     const K: f64 = crate::shapes::KAPPA;
@@ -193,6 +294,38 @@ mod tests {
     use super::*;
     use crate::shapes::rectangle;
     use kurbo::{Rect, Shape};
+
+    /// Named corners go to the anchors at those corners, whatever order the path runs in, and
+    /// come back the same.
+    #[test]
+    fn named_corners_map_to_any_path_order() {
+        use kurbo::Point;
+        let named = CornerOptions {
+            corners: [CornerShape::Rounded, CornerShape::Bevel, CornerShape::Inset, CornerShape::Fancy].map(|shape| Corner { shape, size: 6.0 }),
+        };
+        // Top left, bottom left, bottom right, top right (as InDesign writes a rectangle).
+        let down_first = PathData::single(SubPath::polyline(
+            &[Point::new(0.0, 0.0), Point::new(0.0, 100.0), Point::new(100.0, 100.0), Point::new(100.0, 0.0)],
+            true,
+        ));
+        assert_eq!(named_slots(&down_first), [0, 3, 2, 1]);
+        let on_path = named.named_to_path(&down_first);
+        let shapes = on_path.corners.map(|c| c.shape);
+        assert_eq!(shapes, [CornerShape::Rounded, CornerShape::Fancy, CornerShape::Inset, CornerShape::Bevel]);
+        assert_eq!(on_path.path_to_named(&down_first), named);
+        // A rectangle in its own order, and a triangle, keep the order.
+        assert_eq!(named.named_to_path(&rectangle(Rect::new(0.0, 0.0, 10.0, 10.0))), named);
+        let tri = PathData::single(SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(5.0, 9.0)], true));
+        assert_eq!(named.named_to_path(&tri), named);
+        // A path of two rectangles keeps the order: one subpath's order can't name the other's
+        // anchors.
+        let two = PathData::new(vec![
+            SubPath::polyline(&[Point::new(0.0, 0.0), Point::new(0.0, 100.0), Point::new(100.0, 100.0), Point::new(100.0, 0.0)], true),
+            SubPath::polyline(&[Point::new(40.0, 40.0), Point::new(60.0, 40.0), Point::new(60.0, 60.0), Point::new(40.0, 60.0)], true),
+        ]);
+        assert_eq!(named_slots(&two), [0, 1, 2, 3]);
+        assert_eq!(named.named_to_path(&two), named);
+    }
 
     #[test]
     fn none_is_identity() {
@@ -245,6 +378,24 @@ mod tests {
         }
         assert_eq!(arcs, 4);
         assert!((crate::shapes::KAPPA - 0.5523).abs() < 1e-4);
+    }
+
+    #[test]
+    fn box_outline_rounds_only_closed_corners() {
+        let r = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let round = [Corner { shape: CornerShape::Rounded, size: 10.0 }; 4];
+        let closed = box_outline(r, &round, [true; 4]);
+        let curves = |bp: &BezPath| bp.elements().iter().filter(|e| matches!(e, kurbo::PathEl::CurveTo(..))).count();
+        assert_eq!(curves(&closed), 4);
+        assert!((closed.area().abs() - (5000.0 - (400.0 - std::f64::consts::PI * 100.0))).abs() < 1.0);
+        // Open at the top: the two bottom corners are rounded, the top ends are square.
+        let open = box_outline(r, &round, [false, true, true, true]);
+        assert_eq!(curves(&open), 2);
+        assert!(!open.elements().iter().any(|e| matches!(e, kurbo::PathEl::ClosePath)));
+        // Open at both ends: two separate sides.
+        let sides = box_outline(r, &round, [false, true, false, true]);
+        assert_eq!(sides.elements().iter().filter(|e| matches!(e, kurbo::PathEl::MoveTo(_))).count(), 2);
+        assert_eq!(curves(&sides), 0);
     }
 
     fn nearest(bp: &BezPath, p: Point) -> f64 {

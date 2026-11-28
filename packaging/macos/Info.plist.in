@@ -6,6 +6,27 @@
 <dict>
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
+  <!-- UI translations are embedded in Rust; declare them for AppKit's system dialogs (open and
+       save panels, overwrite confirmation). Keep in sync with the interface languages. -->
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en</string>
+    <string>ar</string>
+    <string>cs</string>
+    <string>de</string>
+    <string>es</string>
+    <string>fr</string>
+    <string>hu</string>
+    <string>it</string>
+    <string>ja</string>
+    <string>ka</string>
+    <string>pl</string>
+    <string>pt-BR</string>
+    <string>ru</string>
+    <string>sv</string>
+    <string>uk</string>
+    <string>zh-Hans</string>
+  </array>
   <key>CFBundleDisplayName</key>
   <string>DesignCraft</string>
   <key>CFBundleName</key>
@@ -45,7 +66,64 @@
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the DesignCraft authors. MIT OR Apache-2.0.</string>
 
-  <!-- Designcraft's own format. -->
+  <!-- The documents Finder, the Dock and Open With hand to the app (an Apple event; see
+       apps/designcraft/src/apple_events.rs). -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>DesignCraft Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>CFBundleTypeIconFile</key>
+      <string>DesignCraft</string>
+      <key>LSItemContentTypes</key>
+      <array><string>ai.storyteller.designcraft.document</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>IDML Document</string>
+      <!-- Opens as a new, unsaved document; saving writes a .designcraft file. -->
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array><string>ai.storyteller.designcraft.idml</string></array>
+    </dict>
+    <!-- The same, by extension. When another installed app (InDesign) exports its own type for
+         .idml, files get that type instead of the one imported below, so the entry above no
+         longer matches them: Finder then won't drop them on the app's icon, and Open With leaves
+         DesignCraft out. An extension entry matches whatever type the file has. It must be a
+         dict of its own: where LSItemContentTypes is present, the extension keys are ignored. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>IDML Document (by extension)</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>idml</string></array>
+    </dict>
+    <!-- InDesign documents and templates, converted to IDML on open (file.open); by extension
+         for the same reason as above. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>InDesign Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>indd</string><string>indt</string></array>
+    </dict>
+  </array>
+
+  <!-- DesignCraft's own format: a zip package, declared as a document rather than an archive so
+       Finder doesn't offer to expand it. -->
   <key>UTExportedTypeDeclarations</key>
   <array>
     <dict>
@@ -56,55 +134,40 @@
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
-        <string>public.image</string>
+        <string>public.composite-content</string>
       </array>
       <key>UTTypeIconFile</key>
       <string>DesignCraft</string>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>
-        <array><string>pcraft</string></array>
+        <array><string>designcraft</string></array>
         <key>public.mime-type</key>
         <array><string>application/x-designcraft</string></array>
       </dict>
     </dict>
   </array>
-  <!-- Types macOS may not know; the system's own declaration wins when it has one. -->
+  <!-- A type macOS may not know; the system's own declaration wins when it has one. -->
   <key>UTImportedTypeDeclarations</key>
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>com.adobe.photoshop-large-image</string>
+      <string>ai.storyteller.designcraft.idml</string>
       <key>UTTypeDescription</key>
-      <string>Photoshop Large Document</string>
+      <string>IDML Document</string>
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.data</string>
-        <string>public.image</string>
+        <string>public.zip-archive</string>
       </array>
       <key>UTTypeTagSpecification</key>
       <dict>
         <key>public.filename-extension</key>
-        <array><string>psb</string></array>
-      </dict>
-    </dict>
-    <dict>
-      <key>UTTypeIdentifier</key>
-      <string>ai.storyteller.designcraft.qoi</string>
-      <key>UTTypeDescription</key>
-      <string>QOI Image</string>
-      <key>UTTypeConformsTo</key>
-      <array>
-        <string>public.data</string>
-        <string>public.image</string>
-      </array>
-      <key>UTTypeTagSpecification</key>
-      <dict>
-        <key>public.filename-extension</key>
-        <array><string>qoi</string></array>
+        <array><string>idml</string></array>
+        <key>public.mime-type</key>
+        <array><string>application/vnd.adobe.indesign-idml-package</string></array>
       </dict>
     </dict>
   </array>
-
 </dict>
 </plist>

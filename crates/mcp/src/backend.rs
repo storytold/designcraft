@@ -178,7 +178,8 @@ mod tests {
                     Err(e) => panic!("accept failed: {e}"),
                 }
             };
-            // The listener polls accept; the connection blocks while waiting for its request.
+            // The listener polls accept, and accepted sockets can inherit its nonblocking mode. The
+            // connection blocks with timeouts while waiting for its requests.
             stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();

@@ -1,12 +1,13 @@
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 use super::browser_policy::{has_query_flag, mime_for};
+use super::prefs_store::{self, PrefsSync};
 use crate::graphics::{GraphicsState, RecoveryDocument, recovery_documents};
 use designcraft_engine::Session;
 use designcraft_ui_egui::{DesignApp, ImportRequest, ImportedFile, Inbox, Services};
 use wasm_bindgen::JsCast as _;
 
-const DOC_EXTS: &[&str] = &["designcraft", "idml"];
+const DOC_EXTS: &[&str] = &["designcraft", "idml", "indd", "indt"];
 const IMAGE_EXTS: &[&str] = &[
     "png",
     "jpg",
@@ -28,6 +29,8 @@ const IMAGE_EXTS: &[&str] = &[
     "idml",
     "designcraft",
 ];
+/// Graphics a relink reads (the image and vector formats placing accepts).
+const GRAPHIC_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "psd", "svg", "pdf", "ai"];
 const CANVAS_ID: &str = "designcraft_canvas";
 const LOADING_ID: &str = "designcraft_loading";
 
@@ -73,10 +76,16 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let mut app = DesignApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    // The preferences saved by an earlier visit (as the desktop app reads prefs.json).
+                    let stored = local_storage().and_then(|s| s.get_item(prefs_store::KEY).ok().flatten());
+                    if let Some(prefs) = prefs_store::decode(stored.as_deref()) {
+                        app.session.prefs = prefs;
+                    }
+                    let prefs_sync = PrefsSync::new(stored);
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, read_errors: Default::default(), graphics: creator_graphics, prefs_sync }))
                 }),
             )
             .await;
@@ -335,6 +344,11 @@ fn add_document_recovery_controls(snapshots: Vec<RecoveryDocument>) -> Result<bo
     Ok(true)
 }
 
+/// The page's local storage; `None` where the browser refuses it (some private modes).
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
 fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
@@ -344,37 +358,88 @@ fn query() -> String {
 struct WebShell {
     app: DesignApp,
     inbox: Inbox,
+    /// Why a dropped file couldn't be read, for the status bar (the read finishes outside a frame).
+    read_errors: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     graphics: GraphicsState,
+    /// Writes the preferences to local storage when they change.
+    prefs_sync: PrefsSync,
 }
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let graphics = self.graphics.clone();
-        let _ = graphics.run_if_healthy(|| {
-            let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
-            for f in dropped {
-                let request = self.app.import_request("drop");
-                let inbox = self.inbox.clone();
-                let ctx = ctx.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
-                    match f.bytes_async().await {
-                        Ok(bytes) => {
-                            inbox.lock().unwrap_or_else(|e| e.into_inner()).push(ImportedFile { request, name, bytes });
-                            ctx.request_repaint();
-                        }
-                        Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
-                    }
-                });
+        let errors = std::mem::take(&mut *self.read_errors.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(error) = errors.into_iter().last() {
+            self.app.status(error);
+        }
+        let _ = graphics.run_if_healthy(|| self.app.logic(ctx));
+        // Changed preferences go to local storage, so they survive a reload.
+        let now = ctx.input(|i| i.time);
+        if let Some(wait) = self.prefs_sync.wait(now) {
+            // Not due yet: a frame then checks, even if nothing else happens until then.
+            if let Ok(d) = std::time::Duration::try_from_secs_f64(wait) {
+                ctx.request_repaint_after(d);
             }
-            self.app.logic(ctx);
-        });
+        } else if self.prefs_sync.due(now)
+            && let Some(json) = self.prefs_sync.changed(&self.app.session.prefs)
+        {
+            // Counted as stored only once written; otherwise it's tried again at the next check.
+            let written = match local_storage() {
+                Some(storage) => match storage.set_item(prefs_store::KEY, &json) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("couldn't keep the preferences in local storage: {e:?}");
+                        false
+                    }
+                },
+                None => false,
+            };
+            if written {
+                self.prefs_sync.stored(json);
+            } else if let Some(d) = self.prefs_sync.wait(now).and_then(|w| std::time::Duration::try_from_secs_f64(w).ok()) {
+                // Still pending: a frame at the next check retries, even if the app is idle.
+                ctx.request_repaint_after(d);
+            }
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         let _ = self.graphics.run_if_healthy(|| {
-            designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused());
-            self.app.raw_input_hook(raw);
+            // Dropped files belong to this host iteration's raw input, not to stale logic input:
+            // read them here once, before the batch is saved as pending for a hidden pass.
+            // Files dropped together arrive together, in their order, so several images load the
+            // place cursor as one batch.
+            let dropped = std::mem::take(&mut raw.dropped_files);
+            if !dropped.is_empty() {
+                let request = self.app.import_request("drop");
+                let inbox = self.inbox.clone();
+                let read_errors = self.read_errors.clone();
+                let ctx = ctx.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let files = crate::browser_policy::read_batch(dropped, |f| {
+                        let request = request.clone();
+                        async move {
+                            let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
+                            let bytes = f.bytes_async().await.map_err(|e| format!("couldn't read dropped file {name}: {e}"))?;
+                            Ok::<_, String>(ImportedFile { request, name, bytes })
+                        }
+                    })
+                    .await;
+                    match files {
+                        Ok(files) => {
+                            inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
+                            ctx.request_repaint();
+                        }
+                        Err(error) => {
+                            log::error!("{error}");
+                            read_errors.lock().unwrap_or_else(|e| e.into_inner()).push(error);
+                            ctx.request_repaint();
+                        }
+                    }
+                });
+            }
+            designcraft_ui_egui::drop_key_name_text(raw, ctx.text_edit_focused() || self.app.canvas_ime());
+            self.app.raw_input_hook(ctx, raw);
         });
     }
 
@@ -395,31 +460,119 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             let ctx = ctx.clone();
             let dialog = if request.purpose == "swatches" {
                 rfd::AsyncFileDialog::new().add_filter("Swatch Exchange (ASE)", &["ase"])
+            } else if request.purpose == "shortcuts" {
+                rfd::AsyncFileDialog::new().add_filter("Shortcut set (JSON, InDesign text)", &["json", "txt"])
+            } else if request.purpose.starts_with("relink") {
+                rfd::AsyncFileDialog::new().add_filter("Graphics", GRAPHIC_EXTS)
             } else if request.purpose == "place" {
                 rfd::AsyncFileDialog::new().add_filter("Graphics", IMAGE_EXTS)
             } else {
-                rfd::AsyncFileDialog::new().add_filter("DesignCraft", DOC_EXTS)
+                rfd::AsyncFileDialog::new().add_filter("DesignCraft, IDML or InDesign", DOC_EXTS)
             };
+            // Relink to Folder: the browser's folder picker hands over every graphic in the
+            // chosen folder; they arrive together, to relink in one step.
+            if request.purpose == "relinkFiles" {
+                wasm_bindgen_futures::spawn_local(async move {
+                    let files: Vec<ImportedFile> = pick_folder_files(&request.wanted)
+                        .await
+                        .into_iter()
+                        .map(|(name, bytes)| ImportedFile { request: request.clone(), name, bytes })
+                        .collect();
+                    if !files.is_empty() {
+                        inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
+                        ctx.request_repaint();
+                    }
+                });
+                return;
+            }
             wasm_bindgen_futures::spawn_local(async move {
-                let Some(file) = dialog.pick_file().await else {
-                    return;
+                // Place takes several files, loaded into the place cursor in the order chosen.
+                let handles = if request.purpose == "place" {
+                    dialog.pick_files().await.unwrap_or_default()
+                } else {
+                    dialog.pick_file().await.into_iter().collect()
                 };
-                let bytes = file.read().await;
-                inbox.lock().unwrap_or_else(|e| e.into_inner()).push(ImportedFile { request, name: file.file_name(), bytes });
+                let mut files = Vec::with_capacity(handles.len());
+                for file in handles {
+                    let bytes = file.read().await;
+                    files.push(ImportedFile { request: request.clone(), name: file.file_name(), bytes });
+                }
+                inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
                 ctx.request_repaint();
             });
         })),
-        // Exports ask for a name; the browser decides where the download goes.
-        pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
         write: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
-        download: Some(Box::new(|name: &str, bytes: &[u8]| {
-            if let Err(e) = download(name, bytes) {
-                log::error!("download of {name} failed: {e}");
-            }
-        })),
+        download: Some(Box::new(|name: &str, bytes: &[u8]| download(name, bytes))),
         inbox: Some(inbox),
         ..Default::default()
     }
+}
+
+/// The most files a chosen folder hands over for relinking, and the most bytes in all.
+const MAX_FOLDER_FILES: usize = 2000;
+// The bytes are copied a few times on the way (base64 for the command, then decoded), so the
+// cap keeps the peak well inside the browser's memory for a tab.
+const MAX_FOLDER_BYTES: f64 = 256.0 * 1024.0 * 1024.0;
+
+/// The graphics named in `wanted` (lower-case file names; empty: every graphic) in a folder the
+/// user chooses with the browser's folder picker (an `<input type=file webkitdirectory>`, which
+/// every current browser supports), each named by its path in the folder. Only those files are
+/// read, up to [`MAX_FOLDER_FILES`] and [`MAX_FOLDER_BYTES`]; empty when the picker is cancelled
+/// or can't be shown.
+async fn pick_folder_files(wanted: &[String]) -> Vec<(String, Vec<u8>)> {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return Vec::new() };
+    let Some(input) = document.create_element("input").ok().and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok()) else {
+        return Vec::new();
+    };
+    input.set_type("file");
+    input.set_multiple(true);
+    if input.set_attribute("webkitdirectory", "").is_err() {
+        return Vec::new();
+    }
+    // Settles when files are chosen or the picker is cancelled. The listener is this call's and
+    // goes when the picker settles, not kept for the page's life. (A browser that fires neither
+    // event leaves this call waiting; current browsers fire `cancel`.)
+    let mut resolve = None;
+    let chosen = js_sys::Promise::new(&mut |r, _reject| resolve = Some(r));
+    let Some(resolve) = resolve else { return Vec::new() };
+    let done = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        let _ = resolve.call0(&wasm_bindgen::JsValue::UNDEFINED);
+    });
+    for event in ["change", "cancel"] {
+        let _ = input.add_event_listener_with_callback(event, done.as_ref().unchecked_ref());
+    }
+    input.click();
+    let _ = wasm_bindgen_futures::JsFuture::from(chosen).await;
+    for event in ["change", "cancel"] {
+        let _ = input.remove_event_listener_with_callback(event, done.as_ref().unchecked_ref());
+    }
+    drop(done);
+    let Some(list) = input.files() else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut bytes = 0.0;
+    for i in 0..list.length() {
+        let Some(file) = list.get(i) else { continue };
+        let name = file.name();
+        let graphic = name.rsplit_once('.').is_some_and(|(_, ext)| GRAPHIC_EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)));
+        if !graphic || !(wanted.is_empty() || wanted.contains(&name.to_lowercase())) {
+            continue;
+        }
+        if out.len() >= MAX_FOLDER_FILES || bytes + file.size() > MAX_FOLDER_BYTES {
+            log::warn!("Relink to Folder: more graphics than can be read at once; the rest are left");
+            break;
+        }
+        bytes += file.size();
+        // Its path within the chosen folder tells same-named files in different folders apart.
+        let path = js_sys::Reflect::get(&file, &wasm_bindgen::JsValue::from_str("webkitRelativePath"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|p| !p.is_empty())
+            .unwrap_or(name);
+        if let Ok(buf) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+            out.push((path, js_sys::Uint8Array::new(&buf).to_vec()));
+        }
+    }
+    out
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.
@@ -445,6 +598,9 @@ fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     let revoke = wasm_bindgen::closure::Closure::once_into_js(move || {
         web_sys::Url::revoke_object_url(&url).ok();
     });
-    window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000).map_err(js)?;
+    // The download has started; a missed revoke only keeps the blob until the page closes.
+    if let Err(e) = window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 10_000) {
+        log::warn!("could not schedule revoking the download URL: {}", js(e));
+    }
     Ok(())
 }

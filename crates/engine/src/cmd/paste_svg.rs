@@ -1,0 +1,443 @@
+//! Paste vector art copied in another app (Illustrator, VectorCraft, Figma, Inkscape) as editable
+//! paths, as InDesign pastes Illustrator art. Those apps put the copied objects on the system
+//! clipboard as SVG markup; each path becomes a DesignCraft path with its fill and stroke, groups
+//! stay groups, and text comes in as outlines.
+
+use std::collections::{HashMap, HashSet};
+
+use craft_svg::tree::document::{Document as SvgDocument, LineCap, LineJoin, Node as SvgNode, Paint as SvgPaint, Segment};
+use designcraft_doc::{Content, Fill, Item, ItemId, Selection, Shape, Stroke, StrokeType};
+use designcraft_geom::{Affine, BezPath, PathData, Point, Rect};
+use serde_json::{Value, json};
+
+use super::{CommandSpec, Result, Session, bad, cmd, has_doc, spread_param, str_param};
+
+pub fn specs() -> Vec<CommandSpec> {
+    vec![cmd!(
+        "edit.pasteSvg",
+        "Paste Vector Art",
+        [],
+        None,
+        "{svg: markup (what Illustrator, VectorCraft or Figma put on the clipboard), spread?, at?: [x, y] (spread coords of the art's centre; default the first page's centre)} → {ids, warnings} — paths with their fills and strokes, groups as groups, text as outlines",
+        has_doc,
+        paste_svg
+    )]
+}
+
+/// Is `text` SVG markup (rather than text to paste as text)?
+pub fn is_svg_markup(text: &str) -> bool {
+    designcraft_images::is_svg(text.as_bytes())
+}
+
+/// Cap conversion nesting too; the shared SVG scene builder enforces this limit.
+const MAX_DEPTH: usize = 64;
+
+/// A converted SVG node, in points.
+enum Art {
+    Path { path: BezPath, fill: Option<Paint>, stroke: Option<(Paint, StrokeStyle)>, opacity: f32 },
+    Group(Vec<Art>, f32),
+}
+
+impl Art {
+    /// Fold a wrapping group's opacity into this object.
+    fn fade(&mut self, by: f32) {
+        match self {
+            Art::Path { opacity, .. } | Art::Group(_, opacity) => *opacity *= by,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Paint {
+    rgb: [u8; 3],
+    opacity: f32,
+}
+
+struct StrokeStyle {
+    width: f64,
+    cap: designcraft_doc::Cap,
+    join: designcraft_doc::Join,
+    miter: f64,
+    dashes: Option<Vec<f64>>,
+}
+
+#[derive(Default)]
+struct Notes {
+    gradients: usize,
+    images: usize,
+    /// Paths whose fill-opacity and stroke-opacity differ (one object opacity holds only one).
+    mixed_opacity: usize,
+    too_deep: bool,
+}
+
+fn paint(p: &SvgPaint, notes: &mut Notes) -> Option<Paint> {
+    let (rgb, opacity) = match p {
+        SvgPaint::Color { rgb, opacity } => (*rgb, *opacity),
+        // Gradients and patterns are retained as their first color where available.
+        SvgPaint::Gradient { stops, opacity, .. } => {
+            notes.gradients += 1;
+            (stops.first()?.rgb, *opacity)
+        }
+        SvgPaint::Pattern { .. } => {
+            notes.gradients += 1;
+            return None;
+        }
+    };
+    Some(Paint { rgb, opacity })
+}
+
+/// To 1/10000 pt: SVG numbers are 32-bit floats (a 1 pt stroke reads as 0.99999994).
+fn round(v: f64) -> f64 {
+    (v * 10_000.0).round() / 10_000.0
+}
+
+fn bezpath(segments: &[Segment]) -> BezPath {
+    let p = |q: [f64; 2]| Point::new(q[0] * designcraft_images::PT_PER_PX, q[1] * designcraft_images::PT_PER_PX);
+    let mut bp = BezPath::new();
+    for seg in segments {
+        match seg {
+            Segment::MoveTo(a) => bp.move_to(p(*a)),
+            Segment::LineTo(a) => bp.line_to(p(*a)),
+            Segment::QuadTo(a, b) => bp.quad_to(p(*a), p(*b)),
+            Segment::CubicTo(a, b, c) => bp.curve_to(p(*a), p(*b), p(*c)),
+            Segment::Close => bp.close_path(),
+        }
+    }
+    bp
+}
+
+fn convert(nodes: &[SvgNode], notes: &mut Notes, out: &mut Vec<Art>) {
+    for node in nodes {
+        match node {
+            SvgNode::Path(path) => {
+                let fill = path.fill.as_ref().and_then(|p| paint(p, notes));
+                let stroke = path.stroke.as_ref().and_then(|s| {
+                    let c = paint(&s.paint, notes)?;
+                    let width = round(s.width * designcraft_images::PT_PER_PX);
+                    let dashes = s.dash_array.as_ref().map(|d| d.iter().map(|v| round(v * designcraft_images::PT_PER_PX)).collect::<Vec<_>>());
+                    let style = StrokeStyle {
+                        width,
+                        cap: match s.cap {
+                            LineCap::Butt => designcraft_doc::Cap::Butt,
+                            LineCap::Round => designcraft_doc::Cap::Round,
+                            LineCap::Square => designcraft_doc::Cap::Projecting,
+                        },
+                        join: match s.join {
+                            LineJoin::Round => designcraft_doc::Join::Round,
+                            LineJoin::Bevel => designcraft_doc::Join::Bevel,
+                            _ => designcraft_doc::Join::Miter,
+                        },
+                        miter: s.miter_limit,
+                        dashes,
+                    };
+                    Some((c, style))
+                });
+                if fill.is_none() && stroke.is_none() {
+                    continue;
+                }
+                if let (Some(f), Some((c, _))) = (&fill, &stroke)
+                    && (f.opacity - c.opacity).abs() > f32::EPSILON
+                {
+                    notes.mixed_opacity += 1;
+                }
+                out.push(Art::Path { path: bezpath(&path.segments), fill, stroke, opacity: 1.0 });
+            }
+            SvgNode::Group { children, opacity, .. } => {
+                let mut items = Vec::new();
+                convert(children, notes, &mut items);
+                // usvg wraps nodes in groups for transforms and opacity; only a group of several
+                // objects stays a group. Its opacity goes to what it holds.
+                if items.len() > 1 {
+                    out.push(Art::Group(items, *opacity));
+                } else {
+                    for mut a in items {
+                        a.fade(*opacity);
+                        out.push(a);
+                    }
+                }
+            }
+            // Embedded images are left out; the scene's image count gives the warning.
+            SvgNode::Image(_) => {}
+        }
+    }
+}
+
+fn bounds(art: &[Art]) -> Option<Rect> {
+    art.iter()
+        .filter_map(|a| match a {
+            Art::Path { path, .. } => Some(designcraft_geom::Shape::bounding_box(path)),
+            Art::Group(items, _) => bounds(items),
+        })
+        .reduce(|a, b| a.union(b))
+}
+
+/// The document's RGB colour swatches by colour and its swatch names, looked up once per paste
+/// (a pasted SVG can hold tens of thousands of colours).
+struct PasteSwatches {
+    by_rgb: HashMap<[u32; 3], String>,
+    names: HashSet<String>,
+}
+
+impl PasteSwatches {
+    /// An RGB colour as a key: equal colours, equal keys (`+ 0.0` makes -0 and 0 one key).
+    fn key(r: f32, g: f32, b: f32) -> [u32; 3] {
+        [(r + 0.0).to_bits(), (g + 0.0).to_bits(), (b + 0.0).to_bits()]
+    }
+
+    fn new(d: &designcraft_doc::Document) -> Self {
+        use designcraft_color::swatch::SwatchValue;
+        let mut by_rgb = HashMap::new();
+        for w in &d.swatches {
+            if let SwatchValue::Color { color: designcraft_color::Color::Rgb { r, g, b }, .. } = &w.value {
+                // The first swatch of a colour is the one, as a search from the start finds it.
+                by_rgb.entry(Self::key(*r, *g, *b)).or_insert_with(|| w.name.clone());
+            }
+        }
+        Self { by_rgb, names: d.swatches.iter().map(|w| w.name.clone()).collect() }
+    }
+}
+
+/// The swatch holding exactly `rgb`: an existing process colour, else a new unnamed one (hidden
+/// from the Swatches panel until Add to Swatches), as InDesign does for pasted colours.
+fn swatch_for(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, rgb: [u8; 3]) -> String {
+    use designcraft_color::swatch::{Swatch, SwatchValue};
+    let color = designcraft_color::Color::rgb8(rgb[0], rgb[1], rgb[2]);
+    let designcraft_color::Color::Rgb { r, g, b } = color else { return String::new() };
+    let key = PasteSwatches::key(r, g, b);
+    if let Some(name) = known.by_rgb.get(&key) {
+        return name.clone();
+    }
+    let base = format!("R={} G={} B={}", rgb[0], rgb[1], rgb[2]);
+    let name = designcraft_doc::Styles::unique_name(|n| known.names.contains(n), &base);
+    known.names.insert(name.clone());
+    known.by_rgb.insert(key, name.clone());
+    d.swatches.push(Swatch {
+        name: name.clone(),
+        value: SwatchValue::Color { color, color_type: designcraft_color::ColorType::Process },
+        locked: false,
+        named: false,
+        hidden: true,
+    });
+    name
+}
+
+fn build(d: &mut designcraft_doc::Document, known: &mut PasteSwatches, art: Vec<Art>, layer: designcraft_doc::LayerId, shift: Affine) -> Vec<Item> {
+    let mut out = Vec::new();
+    for a in art {
+        match a {
+            Art::Path { path, fill, stroke, opacity } => {
+                let data = PathData::from_bezpath(&(shift * path));
+                if data.subpaths.is_empty() {
+                    continue;
+                }
+                let anchors: usize = data.subpaths.iter().map(|s| s.anchors.len()).sum();
+                // A straight two-point segment is a graphic line (Line tool); anything else a path.
+                let straight = |a: &designcraft_geom::Anchor| a.h_in == a.p && a.h_out == a.p;
+                let line = data.subpaths.len() == 1 && anchors == 2 && data.subpaths.iter().all(|s| !s.closed && s.anchors.iter().all(straight));
+                // The object's opacity: its own times the paint's. Items have no separate fill and
+                // stroke opacity, so a path with both takes the fill's (`Notes::mixed_opacity`).
+                let paint = fill.map(|f| f.opacity).or(stroke.as_ref().map(|(c, _)| c.opacity)).unwrap_or(1.0);
+                let mut it = Item::new(ItemId(d.alloc()), layer, if line { Shape::GraphicLine } else { Shape::Path }, data);
+                it.fill = match fill {
+                    Some(f) => Fill::swatch(&swatch_for(d, known, f.rgb)),
+                    None => Fill::none(),
+                };
+                it.stroke = match stroke {
+                    Some((c, s)) => Stroke {
+                        swatch: swatch_for(d, known, c.rgb),
+                        weight: s.width,
+                        cap: s.cap,
+                        join: s.join,
+                        miter_limit: s.miter,
+                        kind: s.dashes.map_or(StrokeType::Solid, |pattern| StrokeType::Dashed { pattern }),
+                        ..Stroke::default()
+                    },
+                    None => Stroke::none(),
+                };
+                it.opacity = (opacity * paint).clamp(0.0, 1.0);
+                out.push(it);
+            }
+            Art::Group(items, opacity) => {
+                let children = build(d, known, items, layer, shift);
+                if children.is_empty() {
+                    continue;
+                }
+                let mut g = Item::new(ItemId(d.alloc()), layer, Shape::Group, PathData::default());
+                g.stroke = Stroke::none();
+                g.opacity = opacity.clamp(0.0, 1.0);
+                g.content = Content::Group { items: children.into_iter().map(std::sync::Arc::new).collect() };
+                out.push(g);
+            }
+        }
+    }
+    out
+}
+
+fn paste_svg(s: &mut Session, p: &Value) -> Result<Value> {
+    const ID: &str = "edit.pasteSvg";
+    let svg = str_param(p, "svg").ok_or_else(|| bad(ID, "missing svg"))?;
+    if !is_svg_markup(svg) {
+        return Err(bad(ID, "the clipboard doesn't hold SVG markup"));
+    }
+    let tree = designcraft_images::svg_tree(svg.as_bytes()).ok_or_else(|| bad(ID, "the SVG on the clipboard can't be read"))?;
+    let scene = SvgDocument::from_tree(&tree, MAX_DEPTH);
+    let mut notes = Notes { images: scene.images, too_deep: scene.too_deep, ..Default::default() };
+    let mut art = Vec::new();
+    convert(&scene.nodes, &mut notes, &mut art);
+    let b = bounds(&art).ok_or_else(|| bad(ID, "the SVG on the clipboard has no paths to paste"))?;
+    let sr = spread_param(p, ID)?;
+    let layer = s.doc()?.active_layer;
+    let at = match super::point_param(p, "at") {
+        Some(at) => at,
+        None => {
+            let d = &s.doc()?.doc;
+            let sp = d.spread(sr).ok_or_else(|| bad(ID, "no such spread"))?;
+            sp.pages.first().map_or(Point::ZERO, |pg| pg.bounds().center())
+        }
+    };
+    if !(at.x.is_finite() && at.y.is_finite()) {
+        return Err(bad(ID, "at must be finite"));
+    }
+    let shift = Affine::translate(at - b.center());
+    let mut warnings = Vec::new();
+    if notes.gradients > 0 {
+        warnings.push(format!("{} gradient or pattern paint(s) pasted as their first colour", notes.gradients));
+    }
+    if notes.too_deep {
+        warnings.push(format!("objects nested more than {MAX_DEPTH} groups deep left out"));
+    }
+    if notes.mixed_opacity > 0 {
+        warnings.push(format!("{} object(s) with different fill and stroke opacity pasted with the fill's opacity for both", notes.mixed_opacity));
+    }
+    if notes.images > 0 {
+        warnings.push(format!("{} embedded image(s) left out (place images with File › Place)", notes.images));
+    }
+    s.edit(|d, sel| {
+        let mut known = PasteSwatches::new(d);
+        let items = build(d, &mut known, art, layer, shift);
+        let mut ids = Vec::new();
+        for it in items {
+            ids.push(it.id);
+            d.insert_item(sr, it, None)?;
+        }
+        *sel = Selection::items(ids.clone());
+        Ok(json!({"ids": ids.iter().map(|i| i.0).collect::<Vec<_>>(), "warnings": warnings}))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Session;
+    use designcraft_doc::SpreadRef;
+
+    const SPIRAL: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400pt" height="400pt">
+<path fill="none" stroke="#000000" stroke-width="1" d="M200,200 C200,210 210,220 220,220 C240,220 250,200 250,180 L300,100"/>
+</svg>"##;
+
+    fn session() -> Session {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s
+    }
+
+    #[test]
+    fn an_illustrator_path_pastes_as_an_editable_path_in_points() {
+        let mut s = session();
+        let undo = s.doc().unwrap().history.undo.len();
+        let r = s.execute("edit.pasteSvg", &json!({"svg": SPIRAL, "at": [300, 400]})).unwrap();
+        let ids = r["ids"].as_array().unwrap();
+        assert_eq!(ids.len(), 1, "{r}");
+        let st = s.doc().unwrap();
+        let it = st.doc.item(ItemId(ids[0].as_u64().unwrap())).unwrap();
+        assert_eq!(it.shape, Shape::Path);
+        // Five anchors: three curve ends and a line, editable with the Direct Selection tool.
+        assert_eq!(it.path.subpaths.len(), 1);
+        assert_eq!(it.path.subpaths[0].anchors.len(), 4);
+        assert!(it.fill.is_none());
+        assert_eq!(it.stroke.weight, 1.0, "a 1-unit stroke in a pt-sized SVG is 1 pt");
+        let c = st.doc.swatch(&it.stroke.swatch).unwrap();
+        assert!(matches!(&c.value, designcraft_color::swatch::SwatchValue::Color { color, .. } if color.to_rgb() == [0.0, 0.0, 0.0]));
+        // Centred on `at`, at its own size (100 × 120 user units of a 400 pt viewBox).
+        let b = it.bounds();
+        assert!((b.center().x - 300.0).abs() < 0.01 && (b.center().y - 400.0).abs() < 0.01, "{b:?}");
+        assert!((b.width() - 100.0).abs() < 0.01 && (b.height() - 120.0).abs() < 0.01, "{b:?}");
+        assert_eq!(st.selection.items, vec![it.id]);
+        assert_eq!(st.history.undo.len(), undo + 1, "one undo step");
+    }
+
+    #[test]
+    fn groups_fills_strokes_and_px_units_come_through() {
+        let mut s = session();
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+            <g id="logo"><rect x="0" y="0" width="100" height="100" fill="#e92819" opacity="0.5"/>
+            <circle cx="150" cy="50" r="50" fill="none" stroke="#0000ff" stroke-width="8" stroke-dasharray="4 2" stroke-linecap="round"/></g>
+            <line x1="0" y1="0" x2="200" y2="0" stroke="#000"/></svg>"##;
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg})).unwrap();
+        let st = s.doc().unwrap();
+        let ids: Vec<ItemId> = r["ids"].as_array().unwrap().iter().map(|v| ItemId(v.as_u64().unwrap())).collect();
+        assert_eq!(ids.len(), 2, "the group and the line: {r}");
+        let g = st.doc.item(ids[0]).unwrap();
+        let Content::Group { items } = &g.content else { panic!("group") };
+        assert_eq!(items.len(), 2);
+        let (rect, circle) = (&items[0], &items[1]);
+        assert_eq!(st.doc.swatch(&rect.fill.swatch).unwrap().name, "R=233 G=40 B=25");
+        assert!((rect.opacity - 0.5).abs() < 1e-3);
+        // CSS pixels: 8 px = 6 pt, the 200 px art is 150 pt wide.
+        assert!((circle.stroke.weight - 6.0).abs() < 1e-6);
+        assert_eq!(circle.stroke.cap, designcraft_doc::Cap::Round);
+        assert!(matches!(&circle.stroke.kind, StrokeType::Dashed { pattern } if (pattern[0] - 3.0).abs() < 1e-6));
+        assert_eq!(st.doc.item(ids[1]).unwrap().shape, Shape::GraphicLine);
+        let all = g.bounds().union(st.doc.item(ids[1]).unwrap().bounds());
+        assert!((all.width() - 150.0).abs() < 0.5, "{all:?}");
+        // Centred on the first page by default.
+        let page = st.doc.spread(SpreadRef::Doc(0)).unwrap().pages[0].bounds();
+        assert!((all.center().x - page.center().x).abs() < 0.5, "{all:?} {page:?}");
+    }
+
+    #[test]
+    fn differing_fill_and_stroke_opacity_takes_the_fills_and_warns() {
+        let mut s = session();
+        let svg = |stroke_opacity: &str| {
+            format!(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" width="100pt" height="100pt" viewBox="0 0 100 100"><rect width="100" height="100" fill="#ff0000" fill-opacity="0.4" stroke="#000" stroke-opacity="{stroke_opacity}"/></svg>"##
+            )
+        };
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg("0.9")})).unwrap();
+        let id = ItemId(r["ids"][0].as_u64().unwrap());
+        assert!((s.doc().unwrap().doc.item(id).unwrap().opacity - 0.4).abs() < 1e-3);
+        assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("fill's opacity")), "{r}");
+        let r = s.execute("edit.pasteSvg", &json!({"svg": svg("0.4")})).unwrap();
+        let id = ItemId(r["ids"][0].as_u64().unwrap());
+        assert!((s.doc().unwrap().doc.item(id).unwrap().opacity - 0.4).abs() < 1e-3);
+        assert_eq!(r["warnings"], json!([]), "equal opacities fit the object's");
+    }
+
+    #[test]
+    fn text_and_garbage_are_refused_without_an_undo_step() {
+        let mut s = session();
+        let undo = s.doc().unwrap().history.undo.len();
+        for bad in ["just words", "<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"] {
+            assert!(s.execute("edit.pasteSvg", &json!({"svg": bad})).is_err(), "{bad}");
+        }
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+        assert!(is_svg_markup(SPIRAL) && !is_svg_markup("R=233 G=40 B=25"));
+    }
+
+    #[test]
+    fn deeply_nested_groups_do_not_exhaust_the_stack() {
+        let mut s = session();
+        let before = serde_json::to_value(&s.doc().unwrap().doc).unwrap();
+        let undo = s.doc().unwrap().history.undo.len();
+        let depth = 2000;
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}<rect width="10" height="10"/>{}</svg>"#,
+            "<g opacity=\"0.99\">".repeat(depth),
+            "</g>".repeat(depth)
+        );
+        assert!(s.execute("edit.pasteSvg", &json!({"svg": svg})).is_err());
+        assert_eq!(serde_json::to_value(&s.doc().unwrap().doc).unwrap(), before);
+        assert_eq!(s.doc().unwrap().history.undo.len(), undo);
+    }
+}

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use designcraft_doc::{Content, Document, Fill, Item, ItemId, Selection, Shape, SpreadRef, Stroke};
-use designcraft_geom::{Affine, BezPath, PathData, SubPath};
+use designcraft_geom::{Affine, BezPath, PathData, Shape as _, SubPath};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_selection, point_param, targets};
@@ -75,20 +75,39 @@ fn spread_xf(d: &Document, id: ItemId) -> Option<(SpreadRef, Affine)> {
     Some((loc.spread, d.parent_xf(&loc) * d.item_at(&loc)?.xf))
 }
 
+/// Containment tests `orient_holes` makes at most (after the bounding-box filter). A compound path
+/// of thousands of nested contours would otherwise take quadratic time; past this the command is
+/// refused rather than leave later subpaths with the wrong direction.
+const MAX_HOLE_TESTS: usize = 4_000_000;
+
 /// Orient subpaths so those nested an odd number of times run against the others: with the
 /// non-zero rule they become holes.
-fn orient_holes(path: &mut PathData) {
+fn orient_holes(path: &mut PathData, command: &str) -> Result<()> {
+    orient_holes_within(path, command, MAX_HOLE_TESTS)
+}
+
+fn orient_holes_within(path: &mut PathData, command: &str, max_tests: usize) -> Result<()> {
     let beziers: Vec<BezPath> = path.subpaths.iter().map(|s| PathData::single(s.clone()).to_bezpath()).collect();
+    // A point outside a contour's box is outside the contour: most pairs are skipped without a winding count.
+    let boxes: Vec<_> = beziers.iter().map(BezPath::bounding_box).collect();
     let n = path.subpaths.len();
-    for i in 0..n {
-        let Some(p) = path.subpaths[i].anchors.first().map(|a| a.p) else { continue };
-        let depth = (0..n).filter(|&j| j != i && designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p)).count();
-        let sp = &mut path.subpaths[i];
+    let mut tests = 0usize;
+    for (i, sp) in path.subpaths.iter_mut().enumerate() {
+        let Some(p) = sp.anchors.first().map(|a| a.p) else { continue };
+        let mut depth = 0;
+        for j in (0..n).filter(|&j| j != i && boxes[j].inflate(1e-6, 1e-6).contains(p)) {
+            tests += 1;
+            if tests > max_tests {
+                return Err(bad(command, "too many nested contours to tell holes from fills"));
+            }
+            depth += usize::from(designcraft_geom::hit::fill_contains(&beziers[j], designcraft_geom::FillRule::NonZero, p));
+        }
         let cw = sp.area() > 0.0;
         if cw == (depth % 2 == 1) {
             sp.reverse();
         }
     }
+    Ok(())
 }
 
 fn make_compound(s: &mut Session, p: &Value) -> Result<Value> {
@@ -115,7 +134,7 @@ fn make_compound(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let it = d.item_mut(base_id).ok_or(designcraft_doc::DocError::NoItem(base_id))?;
         it.path = PathData::new(subpaths);
-        orient_holes(&mut it.path);
+        orient_holes(&mut it.path, "object.makeCompoundPath")?;
         it.shape = Shape::Path;
         *sel = Selection::items(vec![base_id]);
         Ok(json!({"id": base_id.0}))
@@ -159,7 +178,7 @@ fn pathfinder(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let it = d.item_mut(keep).ok_or(designcraft_doc::DocError::NoItem(keep))?;
         it.path = result.transformed(kxf.inverse());
-        orient_holes(&mut it.path);
+        orient_holes(&mut it.path, "object.pathfinder")?;
         it.shape = Shape::Path;
         it.corners = Default::default();
         *sel = Selection::items(vec![keep]);
@@ -196,6 +215,7 @@ fn gradient_feather(s: &mut Session, p: &Value) -> Result<Value> {
                     gf.vector = Some([a.x, a.y, b.x, b.y]);
                 }
             }
+            it.effects = it.effects.clone().sanitized().map_err(|m| bad("object.gradientFeather", m))?;
         }
         Ok(json!({"changed": ids.len()}))
     })
@@ -258,7 +278,15 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
                         continue;
                     }
                     let skew = if st.skew != 0.0 { Affine::new([1.0, 0.0, -st.skew.to_radians().tan(), 1.0, 0.0, 0.0]) } else { Affine::IDENTITY };
-                    let a = Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    let shatai = st.shatai_xf(g, l.baseline).unwrap_or(Affine::IDENTITY);
+                    let mut a = shatai * Affine::translate((g.x, l.baseline + g.y)) * skew * Affine::scale_non_uniform(g.sx, g.sy);
+                    // Upright in vertical text, as the canvas and the PDF export draw it (#2895):
+                    // without the turn, CJK glyphs lay on their sides along the column.
+                    if ft.vertical
+                        && let Some(turn) = g.vertical_xf(l.baseline)
+                    {
+                        a = turn * a;
+                    }
                     let key = (li, st.fill.clone(), st.fill_tint, st.stroke.clone(), st.stroke_tint, st.stroke_weight, st.stroke_behind_fill);
                     let k = match runs.iter().position(|r| r.0 == key) {
                         Some(k) => k,
@@ -277,6 +305,8 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
             let (sr, _) = spread_xf(d, *id).ok_or(designcraft_doc::DocError::NoItem(*id))?;
             let at = d.spread(sr).and_then(|sp| sp.items.iter().position(|i| i.id == *id));
             let text_xf = d.text_xf(&it);
+            // Text space → the item's inner space: a vertical frame's quarter turn (#2895).
+            let text_local = d.text_local(&it);
             let make = |d: &mut Document, ((_, fill, ft, stroke, stt, sw, behind), bp): ((usize, String, f32, String, f32, f64, bool), BezPath)| {
                 let mut o = Item::new(ItemId(d.alloc()), it.layer, Shape::Path, PathData::from_bezpath(&bp));
                 o.xf = text_xf;
@@ -298,8 +328,10 @@ fn create_outlines(s: &mut Session, p: &Value) -> Result<Value> {
                 one
             } else {
                 let mut g = Item::new(ItemId(d.alloc()), it.layer, Shape::Group, PathData::default());
+                // Each line is in text space: in the group (which has the frame's transform) it
+                // takes the frame's text turn, so the columns of vertical text stay columns.
                 for p in &mut parts {
-                    p.xf = Affine::IDENTITY;
+                    p.xf = text_local;
                 }
                 g.xf = it.xf;
                 g.content = Content::Group { items: parts.into_iter().map(Arc::new).collect() };
@@ -405,6 +437,38 @@ mod tests {
         let r = s.execute("object.releaseCompoundPath", &json!({})).unwrap();
         assert_eq!(r["ids"].as_array().unwrap().len(), 2);
         s.doc().unwrap().doc.check().unwrap();
+    }
+
+    #[test]
+    fn orient_holes_alternates_nested_contours_and_skips_distant_ones() {
+        use designcraft_geom::{Rect, shapes::rectangle};
+        let mut subs: Vec<SubPath> = Vec::new();
+        for k in 0..3 {
+            let o = 10.0 * f64::from(k);
+            subs.extend(rectangle(Rect::new(o, o, 100.0 - o, 100.0 - o)).subpaths);
+        }
+        // Thousands of separate contours cost no winding counts (their boxes miss each other).
+        for k in 0..3000 {
+            let x = 200.0 + 20.0 * f64::from(k);
+            subs.extend(rectangle(Rect::new(x, 0.0, x + 10.0, 10.0)).subpaths);
+        }
+        let mut path = PathData::new(subs);
+        orient_holes(&mut path, "test").unwrap();
+        let cw: Vec<bool> = path.subpaths.iter().map(|s| s.area() > 0.0).collect();
+        assert_eq!(cw[..3], [true, false, true]);
+        assert!(cw[3..].iter().all(|c| *c));
+    }
+
+    #[test]
+    fn orient_holes_refuses_past_its_budget_instead_of_half_orienting() {
+        use designcraft_geom::{Rect, shapes::rectangle};
+        let mut subs: Vec<SubPath> = Vec::new();
+        for k in 0..4 {
+            let o = 10.0 * f64::from(k);
+            subs.extend(rectangle(Rect::new(o, o, 100.0 - o, 100.0 - o)).subpaths);
+        }
+        assert!(orient_holes_within(&mut PathData::new(subs.clone()), "test", 3).is_err());
+        assert!(orient_holes_within(&mut PathData::new(subs), "test", 100).is_ok());
     }
 
     #[test]
@@ -635,5 +699,50 @@ mod tests {
         let it = d.item(ItemId(rect)).unwrap();
         assert!(!it.path.is_closed());
         assert_eq!(it.path.anchor_count(), 6);
+    }
+
+    /// #2895: Create Outlines on vertical text draws the glyphs where the canvas does. Upright
+    /// glyphs take their own quarter turn, and a frame of several columns (a group of lines) keeps
+    /// the frame's turn: the columns stay columns, read top to bottom.
+    #[test]
+    fn outlines_of_vertical_text_stay_where_the_text_was_drawn() {
+        let family = "DC Test Outline Vertical";
+        designcraft_fonts::FontDb::global().add_font(designcraft_fonts::testing::font_with(family, &['一', '日']).unwrap());
+        for (text, columns) in [("日一", 1), ("日一\n一日", 2)] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let id =
+                s.execute("frame.create", &json!({"rect": [100, 100, 300, 500], "content": "text", "text": text})).unwrap()["id"].as_u64().unwrap();
+            s.execute("selection.set", &json!({"ids": [id]})).unwrap();
+            s.execute("type.char", &json!({"fontFamily": family, "fontStyle": "Regular"})).unwrap();
+            s.execute("type.storyDirection", &json!({"vertical": true})).unwrap();
+            // Where the canvas draws each glyph (render/src/text.rs): the frame's text transform,
+            // then each upright glyph's turn, then its place on the line.
+            let d = s.doc().unwrap().doc.clone();
+            let it = d.item(ItemId(id)).unwrap().clone();
+            let story = it.text_frame().unwrap().story;
+            let cs = designcraft_compose::compose_story(&d, story, &Default::default());
+            let ft = cs.frame(ItemId(id)).unwrap();
+            assert!(ft.vertical);
+            assert_eq!(ft.lines.len(), columns, "{text}");
+            let db = designcraft_fonts::FontDb::global();
+            let text_xf = d.text_xf(&it);
+            let mut drawn: Option<kurbo::Rect> = None;
+            for l in &ft.lines {
+                for g in l.glyphs.iter().filter(|g| g.visible) {
+                    assert!(g.upright, "{text}: CJK is set upright");
+                    let turn = g.vertical_xf(l.baseline).unwrap();
+                    let a = text_xf * turn * Affine::translate((g.x, l.baseline + g.y)) * Affine::scale_non_uniform(g.sx, g.sy);
+                    let b = (a * db.outline(&g.face, g.gid).as_ref().clone()).bounding_box();
+                    drawn = Some(drawn.map_or(b, |r| r.union(b)));
+                }
+            }
+            let drawn = drawn.unwrap();
+            let out = ItemId(s.execute("type.createOutlines", &json!({})).unwrap()["ids"][0].as_u64().unwrap());
+            let b = s.doc().unwrap().doc.item(out).unwrap().bounds();
+            for (got, want) in [(b.x0, drawn.x0), (b.y0, drawn.y0), (b.x1, drawn.x1), (b.y1, drawn.y1)] {
+                assert!((got - want).abs() < 0.01, "{text}: outlines {b:?}, drawn {drawn:?}");
+            }
+        }
     }
 }

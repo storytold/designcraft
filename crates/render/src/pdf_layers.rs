@@ -2,102 +2,577 @@
 //! file with some layers off (an appended catalog whose default configuration turns them off,
 //! which the PDF renderer honours).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 
-use hayro::hayro_syntax::Pdf;
-use hayro::hayro_syntax::object::{Array, Dict, Name, ObjectIdentifier};
+use designcraft_doc::{AssetData, SourceKey, WeakAssetData};
 
-/// (object number, name, on by default) of each layer.
-fn ocgs(pdf: &Pdf) -> Vec<(i32, String, bool)> {
+use craft_pdf::syntax::Pdf;
+use craft_pdf::syntax::object::{Array, Dict, MaybeRef, Name, ObjRef, Object, ObjectIdentifier};
+
+/// (object reference, name, on by default) of each layer.
+fn ocgs(pdf: &Pdf) -> Vec<(ObjRef, String, bool)> {
     let xref = pdf.xref();
     let Some(cat) = xref.get::<Dict<'_>>(xref.root_id()) else { return vec![] };
     let Some(ocp) = cat.get::<Dict<'_>>(b"OCProperties") else { return vec![] };
     let Some(list) = ocp.get::<Array<'_>>(b"OCGs") else { return vec![] };
     let cfg = ocp.get::<Dict<'_>>(b"D");
-    let ids_in = |key: &[u8]| -> Vec<i32> {
-        cfg.as_ref()
-            .and_then(|c| c.get::<Array<'_>>(key))
-            .map(|a| a.raw_iter().filter_map(|o| o.as_obj_ref()).map(|r| r.obj_number).collect())
-            .unwrap_or_default()
+    let ids_in = |key: &[u8]| -> Vec<ObjRef> {
+        cfg.as_ref().and_then(|c| c.get::<Array<'_>>(key)).map(|a| a.raw_iter().filter_map(|o| o.as_obj_ref()).collect()).unwrap_or_default()
     };
     let base_off = cfg.as_ref().and_then(|c| c.get::<Name<'_>>(b"BaseState")).is_some_and(|n| n.as_ref() == b"OFF");
-    let (on, off) = (ids_in(b"ON"), ids_in(b"OFF"));
+    let (on, off): (std::collections::HashSet<ObjRef>, std::collections::HashSet<ObjRef>) =
+        (ids_in(b"ON").into_iter().collect(), ids_in(b"OFF").into_iter().collect());
     list.raw_iter()
         .filter_map(|o| o.as_obj_ref())
+        // A layer listed again is one layer: it gets one name, not one per entry.
+        .filter({
+            let mut seen = std::collections::HashSet::new();
+            move |r| seen.insert(*r)
+        })
         .filter_map(|r| {
             let d = xref.get::<Dict<'_>>(ObjectIdentifier::from(r))?;
             let name = d
-                .get::<hayro::hayro_syntax::object::String<'_>>(b"Name")
+                .get::<craft_pdf::syntax::object::String<'_>>(b"Name")
                 .map(|s| String::from_utf8_lossy(s.as_bytes()).to_string())
                 .unwrap_or_default();
-            let visible = if base_off { on.contains(&r.obj_number) } else { !off.contains(&r.obj_number) };
-            Some((r.obj_number, name, visible))
+            let visible = if base_off { on.contains(&r) } else { !off.contains(&r) };
+            Some((r, name, visible))
         })
         .collect()
 }
 
-/// The layers of a placed PDF: (name, visible by default).
-pub fn pdf_layers(bytes: &[u8]) -> Vec<(String, bool)> {
-    Pdf::new(Arc::new(bytes.to_vec())).map(|p| ocgs(&p).into_iter().map(|(_, n, v)| (n, v)).collect()).unwrap_or_default()
+/// Whether interpreting this file can depend on optional-content state. Empty/stub
+/// properties are layerless, but malformed group references with state overrides
+/// still require a conservative all-content crop when rewriting is unavailable.
+pub(crate) fn has_optional_content(pdf: &Pdf) -> bool {
+    let Some(cat) = pdf.xref().get::<Dict<'_>>(pdf.xref().root_id()) else { return false };
+    let Some(ocp) = cat.get::<Dict<'_>>(b"OCProperties") else { return false };
+    let nonempty = |dict: &Dict<'_>, key: &[u8]| dict.get::<Array<'_>>(key).is_some_and(|a| a.raw_iter().next().is_some());
+    nonempty(&ocp, b"OCGs") || ocp.get::<Dict<'_>>(b"D").is_some_and(|cfg| nonempty(&cfg, b"ON") || nonempty(&cfg, b"OFF"))
 }
 
-/// `bytes` with exactly the layers named in `hidden` off (the others on). `None` when the file
-/// has no such layers or can't be read.
+/// The layers of a placed PDF: (name, visible by default).
+pub fn pdf_layers(bytes: &[u8]) -> Vec<(String, bool)> {
+    craft_pdf::open_slice(bytes, None).map(|p| ocgs(&p).into_iter().map(|(_, n, v)| (n, v)).collect()).unwrap_or_default()
+}
+
+// Copy untouched dictionary entries as raw PDF tokens. In particular, do not reinterpret
+// strings, numbers or unknown extension keys. The parser bounds container nesting.
+fn patch_dict(dict: &Dict<'_>, updates: &[(&[u8], &[u8])]) -> Option<Vec<u8>> {
+    use craft_pdf::syntax::reader::{Reader, ReaderExt};
+    let data = if dict.is_empty() { b"<<>>".as_slice() } else { dict.data() };
+    if data.len() > 4 * 1024 * 1024 {
+        return None;
+    }
+    let mut reader = Reader::new(data);
+    reader.forward_tag(b"<<")?;
+    let mut out = b"<<".to_vec();
+    let mut ended = false;
+    for _ in 0..100_000 {
+        reader.skip_white_spaces_and_comments();
+        if reader.forward_tag(b">>").is_some() {
+            ended = true;
+            break;
+        }
+        let start = reader.offset();
+        let name = reader.read_without_context::<Name<'_>>()?;
+        reader.skip_white_spaces_and_comments();
+        reader.skip::<MaybeRef<Object<'_>>>(false)?;
+        if !updates.iter().any(|(key, _)| *key == name.as_ref()) {
+            out.push(b' ');
+            out.extend_from_slice(data.get(start..reader.offset())?);
+        }
+    }
+    if !ended {
+        return None;
+    }
+    for (key, value) in updates {
+        if !value.is_empty() {
+            out.extend_from_slice(b" /");
+            out.extend_from_slice(key);
+            out.push(b' ');
+            out.extend_from_slice(value);
+        }
+    }
+    out.extend_from_slice(b" >>");
+    Some(out)
+}
+
+fn trailer_at(bytes: &[u8], offset: usize) -> Option<Dict<'_>> {
+    use craft_pdf::syntax::reader::{Reader, ReaderExt};
+    const MAX_TABLE_BYTES: usize = 4 * 1024 * 1024;
+    let data = bytes.get(offset..)?;
+    // Bound even whitespace/comment scanning and context-free dictionary parsing.
+    let mut reader = Reader::new(data.get(..data.len().min(MAX_TABLE_BYTES))?);
+    reader.skip_white_spaces_and_comments();
+    if reader.forward_tag(b"xref").is_some() {
+        // Walk table syntax, never a raw substring: a repairable file may contain
+        // a fake "trailer" in a comment. Such a comment must not hide real guards.
+        let mut ended = false;
+        for _ in 0..100_000 {
+            if reader.offset() > MAX_TABLE_BYTES {
+                return None;
+            }
+            reader.skip_white_spaces();
+            if reader.forward_tag(b"trailer").is_some() {
+                ended = true;
+                break;
+            }
+            reader.read_without_context::<u32>()?; // first object number
+            reader.skip_white_spaces();
+            let count = reader.read_without_context::<usize>()?;
+            if count > MAX_TABLE_BYTES / 18 {
+                return None;
+            }
+            for _ in 0..count {
+                reader.skip_white_spaces();
+                reader.read_without_context::<u32>()?; // offset or next free object
+                reader.skip_white_spaces();
+                if reader.read_without_context::<u32>()? > 65535 {
+                    return None;
+                }
+                reader.skip_white_spaces();
+                reader.forward_tag(b"n").or_else(|| reader.forward_tag(b"f"))?;
+                if reader.offset() > MAX_TABLE_BYTES {
+                    return None;
+                }
+            }
+        }
+        if !ended {
+            return None;
+        }
+        reader.skip_white_spaces();
+    } else {
+        // An xref stream's dictionary also holds the trailer entries.
+        reader.read_without_context::<ObjectIdentifier>()?;
+        reader.skip_white_spaces_and_comments();
+    }
+    reader.read_without_context::<Dict<'_>>()
+}
+
+// Null dictionary entries are absent in PDF. Keep references and malformed values
+// fail-closed: trailer_at's dictionaries have no context for resolving references.
+fn has_non_null_entry(dict: &Dict<'_>, key: &[u8]) -> bool {
+    dict.contains_key(key) && !matches!(dict.get_raw::<Object<'_>>(key), Some(MaybeRef::NotRef(Object::Null(_))))
+}
+
+/// `bytes` with exactly the layers named in `hidden` off (the others on).
+/// Returns `None` for unreadable, encrypted, hybrid-reference or over-budget updates.
+/// Untouched catalog/configuration entries and full object references are preserved.
 pub fn pdf_hide_layers(bytes: &[u8], hidden: &[String]) -> Option<Vec<u8>> {
-    let pdf = Pdf::new(Arc::new(bytes.to_vec())).ok()?;
+    crate::check_pdf_input_size(bytes.len()).ok()?;
+    let pdf = craft_pdf::open_slice(bytes, None).ok()?;
     let layers = ocgs(&pdf);
     if layers.is_empty() {
         return None;
     }
-    let xref = pdf.xref();
-    let cat = xref.get::<Dict<'_>>(xref.root_id())?;
-    let pages = cat.get_ref(b"Pages")?;
-    let all: Vec<String> = layers.iter().map(|(n, _, _)| format!("{n} 0 R")).collect();
-    let off: Vec<String> = layers.iter().filter(|(_, name, _)| hidden.contains(name)).map(|(n, _, _)| format!("{n} 0 R")).collect();
-    // A new catalog under a fresh object number, with the original's page tree.
-    let root = 9_999_000;
-    let mut out = bytes.to_vec();
-    if !out.ends_with(b"\n") {
-        out.push(b'\n');
+    let tail = String::from_utf8_lossy(bytes.get(bytes.len().saturating_sub(1024)..)?);
+    let prev = tail.rsplit_once("startxref")?.1.split_whitespace().next()?.parse::<usize>().ok()?;
+    let trailer = trailer_at(bytes, prev)?;
+    // Do not copy decrypted dictionaries into an encrypted file, or ignore a hybrid
+    // xref table. Follow bounded Prev links because encryption can be inherited.
+    let mut offset = Some(prev);
+    let mut visited = std::collections::HashSet::new();
+    for _ in 0..32 {
+        let Some(at) = offset else { break };
+        if !visited.insert(at) {
+            return None;
+        }
+        let t = trailer_at(bytes, at)?;
+        if has_non_null_entry(&t, b"Encrypt") || has_non_null_entry(&t, b"XRefStm") {
+            return None;
+        }
+        offset = t.get::<usize>(b"Prev");
+        if offset.is_none() && has_non_null_entry(&t, b"Prev") {
+            return None;
+        }
     }
+    if offset.is_some() {
+        return None;
+    }
+    let xref = pdf.xref();
+    let root = xref.root_id();
+    if root.obj_number <= 0 || !(0..=65535).contains(&root.gen_number) || trailer.get::<usize>(b"Size")? <= usize::try_from(root.obj_number).ok()? {
+        return None;
+    }
+    let cat = xref.get::<Dict<'_>>(root)?;
+    let ocp = cat.get::<Dict<'_>>(b"OCProperties")?;
+    let cfg = ocp.get::<Dict<'_>>(b"D");
+    let mut off = b"[".to_vec();
+    for (id, name, _) in &layers {
+        if hidden.contains(name) {
+            off.extend_from_slice(format!("{} {} R ", id.obj_number, id.gen_number).as_bytes());
+        }
+    }
+    off.push(b']');
+    let empty = Dict::empty();
+    let cfg = patch_dict(cfg.as_ref().unwrap_or(&empty), &[(b"BaseState", b"/ON"), (b"ON", b"[]"), (b"OFF", &off)])?;
+    let ocp = patch_dict(&ocp, &[(b"D", &cfg)])?;
+    let catalog = patch_dict(&cat, &[(b"OCProperties", &ocp)])?;
+    let root_ref = format!("{} {} R", root.obj_number, root.gen_number);
+    let prev_value = prev.to_string();
+    let trailer = patch_dict(
+        &trailer,
+        &[
+            (b"Root", root_ref.as_bytes()),
+            (b"Prev", prev_value.as_bytes()),
+            (b"Type", b""),
+            (b"Length", b""),
+            (b"Filter", b""),
+            (b"DecodeParms", b""),
+            (b"W", b""),
+            (b"Index", b""),
+        ],
+    )?;
+    let mut out = bytes.to_vec();
+    out.push(b'\n');
     let at = out.len();
-    out.extend_from_slice(
-        format!(
-            "{root} 0 obj\n<</Type/Catalog/Pages {} {} R/OCProperties<</OCGs[{}]/D<</BaseState/ON/OFF[{}]>>>>>>\nendobj\n",
-            pages.obj_number,
-            pages.gen_number,
-            all.join(" "),
-            off.join(" ")
-        )
-        .as_bytes(),
-    );
+    // Redefine the existing catalog: no arbitrary fresh object number or Size increase.
+    out.extend_from_slice(format!("{} {} obj\n", root.obj_number, root.gen_number).as_bytes());
+    out.extend_from_slice(&catalog);
+    out.extend_from_slice(b"\nendobj\n");
     let xref_at = out.len();
-    let prev = {
-        let tail = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(64)..]).to_string();
-        tail.rsplit("startxref").next().and_then(|t| t.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok())?
-    };
-    out.extend_from_slice(
-        format!("xref\n{root} 1\n{at:010} 00000 n\r\ntrailer\n<</Size {}/Root {root} 0 R/Prev {prev}>>\nstartxref\n{xref_at}\n%%EOF\n", root + 1)
-            .as_bytes(),
-    );
+    out.extend_from_slice(format!("xref\n{} 1\n{at:010} {:05} n\r\ntrailer\n", root.obj_number, root.gen_number).as_bytes());
+    out.extend_from_slice(&trailer);
+    out.extend_from_slice(format!("\nstartxref\n{xref_at}\n%%EOF\n").as_bytes());
     Some(out)
 }
 
-/// Shared copies of layer variants (by source address and hidden set).
-pub(crate) fn layered(data: &Arc<Vec<u8>>, hidden: &[String]) -> Arc<Vec<u8>> {
-    type Key = (usize, Vec<String>);
-    static CACHE: Mutex<Option<HashMap<Key, Arc<Vec<u8>>>>> = Mutex::new(None);
-    let key = (Arc::as_ptr(data) as usize, hidden.to_vec());
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let map = c.get_or_insert_with(HashMap::new);
-    if let Some(v) = map.get(&key) {
-        return v.clone();
+/// What [`layered`] has for a placed PDF with some layers hidden.
+pub(crate) enum Layered {
+    /// The variant.
+    Ready(AssetData),
+    /// Being made in the background, or not needed: what is cached of an earlier copy of it
+    /// (decodes under this key) is drawn meanwhile.
+    Making(Option<SourceKey>),
+    /// The file can't be rewritten with these layers off, or can't be had.
+    Failed,
+}
+
+/// A source's bytes and the layers hidden in them.
+type Key = (SourceKey, Vec<String>);
+
+enum Variant {
+    /// The file couldn't be rewritten with these layers off.
+    Failed,
+    Made(WeakAssetData),
+}
+
+/// Shared copies of layer variants (by source and hidden set). A variant keeps its identity
+/// (the same [`SourceKey`]) across rebuilds: the image cache keys decodes by it, so a variant
+/// rebuilt under a new key would miss decodes it already has and be decoded again. The bytes of
+/// a variant are a function of its source's and the hidden set, so the same key always names the
+/// same bytes. Recent variants are held here; older ones are made again when asked for.
+#[derive(Default)]
+struct Variants {
+    known: HashMap<Key, Variant>,
+    /// Variants kept alive, oldest first.
+    keep: VecDeque<AssetData>,
+    /// Their bytes.
+    kept_bytes: u64,
+}
+
+/// How many recent variants are kept alive here.
+const KEEP: usize = 64;
+/// The bytes of the variants kept alive (each is a copy of its file); the newest is kept
+/// whatever its size, so the one just made is there to draw.
+const KEEP_BYTES: u64 = 256 << 20;
+
+static VARIANTS: Mutex<Option<Variants>> = Mutex::new(None);
+
+fn with<R>(f: impl FnOnce(&mut Variants) -> R) -> R {
+    f(VARIANTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Default::default))
+}
+
+impl Variants {
+    fn keep(&mut self, v: AssetData) {
+        self.kept_bytes = self.kept_bytes.saturating_add(v.len());
+        self.keep.push_back(v);
+        while self.keep.len() > KEEP || (self.kept_bytes > KEEP_BYTES && self.keep.len() > 1) {
+            let Some(old) = self.keep.pop_front() else { break };
+            self.kept_bytes = self.kept_bytes.saturating_sub(old.len());
+        }
     }
-    if map.len() > 64 {
-        map.clear();
+
+    /// Forget variants nothing holds and nothing decoded is cached of.
+    fn forget(&mut self) {
+        if self.known.len() <= 4 * KEEP {
+            return;
+        }
+        self.known.retain(|_, variant| match variant {
+            Variant::Failed => true,
+            Variant::Made(weak) => weak.upgrade().is_some() || crate::images::has_decodes(weak.key()),
+        });
+        // Failures are cheap to find again; a hostile run of hidden sets doesn't grow this.
+        if self.known.len() > 4 * KEEP {
+            self.known.retain(|_, variant| matches!(variant, Variant::Made(_)));
+        }
+        if self.known.len() > 4 * KEEP {
+            self.known.retain(|_, variant| matches!(variant, Variant::Made(weak) if weak.upgrade().is_some()));
+        }
     }
-    let v = pdf_hide_layers(data, hidden).map(Arc::new).unwrap_or_else(|| data.clone());
-    map.insert(key, v.clone());
-    v
+}
+
+/// What is known of the variant `key` names.
+enum Found {
+    Ready(AssetData),
+    Failed,
+    /// Made before and let go since, under this key.
+    Gone(SourceKey),
+    Unknown,
+}
+
+fn find(key: &Key) -> Found {
+    with(|v| match v.known.get(key) {
+        Some(Variant::Failed) => Found::Failed,
+        Some(Variant::Made(weak)) => weak.upgrade().map_or_else(|| Found::Gone(weak.key()), Found::Ready),
+        None => Found::Unknown,
+    })
+}
+
+/// Make the variant `key` names from its source's `bytes` (outside the lock) and remember it.
+/// A variant another thread made meanwhile is the one returned.
+fn make(key: Key, bytes: &[u8]) -> Option<AssetData> {
+    let made = pdf_hide_layers(bytes, &key.1);
+    with(|v| {
+        let id = match v.known.get(&key) {
+            Some(Variant::Made(weak)) => match weak.upgrade() {
+                Some(live) => return Some(live),
+                None => weak.key(),
+            },
+            _ => SourceKey::fresh(),
+        };
+        let made = made.map(|b| AssetData::embedded_under(id, b));
+        v.known.insert(key, made.as_ref().map_or(Variant::Failed, |m| Variant::Made(m.downgrade())));
+        if let Some(m) = &made {
+            v.keep(m.clone());
+        }
+        v.forget();
+        made
+    })
+}
+
+/// The variant of `data` (a placed PDF) with the layers named in `hidden` off. With `wait`, it is
+/// made here if need be (reading a linked file). Without, nothing is read or rewritten on this
+/// thread: the variant is made in the background ([`crate::prepare`]), unless one made before
+/// is gone and what is cached of it (decodes under its key) is `covered` enough to draw. A
+/// linked file that can't be had isn't asked for again until the links change
+/// ([`crate::images::unavailable`]).
+pub(crate) fn layered(data: &AssetData, hidden: &[String], wait: bool, covered: impl Fn(SourceKey) -> bool) -> Layered {
+    let key = (data.key(), hidden.to_vec());
+    let gone = match find(&key) {
+        Found::Ready(v) => return Layered::Ready(v),
+        Found::Failed => return Layered::Failed,
+        Found::Gone(id) => Some(id),
+        Found::Unknown => None,
+    };
+    if crate::images::unavailable(data).is_some() {
+        return Layered::Failed;
+    }
+    if wait {
+        return crate::images::load_bytes(data, false).and_then(|bytes| make(key, &bytes)).map_or(Layered::Failed, Layered::Ready);
+    }
+    if gone.is_some_and(&covered) {
+        return Layered::Making(gone);
+    }
+    let (source, job) = (data.clone(), key.clone());
+    let queued = crate::prepare::later(crate::prepare::job_key(("pdf layers", &key)), move || {
+        if let Some(bytes) = crate::images::load_bytes(&source, true) {
+            make(job, &bytes);
+        }
+    });
+    match queued {
+        crate::prepare::Queued::Yes => Layered::Making(gone),
+        crate::prepare::Queued::Ran => match find(&key) {
+            Found::Ready(v) => Layered::Ready(v),
+            _ => Layered::Failed,
+        },
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use craft_pdf::syntax::reader::{Reader, ReaderExt};
+    use std::sync::Arc;
+
+    /// A one-page PDF with two layers, Blue and Red.
+    pub(crate) fn two_layer_pdf() -> Vec<u8> {
+        let content = "/OC /a BDC 0 0 1 rg 0 0 50 100 re f EMC /OC /b BDC 1 0 0 rg 50 0 50 100 re f EMC";
+        let objs = [
+            "<</Type/Catalog/Pages 2 0 R/OCProperties<</OCGs[5 0 R 6 0 R]/D<</Order[5 0 R 6 0 R]/Name(Default)>>>>>>".to_string(),
+            "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+            "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Resources<</Properties<</a 5 0 R/b 6 0 R>>>>/Contents 4 0 R>>".to_string(),
+            format!("<</Length {}>>\nstream\n{content}\nendstream", content.len()),
+            "<</Type/OCG/Name(Blue)>>".to_string(),
+            "<</Type/OCG/Name(Red)>>".to_string(),
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, o).as_bytes());
+        }
+        let x = out.len();
+        let mut t = format!("xref\n0 {}\n0000000000 65535 f\r\n", objs.len() + 1);
+        for o in offs {
+            t.push_str(&format!("{o:010} 00000 n\r\n"));
+        }
+        t.push_str(&format!("trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{x}\n%%EOF\n", objs.len() + 1));
+        out.extend_from_slice(t.as_bytes());
+        out
+    }
+
+    /// [`layered`], waiting.
+    fn made(data: &AssetData, hidden: &[String]) -> Option<AssetData> {
+        match layered(data, hidden, true, |_| false) {
+            Layered::Ready(v) => Some(v),
+            Layered::Making(_) | Layered::Failed => None,
+        }
+    }
+
+    /// A variant something still holds comes back under the same key however many others were
+    /// made since, so decodes keyed by it keep matching; one nothing holds is made again.
+    #[test]
+    fn a_held_layer_variant_keeps_its_identity_past_the_cache() {
+        let data = AssetData::embedded(two_layer_pdf());
+        let blue = vec!["Blue".to_string()];
+        let first = made(&data, &blue).expect("Blue can be hidden");
+        assert_eq!(first.key(), made(&data, &blue).unwrap().key());
+        // More variants than are kept, each with a set of its own.
+        for i in 0..200 {
+            let _ = made(&data, &["Red".to_string(), format!("unknown {i}")]);
+        }
+        assert_eq!(first.key(), made(&data, &blue).unwrap().key(), "still the same variant");
+        let red = vec!["Red".to_string()];
+        let variant = made(&data, &red).unwrap();
+        assert!(crate::images::mip(&variant, 0, 100.0, 1.0).is_some(), "the variant draws");
+        let weak = variant.downgrade();
+        drop(variant);
+        for i in 0..300 {
+            let _ = made(&data, &["Blue".to_string(), format!("other {i}")]);
+        }
+        assert!(weak.upgrade().is_none(), "a variant nothing holds is let go");
+        let again = made(&data, &red).expect("made again when asked for");
+        assert_eq!(again.key(), weak.key(), "under the key its decodes are cached by");
+        assert!(crate::images::has_decodes(again.key()));
+        assert_eq!(again.load().unwrap(), pdf_hide_layers(&data.load().unwrap(), &red).map(Arc::new).unwrap());
+    }
+
+    /// The variants kept alive have a byte budget: a big one is let go once others are made,
+    /// though the newest is always kept.
+    #[test]
+    fn kept_variants_are_bounded_by_bytes() {
+        let mut v = Variants::default();
+        let big = || AssetData::embedded(vec![0u8; (KEEP_BYTES / 2 + 1) as usize]);
+        let first = big();
+        v.keep(first.clone());
+        assert_eq!(v.keep.len(), 1, "the newest is kept");
+        v.keep(big());
+        assert_eq!(v.keep.len(), 1, "two don't fit");
+        assert!(v.keep.iter().all(|k| k.key() != first.key()), "the older is let go");
+        assert!(v.kept_bytes <= KEEP_BYTES);
+        let huge = AssetData::embedded(vec![0u8; (KEEP_BYTES + 1) as usize]);
+        v.keep(huge.clone());
+        assert_eq!(v.keep.iter().map(AssetData::key).collect::<Vec<_>>(), [huge.key()], "kept whatever its size while newest");
+    }
+
+    /// A frame that doesn't wait reads no linked file: the variant is made in the background. A
+    /// linked file that can't be had is read once, not on every frame after.
+    #[test]
+    fn a_linked_variant_is_made_off_the_drawing_thread_and_a_missing_file_is_not_read_each_frame() {
+        use crate::images::tests::linked;
+        let bytes = two_layer_pdf();
+        let blue = vec!["Blue".to_string()];
+        let data = linked::file("mem:/layers.pdf", Some(bytes.clone()), bytes.len() as u64);
+        let mut ready = None;
+        for _ in 0..500 {
+            match layered(&data, &blue, false, |_| false) {
+                Layered::Ready(v) => {
+                    ready = Some(v);
+                    break;
+                }
+                Layered::Making(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Layered::Failed => break,
+            }
+        }
+        let ready = ready.expect("made in the background");
+        assert_eq!(ready.load().unwrap(), pdf_hide_layers(&bytes, &blue).map(Arc::new).unwrap());
+        assert_eq!(linked::reads("mem:/layers.pdf"), 1);
+
+        let missing = linked::file("mem:/missing-layers.pdf", None, bytes.len() as u64);
+        // Other tests say the links changed, which asks for missing files again.
+        let generation = designcraft_doc::asset_data::link_generation();
+        let mut failed = false;
+        for _ in 0..500 {
+            if matches!(layered(&missing, &blue, false, |_| false), Layered::Failed) {
+                failed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(failed, "a missing file fails");
+        for _ in 0..10 {
+            assert!(matches!(layered(&missing, &blue, false, |_| false), Layered::Failed));
+            assert!(matches!(layered(&missing, &blue, true, |_| false), Layered::Failed));
+        }
+        if designcraft_doc::asset_data::link_generation() == generation {
+            assert_eq!(linked::reads("mem:/missing-layers.pdf"), 1, "not read again before the links change");
+        }
+    }
+
+    #[test]
+    fn trailer_lookup_does_not_take_guard_values_from_xref_comments() {
+        for guard in ["/Encrypt 12 0 R", "/XRefStm 123"] {
+            let bytes = format!("xref\n% trailer <</Size 9/Encrypt null>>\n0 1\n0000000000 65535 f\r\ntrailer\n<</Size 9{guard}>>");
+            assert!(trailer_at(bytes.as_bytes(), 0).is_none(), "repair-only table must fail closed: {guard}");
+        }
+    }
+
+    #[test]
+    fn trailer_lookup_accepts_whitespace_and_bounded_table_layouts() {
+        for eol in ["\n", "\r\n"] {
+            let bytes = format!(" \r\nxref{eol}0 1{eol}0000000000 65535 f{eol}7 1{eol}0000000123 00001 n{eol}trailer{eol}<</Size 9/Root 1 0 R>>");
+            assert_eq!(trailer_at(bytes.as_bytes(), 0).unwrap().get::<usize>(b"Size"), Some(9));
+        }
+        assert!(trailer_at(b"xref\n0 1\n0000000000 65535 f\ntrailer% comment\n<< /Size 1 >>", 0).is_none());
+        let mut whitespace = vec![b' '; 4 * 1024 * 1024];
+        whitespace.extend_from_slice(b"xref\n0 0\ntrailer<<>>");
+        assert!(trailer_at(&whitespace, 0).is_none());
+        for bytes in [b"xref\n0 999999999\n".as_slice(), b"xref\n0 1\n0000000000 99999 f\ntrailer<<>>", b"xref\n0 1\n0000000000 65535 x\ntrailer<<>>"]
+        {
+            assert!(trailer_at(bytes, 0).is_none());
+        }
+    }
+
+    #[test]
+    fn null_trailer_entries_are_absent_but_references_stay_unsupported() {
+        for key in ["Encrypt", "XRefStm"] {
+            assert!(!has_non_null_entry(&Dict::empty(), key.as_bytes()));
+            for (value, allowed) in [("null", true), ("12 0 R", false), ("<< /Filter /Standard >>", false), ("false", false)] {
+                let input = format!("<</{key} {value}>>");
+                let dict = Reader::new(input.as_bytes()).read_without_context::<Dict<'_>>().unwrap();
+                assert_eq!(!has_non_null_entry(&dict, key.as_bytes()), allowed, "{key}: {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn dictionary_patch_preserves_raw_values_and_bounds_updates() {
+        let data = b"<</Unknown[(x) 12 1 R <ff>]/Base#53tate/OFF/Name(a(b)c)>>";
+        let dict = Reader::new(data).read_without_context::<Dict<'_>>().unwrap();
+        let out = patch_dict(&dict, &[(b"BaseState", b"/ON")]).unwrap();
+        let text = std::str::from_utf8(&out).unwrap();
+        assert!(text.contains("/Unknown[(x) 12 1 R <ff>]"));
+        assert!(text.contains("/Name(a(b)c)"));
+        assert!(!text.contains("/OFF"));
+        assert!(text.contains("/BaseState /ON"));
+        assert_eq!(patch_dict(&Dict::empty(), &[(b"BaseState", b"/ON")]).unwrap(), b"<< /BaseState /ON >>");
+        let mut many = b"<< /Big (".to_vec();
+        many.resize(4 * 1024 * 1024 + 1, b'x');
+        many.extend_from_slice(b") >>");
+        let dict = Reader::new(&many).read_without_context::<Dict<'_>>().unwrap();
+        assert!(patch_dict(&dict, &[]).is_none());
+    }
 }

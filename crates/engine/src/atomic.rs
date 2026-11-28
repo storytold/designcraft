@@ -1,167 +1,42 @@
-//! Crash-safe file replacement: how documents, exports and other user files reach the disk.
-//!
-//! [`write_atomic`] never writes the destination in place. It writes a uniquely named temporary
-//! file in the same folder, flushes it (`sync_all`), renames it over the destination and then
-//! flushes the folder (Unix) so the rename survives a power loss. When any step before the rename
-//! fails, the temporary file is removed and the destination keeps its old bytes.
-//!
-//! - A replaced file keeps its permissions (Unix mode).
-//! - A symbolic link keeps pointing at its file: the file it names is replaced.
-//! - Windows: antivirus scanners and the search indexer briefly hold files open, which makes the
-//!   replacing rename fail with `PermissionDenied`; the rename is retried with a short backoff.
-//! - A failed rename (cross-device, unwritable folder) is returned as an error; there is no
-//!   fallback to writing in place.
-//! - Flushing the parent folder after replacement is best effort. A successful save confirms
-//!   that the new file is in place; it cannot guarantee survival of a subsequent power loss if
-//!   the file system rejects that folder flush.
+//! How documents, exports and other user files reach the disk: through `craft-atomic`, which
+//! never writes the destination in place. It stages the bytes in a temporary file beside the
+//! destination, flushes it, renames it over the destination and flushes the folder (Unix), so a
+//! failed save leaves the old file whole. A new file gets the permissions ordinary file creation
+//! gives it (the umask applies), a replaced file keeps its permissions, a symbolic link keeps
+//! pointing at the file it names, and Windows renames are retried while a scanner holds the
+//! file.
 //!
 //! The web has no file system, so this module is not built for `wasm32`.
 
 use std::fs::File;
-#[cfg(unix)]
-use std::fs::OpenOptions;
-use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
-
-/// How many times a replacing rename is tried before its error is returned.
-const RENAME_TRIES: u32 = if cfg!(windows) { 5 } else { 1 };
-/// The pause before the first rename retry; it doubles up to [`RENAME_MAX_DELAY_MS`].
-const RENAME_FIRST_DELAY_MS: u64 = 10;
-const RENAME_MAX_DELAY_MS: u64 = 200;
-/// Symbolic links followed before giving up (a loop, or an absurd chain).
-const MAX_LINKS: usize = 40;
+use std::io;
+use std::path::Path;
 
 /// Atomically replace (or create) `path` with `bytes`. See the module docs.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    write_atomic_with(path, |f| f.write_all(bytes))
+    craft_atomic::atomic_write(path, bytes)
 }
 
 /// Atomically replace (or create) `path` with what `fill` writes into the temporary file. When
 /// `fill`, the flush or the rename fails, the temporary file is removed, `path` is untouched and
-/// the error is returned.
+/// the error is returned. A panic in `fill` is returned as an error too, so the temporary file is
+/// removed then as well.
 pub fn write_atomic_with(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
-    let target = resolve_links(path)?;
-    target.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{}: not a file path", path.display())))?;
-    let dir = match target.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let existing = std::fs::metadata(&target).ok();
-    if existing.is_some() {
-        check_writable(&target)?;
-    }
-    let mut tmp = create_temp(&dir, existing.as_ref())?;
-    if let Some(existing) = existing {
-        // Restore the exact mode before any document bytes are written, and flush it along with
-        // the content. The caller's umask may have restricted the initial temporary-file mode.
-        keep_permissions(tmp.as_file(), &existing)?;
-    }
-    fill(tmp.as_file_mut())?;
-    tmp.as_file().sync_all()?;
-    // Closing the file before renaming also allows replacement on Windows. TempPath removes the
-    // staging file on every error; NamedTempFile does the same if the writer unwinds.
-    let tmp = tmp.into_temp_path();
-    retry_rename(RENAME_TRIES, || std::fs::rename(&tmp, &target))?;
-    // The new bytes are in place. A failed folder flush can't be undone and must not report the
-    // save as failed.
-    let _ = sync_dir(&dir);
-    Ok(())
-}
-
-/// Create a fresh temporary file beside the target (the same folder, so the rename stays on one
-/// volume). A short randomized name supports long destination names and skips existing entries.
-fn create_temp(dir: &Path, existing: Option<&std::fs::Metadata>) -> io::Result<tempfile::NamedTempFile> {
-    let mut builder = tempfile::Builder::new();
-    builder.prefix(".designcraft-save-").suffix(".tmp");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        // Private replacements are private from creation. New files retain fs::write's normal
-        // 0666 mode restricted by the caller's umask.
-        let mode = existing.map_or(0o666, |metadata| metadata.permissions().mode());
-        builder.permissions(std::fs::Permissions::from_mode(mode));
-    }
-    #[cfg(not(unix))]
-    let _ = existing;
-    builder.tempfile_in(dir)
-}
-
-/// The file a chain of symbolic links ends at (`path` itself when it is not a link). A dangling
-/// link resolves to the missing file it names, which is then created.
-fn resolve_links(path: &Path) -> io::Result<PathBuf> {
-    let mut p = path.to_path_buf();
-    for _ in 0..MAX_LINKS {
-        match std::fs::symlink_metadata(&p) {
-            Ok(m) if m.file_type().is_symlink() => {
-                let to = std::fs::read_link(&p)?;
-                p = match p.parent() {
-                    Some(dir) if to.is_relative() => dir.join(to),
-                    _ => to,
-                };
-            }
-            _ => return Ok(p),
-        }
-    }
-    Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{}: too many levels of symbolic links", path.display())))
-}
-
-/// A rename replaces a file the user can't write (Unix only needs the folder to be writable);
-/// refuse, as writing it in place would. Opening for writing without truncating changes nothing.
-#[cfg(unix)]
-fn check_writable(target: &Path) -> io::Result<()> {
-    OpenOptions::new().write(true).open(target).map(drop)
-}
-
-/// Windows refuses to rename over a read-only file by itself.
-#[cfg(not(unix))]
-fn check_writable(_: &Path) -> io::Result<()> {
-    Ok(())
-}
-
-/// The replacement keeps the replaced file's mode (Unix; Windows files keep only a read-only flag,
-/// and a read-only file can't be replaced).
-#[cfg(unix)]
-fn keep_permissions(tmp: &File, replaced: &std::fs::Metadata) -> io::Result<()> {
-    tmp.set_permissions(replaced.permissions())
-}
-
-#[cfg(not(unix))]
-fn keep_permissions(_: &File, _: &std::fs::Metadata) -> io::Result<()> {
-    Ok(())
-}
-
-/// Run `rename` up to `tries` times, pausing with a doubling delay while it fails with
-/// `PermissionDenied` (a scanner holding the file on Windows). Other errors return at once.
-fn retry_rename(tries: u32, mut rename: impl FnMut() -> io::Result<()>) -> io::Result<()> {
-    let mut delay = RENAME_FIRST_DELAY_MS;
-    let mut left = tries.max(1);
-    loop {
-        left = left.saturating_sub(1);
-        match rename() {
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && left > 0 => {
-                std::thread::sleep(std::time::Duration::from_millis(delay));
-                delay = delay.saturating_mul(2).min(RENAME_MAX_DELAY_MS);
-            }
-            r => return r,
-        }
-    }
-}
-
-/// Flush a folder's entries (Unix). Rust's portable file API cannot open a directory on Windows;
-/// this does not establish power-loss durability for its directory entries.
-#[cfg(unix)]
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_dir(_: &Path) -> io::Result<()> {
-    Ok(())
+    craft_atomic::atomic_write_with(path, |file| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fill(file)))
+            .unwrap_or_else(|_| Err(io::Error::other("the file writer stopped unexpectedly")))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::fs::OpenOptions;
+    use std::io::Write as _;
+    use std::path::PathBuf;
+
+    use craft_atomic::{RenameRetry, retry_rename};
+
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
@@ -201,7 +76,8 @@ mod tests {
             f.write_all(b"half a docu")?;
             Err(io::Error::other("disk full"))
         });
-        assert_eq!(r.unwrap_err().to_string(), "disk full");
+        let e = r.unwrap_err().to_string();
+        assert!(e.contains("disk full") && e.contains("not changed"), "{e}");
         assert_eq!(std::fs::read(&path).unwrap(), b"original");
         assert_eq!(names(&d), ["doc.designcraft"], "the temporary file is removed");
         // A folder that doesn't exist: an error, nothing written.
@@ -252,11 +128,9 @@ mod tests {
         let d = dir("unwinding-writer");
         let path = d.join("private.designcraft");
         std::fs::write(&path, b"old").unwrap();
-        let result = std::panic::catch_unwind(|| {
-            write_atomic_with(&path, |file| {
-                file.write_all(b"partial private document")?;
-                panic!("synthetic writer panic");
-            })
+        let result = write_atomic_with(&path, |file| {
+            file.write_all(b"partial private document")?;
+            panic!("synthetic writer panic");
         });
         assert!(result.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
@@ -267,24 +141,45 @@ mod tests {
     #[test]
     fn the_rename_is_retried_only_while_access_is_denied() {
         let mut calls = 0;
-        let r = retry_rename(3, || {
+        let r = retry_rename(RenameRetry { attempts: 2, first_delay_ms: 0 }, || {
             calls += 1;
             if calls < 3 { Err(io::Error::from(io::ErrorKind::PermissionDenied)) } else { Ok(()) }
         });
         assert!(r.is_ok() && calls == 3);
         calls = 0;
-        let r = retry_rename(3, || {
+        let r = retry_rename(RenameRetry { attempts: 2, first_delay_ms: 0 }, || {
             calls += 1;
             Err(io::Error::from(io::ErrorKind::PermissionDenied))
         });
         assert_eq!(r.map_err(|e| e.kind()), Err(io::ErrorKind::PermissionDenied));
         assert_eq!(calls, 3, "gives up after the last try");
         calls = 0;
-        let r = retry_rename(3, || {
+        let r = retry_rename(RenameRetry { attempts: 2, first_delay_ms: 0 }, || {
             calls += 1;
             Err(io::Error::from(io::ErrorKind::CrossesDevices))
         });
         assert!(r.is_err() && calls == 1, "other errors are not retried");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_files_follow_the_umask_and_replaced_files_keep_their_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = dir("new-mode");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let plain = d.join("plain");
+        File::create(&plain).unwrap();
+        let path = d.join("new.designcraft");
+        write_atomic(&path, b"new").unwrap();
+        assert_eq!(mode(&path), mode(&plain), "a new file gets the mode ordinary creation gives");
+        let streamed = d.join("streamed.designcraft");
+        write_atomic_with(&streamed, |f| f.write_all(b"new")).unwrap();
+        assert_eq!(mode(&streamed), mode(&plain));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomic(&path, b"replaced").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replaced");
+        assert_eq!(mode(&path), 0o640, "a replaced file keeps its mode");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[cfg(unix)]

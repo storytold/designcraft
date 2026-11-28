@@ -194,7 +194,8 @@ impl Loaded {
     }
 
     pub fn target(self, cx: &ToolContext, p: Point) -> Target {
-        let Some((_, id)) = cx.hit(p) else { return Target::Empty };
+        // A text frame inside a group is the frame the click means, not the group (gaps 27).
+        let Some((_, id)) = cx.hit_text_frame(p).or_else(|| cx.hit(p)) else { return Target::Empty };
         if Some(id) == self.neighbour(cx.doc) {
             return Target::Unthread;
         }
