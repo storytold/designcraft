@@ -13,6 +13,7 @@ use crate::{DocState, EngineError, Result, Session};
 mod bytes;
 mod new;
 mod open;
+mod package;
 mod place;
 mod registry;
 mod save;
@@ -23,6 +24,8 @@ pub(crate) use open::load_document_fonts;
 #[cfg(not(target_arch = "wasm32"))]
 pub use open::{ReadDocument, read_document};
 pub use open::{RecentPreview, recent_preview};
+pub use package::is_zipped_package;
+pub(crate) use package::keep_font_scope;
 pub(crate) use place::{crop_pdf, crop_pdf_from, document_of, prepare_placed, read_source, validate_placement};
 pub use registry::specs;
 pub(crate) use snippets::{snippet_bytes, snippet_place};

@@ -390,7 +390,8 @@ pub fn file_from(b: &[u8]) -> Result<designcraft_doc::Document> {
 pub(crate) use datamerge::sync_placeholders;
 pub(crate) use file::load_document_fonts;
 pub use file::{
-    DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, recent_preview, to_bytes, with_document_extension,
+    DOCUMENT_SNIFF_BYTES, RecentPreview, base64_decode, base64_encode, from_bytes, is_document, is_zipped_package, recent_preview, to_bytes,
+    with_document_extension,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use file::{ReadDocument, read_document};

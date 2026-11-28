@@ -46,6 +46,10 @@ pub enum FontSource {
     Installed(std::path::PathBuf),
     /// A font file in a document's `Document Fonts` folder ([`FontDb::load_document_fonts`]).
     Document(std::path::PathBuf),
+    /// A font of a `Document Fonts` folder handed over as its contents (a browser's folder or a
+    /// zip; [`FontDb::load_document_font_files`]), named by its path in what was handed over. No
+    /// file on this computer is behind it.
+    DocumentContents(String),
 }
 
 /// The folder beside a document whose fonts the document brings with it (as File › Package

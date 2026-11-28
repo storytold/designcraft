@@ -252,6 +252,9 @@ fn run_ui_part1(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
             Some(path) => app.open_picked("open", path.to_string()),
             None => app.pick_and_open("open"),
         },
+        // The desktop app looks beside the file it opens: Open… does it all there.
+        "app.openPackageFolder" if app.services.pick_folder.is_none() => return run_ui(app, "app.openDialog", &json!({})),
+        "app.openPackageFolder" => app.pick_folder("package"),
         "app.openRecent" => {
             let index = p.get("index").cloned().unwrap_or(Value::Null);
             let path = index.as_u64().and_then(|i| usize::try_from(i).ok()).and_then(|i| app.session.prefs.recent_files.get(i)).cloned();
