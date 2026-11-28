@@ -83,6 +83,7 @@ pub fn language_tag(language: &str) -> Option<&'static str> {
         "turkish" => "tr",
         "japanese" => "ja",
         "korean" => "ko",
+        "khmer" | "cambodian" => "km",
         "arabic" => "ar",
         "persian" | "farsi" => "fa",
         "urdu" => "ur",

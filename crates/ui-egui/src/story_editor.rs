@@ -64,7 +64,7 @@ pub fn show(app: &mut DesignApp, ctx: &egui::Context) {
     let mut open = true;
     let mut edit: Option<(usize, usize, String)> = None;
     let mut dragged_width: Option<f32> = None;
-    let words = story.text.split_whitespace().count().to_string();
+    let words = designcraft_compose::word_count(&story.text).to_string();
     egui::Window::new(crate::i18n::tr(&app.ui.language, "Story Editor — {count} words").replace("{count}", &words))
         .id(egui::Id::unique("story_editor"))
         .open(&mut open)
