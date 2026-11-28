@@ -22,6 +22,9 @@
 //! `croatian_long_jat_deviation_is_pinned` pins this behaviour — InDesign 2026 shows the same
 //! cvi-jet/bi-jel breaks — so a fix belongs upstream in hyph-utf8, not here.
 //!
+//! Russian also uses the compiled data in hypher (feature "russian"). Lookup normalizes
+//! Russian stress/decomposed letters only; break points retain original source indices.
+//!
 //! English lookup order for each word:
 //! 1. the **dictionary** ([`Dictionary::en_us`]) — the public-domain Moby Hyphenator II word list
 //!    by Grady Ward (~160k words), stored compactly in `assets/hyphenation/en-us.dic`; simple
@@ -37,6 +40,8 @@ pub mod patgen;
 pub mod patterns;
 
 use std::sync::OnceLock;
+use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub use dict::Dictionary;
 pub use patterns::Patterns;
@@ -87,6 +92,7 @@ impl Default for Limits {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     English,
+    Russian,
     Patterns(hypher::Lang),
 }
 
@@ -107,11 +113,19 @@ impl Lang {
         if sub == "en" {
             return Some(Lang::English);
         }
+        if sub == "ru" {
+            return Some(Lang::Russian);
+        }
         let b = sub.as_bytes();
         if b.len() != 2 {
             return None;
         }
         hypher::Lang::from_iso([b[0], b[1]]).map(Lang::Patterns)
+    }
+
+    /// The hyphenator for a stored language tag (`en`, `ru`, `de`, …), as on a shaped glyph.
+    pub fn from_tag(tag: &str) -> Option<Lang> {
+        Self::for_language(tag)
     }
 }
 
@@ -141,11 +155,83 @@ fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || is_apostrophe(c)
 }
 
+// Unsupported/oversized letter graphemes stay in the word and reject the whole run;
+// treating them as punctuation would incorrectly hyphenate a Russian suffix in isolation.
+const INVALID_RUSSIAN_GRAPHEME: char = '\u{fffd}';
+const MAX_RUSSIAN_GRAPHEME_CHARS: usize = 32;
+
+fn is_run_char(c: char, language: Lang) -> bool {
+    is_word_char(c) || (language == Lang::Russian && c == INVALID_RUSSIAN_GRAPHEME)
+}
+
+/// One lookup character per source grapheme, with boundaries in ORIGINAL scalar indices.
+/// The bounded per-grapheme NFC operation never normalizes a document or a glyph stream.
+struct RussianWord {
+    chars: Vec<char>,
+    source_boundaries: Vec<usize>,
+}
+
+impl RussianWord {
+    fn new(word: &str) -> Self {
+        let mut chars = Vec::new();
+        let mut source_boundaries = vec![0];
+        let mut source_end = 0usize;
+        for grapheme in word.graphemes(true) {
+            let source_len = grapheme.chars().count();
+            let Some(first) = grapheme.chars().next() else { continue };
+            let c = if source_len == 1 && matches!(first, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё') {
+                first
+            } else if is_word_char(first) || is_combining_mark(first) {
+                if source_len > MAX_RUSSIAN_GRAPHEME_CHARS {
+                    INVALID_RUSSIAN_GRAPHEME
+                } else {
+                    // NFD also exposes canonically equivalent stress forms. Strip only acute
+                    // and grave stress, then NFC composes е + diaeresis / и + breve. Keeping
+                    // case lets paragraph capitalization limits operate on the lookup letters.
+                    let mut normalized = grapheme.nfd().filter(|&c| !matches!(c, '\u{0300}' | '\u{0301}')).nfc();
+                    match (normalized.next(), normalized.next()) {
+                        (Some(c), None) if !is_combining_mark(c) => c,
+                        _ => INVALID_RUSSIAN_GRAPHEME,
+                    }
+                }
+            } else {
+                first
+            };
+            chars.push(c);
+            source_end = source_end.saturating_add(source_len);
+            source_boundaries.push(source_end);
+        }
+        Self { chars, source_boundaries }
+    }
+
+    fn source_points(&self, points: Vec<usize>) -> Vec<usize> {
+        points.into_iter().filter_map(|p| self.source_boundaries.get(p).copied()).collect()
+    }
+}
+
 /// Unrestricted break points of one lowercase core (letters and `'` only, no leading/trailing `'`).
 fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
     if n < 2 {
         return (vec![], Source::None);
+    }
+    if lang == Lang::Russian {
+        // Reject unsupported or mixed graphemes as a whole word, not as a Russian suffix.
+        if !core.iter().all(|&c| matches!(c, 'а'..='я' | 'ё')) {
+            return (vec![], Source::None);
+        }
+        if core.contains(&'\'') {
+            return (vec![], Source::None);
+        }
+        let s: String = core.iter().collect();
+        let mut out = Vec::new();
+        let mut at = 0;
+        let syl: Vec<&str> = hypher::hyphenate_bounded(&s, hypher::Lang::Russian, 1, 1).collect();
+        for part in &syl[..syl.len().saturating_sub(1)] {
+            at += part.chars().count();
+            out.push(at);
+        }
+        return (out, Source::Patterns);
     }
     if let Lang::Patterns(l) = lang {
         if let Some(ap) = core.iter().rposition(|&c| c == '\'') {
@@ -198,19 +284,29 @@ pub fn word_breaks(word: &str) -> (Vec<usize>, Source) {
     word_breaks_in(word, Lang::English)
 }
 
-/// [`word_breaks`] for a language.
+/// [`word_breaks`] for a language. Russian composes decomposed letters and ignores acute/grave
+/// stress for lookup; returned points remain original source character indices at grapheme
+/// boundaries. Russian never falls back to English or a syllable heuristic.
 pub fn word_breaks_in(word: &str, lang: Lang) -> (Vec<usize>, Source) {
-    let chars: Vec<char> = word.chars().collect();
+    if lang == Lang::Russian {
+        let normalized = RussianWord::new(word);
+        let (points, source) = word_breaks_from_chars(&normalized.chars, lang);
+        return (normalized.source_points(points), source);
+    }
+    word_breaks_from_chars(&word.chars().collect::<Vec<_>>(), lang)
+}
+
+fn word_breaks_from_chars(chars: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let mut out = Vec::new();
     let mut src = Source::None;
     let mut i = 0;
     while i < chars.len() {
-        if !is_word_char(chars[i]) {
+        if !is_run_char(chars[i], lang) {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < chars.len() && is_word_char(chars[j]) {
+        while j < chars.len() && is_run_char(chars[j], lang) {
             j += 1;
         }
         let (mut a, mut b) = (i, j);
@@ -366,24 +462,33 @@ pub fn hyphen_points(word: &str, lim: &Limits) -> Vec<usize> {
     hyphen_points_in(word, lim, Lang::English)
 }
 
-/// [`hyphen_points`] for a language.
+/// [`hyphen_points`] for a language. Russian additionally requires at least two letters on each
+/// side, as prescribed by its pattern set.
 pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
-    let chars: Vec<char> = word.chars().collect();
-    let (pts, _) = word_breaks_in(word, lang);
+    if lang == Lang::Russian {
+        let normalized = RussianWord::new(word);
+        return normalized.source_points(limited_points(&normalized.chars, lim, lang));
+    }
+    limited_points(&word.chars().collect::<Vec<_>>(), lim, lang)
+}
+
+fn limited_points(chars: &[char], lim: &Limits, lang: Lang) -> Vec<usize> {
+    let (pts, _) = word_breaks_from_chars(chars, lang);
     if pts.is_empty() {
         return pts;
     }
-    let min_before = lim.after_first.max(1);
-    let min_after = lim.before_last.max(1);
+    let min_fragment = if lang == Lang::Russian { 2 } else { 1 };
+    let min_before = lim.after_first.max(min_fragment);
+    let min_after = lim.before_last.max(min_fragment);
     let elides = matches!(lang, Lang::Patterns(hypher::Lang::French | hypher::Lang::Italian));
     // Run bounds of each point's letter run (trimmed of apostrophes).
     let run_of = |p: usize| {
         let mut a = p;
-        while a > 0 && is_word_char(chars[a - 1]) {
+        while a > 0 && is_run_char(chars[a - 1], lang) {
             a -= 1;
         }
         let mut b = p;
-        while b < chars.len() && is_word_char(chars[b]) {
+        while b < chars.len() && is_run_char(chars[b], lang) {
             b += 1;
         }
         while a < b && is_apostrophe(chars[a]) {
@@ -420,7 +525,12 @@ pub fn hyphen_points_in(word: &str, lim: &Limits, lang: Lang) -> Vec<usize> {
 
 /// `word` with `-` at every hyphenation point (tests and diagnostics).
 pub fn hyphenate_word(word: &str, lim: &Limits) -> String {
-    let pts = hyphen_points(word, lim);
+    hyphenate_word_in(word, lim, Lang::English)
+}
+
+/// [`hyphenate_word`] for a language.
+pub fn hyphenate_word_in(word: &str, lim: &Limits, lang: Lang) -> String {
+    let pts = hyphen_points_in(word, lim, lang);
     let mut s = String::with_capacity(word.len() + pts.len());
     for (i, ch) in word.chars().enumerate() {
         if pts.contains(&i) {
@@ -985,6 +1095,47 @@ mod tests {
         let pts = heuristic_points(&c);
         assert!(!pts.is_empty());
         assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn russian_uses_hypher_and_respects_limits() {
+        for name in ["Russian", "$ID/Russian", "ru", "ru-RU", "ru_RU"] {
+            assert_eq!(Lang::for_language(name), Some(Lang::Russian), "{name}");
+        }
+        let ru = Lang::Russian;
+        assert_eq!(word_breaks_in("типография", ru).1, Source::Patterns);
+        assert_eq!(hyphenate_word_in("типография", &Limits::default(), ru), "ти-по-гра-фия");
+        let strict = Limits { after_first: 3, before_last: 3, ..Limits::default() };
+        assert_eq!(hyphen_points_in("типография", &strict, ru), vec![4, 7]);
+        assert!(hyphen_points_in("типография", &Limits { min_word: 11, ..strict }, ru).is_empty());
+        assert!(hyphen_points_in("Типография", &Limits { capitalized: false, ..strict }, ru).is_empty());
+        for text in ["typography", "типогpaфия", "т\u{0303}ипография"] {
+            assert!(hyphen_points_in(text, &Limits::default(), ru).is_empty(), "{text}");
+        }
+        assert_eq!(Lang::for_language("pt_BR"), Some(Lang::Patterns(hypher::Lang::Portuguese)));
+        assert_eq!(Lang::for_language("es_ES"), Some(Lang::Patterns(hypher::Lang::Spanish)));
+        assert!(Lang::for_language("Ukrainian").is_none());
+    }
+
+    #[test]
+    fn russian_lookup_preserves_decomposed_and_stressed_source_boundaries() {
+        for (text, expected) in [("бере\u{0308}за", vec![2, 5]), ("маи\u{0306}ка", vec![4]), ("типо\u{0301}графия", vec![2, 5, 8])]
+        {
+            let points = hyphen_points_in(text, &Limits::default(), Lang::Russian);
+            assert_eq!(points, expected, "{text}");
+            for point in points {
+                let byte = text.char_indices().nth(point).unwrap().0;
+                assert!(text.grapheme_indices(true).any(|(i, _)| i == byte), "{text}: {point}");
+            }
+            assert_eq!(hyphenate_word_in(text, &Limits::default(), Lang::Russian).replace('-', ""), text);
+        }
+        let stressed = "ти\u{0301}по\u{0301}гра\u{0301}фи\u{0301}я";
+        assert!(
+            hyphen_points_in(stressed, &Limits { min_word: 11, ..Limits::default() }, Lang::Russian).is_empty(),
+            "stress marks do not count as letters"
+        );
+        let oversized = format!("т{}ипография", "\u{0301}".repeat(MAX_RUSSIAN_GRAPHEME_CHARS));
+        assert!(hyphen_points_in(&oversized, &Limits::default(), Lang::Russian).is_empty());
     }
 }
 

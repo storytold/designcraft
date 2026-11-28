@@ -5270,8 +5270,8 @@ fn layout_line(
             g.shift += cjk_alignment_shift(g, &reference);
         }
     }
-    if hyphen && let Some(g) = line.last() {
-        let h = shape::hyphen_after(g);
+    if hyphen && let Some(g) = shape::hyphen_base(&line) {
+        let h = shape::hyphen_after(g, shape::source_end(&line));
         line.push(h);
     }
     let measure = x1 - x0;
@@ -5934,10 +5934,7 @@ fn prepend_label(
 
 type LimitsKey = (usize, usize, usize, bool);
 
-/// Mark glyphs after which a hyphen may be inserted (dictionary/pattern points within the
-/// paragraph's limits; words with discretionary hyphens break only there).
-/// Whether a language (a name or locale code, see [`designcraft_doc::language_tag`]) uses the
-/// English hyphenation and spelling dictionaries.
+/// Whether a language name or locale code uses the bundled English spelling dictionary.
 pub fn is_english(language: &str) -> bool {
     // InDesign's English names first: composition asks this for every run.
     language.starts_with("English") || designcraft_doc::language_tag(language).is_some_and(|t| designcraft_doc::language_subtag(t) == "en")
@@ -6016,7 +6013,7 @@ fn hyphenation_points(
     glyphs: &[Glyph],
     pp: &ParaProps,
     exceptions: &HashMap<String, Vec<usize>>,
-    foreign: &[(Range<usize>, Option<hyphen::Lang>)],
+    _foreign: &[(Range<usize>, Option<hyphen::Lang>)],
     korean: bool,
 ) -> Vec<bool> {
     let mut out = vec![false; glyphs.len()];
@@ -6044,22 +6041,36 @@ fn hyphenation_points(
     let mut token: Option<(usize, usize, bool)> = None;
     let mut i = 0;
     while i < glyphs.len() {
-        if !glyphs[i].is_letter() || glyphs[i].len == 0 {
+        // Source-owning marks and format prefixes belong to the complete lookup run,
+        // including its exception/language gates and discretionary-hyphen suppression.
+        if (!glyphs[i].is_letter()
+            && !unicode_normalization::char::is_combining_mark(glyphs[i].ch)
+            && !matches!(glyphs[i].ch, '\u{200C}' | '\u{200D}' | shape::SOFT_HYPHEN))
+            || glyphs[i].len == 0
+        {
             i += 1;
             continue;
         }
         let mut j = i;
-        while j < glyphs.len() && (glyphs[j].is_letter() || glyphs[j].len == 0 || glyphs[j].ch == shape::SOFT_HYPHEN) && !glyphs[j].no_break {
+        // A style boundary can give a mark or joiner its own source bytes. Keep the
+        // complete word for language/exception lookup, including unsupported graphemes;
+        // No Break gates each candidate cluster below rather than splitting the word.
+        while j < glyphs.len()
+            && (glyphs[j].is_letter()
+                || unicode_normalization::char::is_combining_mark(glyphs[j].ch)
+                || matches!(glyphs[j].ch, '\u{200C}' | '\u{200D}')
+                || glyphs[j].len == 0
+                || glyphs[j].ch == shape::SOFT_HYPHEN)
+        {
             j += 1;
         }
-        // A no-break letter can't start a hyphenatable word.
         if j == i {
             i += 1;
             continue;
         }
         // A discretionary hyphen in a word (or right before it) replaces automatic hyphenation.
         let discretionary = glyphs[i..j].iter().any(|g| g.ch == shape::SOFT_HYPHEN) || (i > 0 && glyphs[i - 1].ch == shape::SOFT_HYPHEN);
-        let (a, b) = (glyphs[i].byte, glyphs[j - 1].byte + glyphs[j - 1].len);
+        let (a, b) = (glyphs[i].byte, shape::source_end(&glyphs[i..j]));
         if !discretionary && b > a && b <= text.len() && text.is_char_boundary(a) && text.is_char_boundary(b) {
             let word = &text[a..b];
             // The whitespace-delimited token the word sits in: a Latin run with a Korean particle
@@ -6082,15 +6093,20 @@ fn hyphenation_points(
             }
             // Do not hyphenate the paragraph's last word unless allowed.
             let is_last_word = !pp.hyph_last_word && glyphs[j..].iter().all(|g| !g.is_letter());
-            let lang = foreign.iter().find(|(r, _)| r.contains(&a)).map_or(Some(hyphen::Lang::English), |(_, l)| *l);
-            if !is_last_word && let Some(lang) = lang {
+            // Shaping already resolved character, nested and GREP styles. Use that language,
+            // and require agreement across the word, including supported/unsupported boundaries.
+            let language = glyphs[i].lang.and_then(hyphen::Lang::from_tag);
+            if !is_last_word
+                && let Some(language) = language
+                && glyphs[i..j].iter().all(|g| g.lang.and_then(hyphen::Lang::from_tag) == Some(language))
+            {
                 let user = (!exceptions.is_empty()).then(|| exceptions.get(&word.to_lowercase())).flatten();
                 let cached;
                 let pts: &[usize] = match user {
                     // User dictionary exceptions win over the patterns and the built-in list.
                     Some(v) => v,
                     None => {
-                        cached = cached_hyphen_points(&lim, lang, word);
+                        cached = cached_hyphen_points(&lim, language, word);
                         &cached
                     }
                 };
@@ -6105,8 +6121,17 @@ fn hyphenation_points(
                     }
                     for &p in pts.iter() {
                         let byte = a + char_bytes.get(p).copied().unwrap_or(word.len());
+                        // Shaped clusters may split a source grapheme at a style boundary;
+                        // even a user exception must not split the base from its marks.
+                        let mut boundary = unicode_segmentation::GraphemeCursor::new(byte, text.len(), true);
+                        if boundary.is_boundary(text, 0) != Ok(true) {
+                            continue;
+                        }
                         if let Some(&k) = glyph_ending_at.get(&byte) {
-                            out[k] = true;
+                            let end = (k + 1..j).find(|&next| glyphs[next].byte != glyphs[k].byte).unwrap_or(j);
+                            if glyphs.get(end).is_none_or(|next| next.byte != glyphs[k].byte) && glyphs[k..end].iter().all(|g| !g.no_break) {
+                                out[end - 1] = true;
+                            }
                         }
                     }
                 }

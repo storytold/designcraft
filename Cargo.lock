@@ -1840,6 +1840,7 @@ dependencies = [
  "regex",
  "unicode-bidi",
  "unicode-bidi-mirroring",
+ "unicode-normalization",
  "unicode-script",
  "unicode-segmentation",
 ]
