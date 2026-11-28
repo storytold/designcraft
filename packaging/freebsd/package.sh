@@ -61,6 +61,10 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 if [[ "$SKIP_BUILD" = 0 ]]; then
   (cd "$ROOT" && cargo build --release --locked ${CARGO_BUILD_TARGET:+--target "$CARGO_BUILD_TARGET"} \
     -p designcraft -p designcraft-cli)
+  # The man-and-completions example writes designcraft-cli's man pages and shell completions below. It is built in
+  # its own cargo run: built with the binaries, its dev-dependencies' features would be unified into them.
+  (cd "$ROOT" && cargo build --release --locked ${CARGO_BUILD_TARGET:+--target "$CARGO_BUILD_TARGET"} \
+    -p designcraft-cli --example man-and-completions)
 fi
 WORK="$CARGO_TARGET_DIR/freebsd-package"
 STAGE="$WORK/$BASENAME"
@@ -78,6 +82,16 @@ if [[ "$DRY_RUN" = 1 ]]; then
     printf '#!/bin/sh\necho "%s %s (dry-run stub)"\n' "$b" "$VERSION" >"$BIN/$b"
     chmod 755 "$BIN/$b"
   done
+  # A stub of the example: it writes the files the real one does.
+  mkdir -p "$BIN/examples"
+  cat >"$BIN/examples/man-and-completions" <<'STUB'
+#!/bin/sh
+mkdir -p "$1"
+for f in designcraft-cli.bash _designcraft-cli designcraft-cli.fish designcraft-cli.elv _designcraft-cli.ps1 designcraft-cli.1 designcraft-cli-run.1; do
+  echo "dry-run stub" >"$1/$f"
+done
+STUB
+  chmod 755 "$BIN/examples/man-and-completions"
 fi
 
 # ---- stage a /usr/local-style tree --------------------------------------------------------------
@@ -86,6 +100,21 @@ mkdir -p "$STAGE/bin" "$STAGE/share/applications" "$STAGE/share/mime/packages" \
   "$STAGE/share/metainfo" "$STAGE/share/icons" "$STAGE/share/doc/designcraft"
 install -m 755 "$BIN/designcraft" "$BIN/designcraft-cli" "$STAGE/bin/"
 strip "$STAGE/bin/designcraft" "$STAGE/bin/designcraft-cli" 2>/dev/null || true
+# designcraft-cli's man pages and shell completions, from its clap definition, written by the example built above (a
+# --skip-build run needs it built too). Under /usr/local, man pages go in man/ and the completions in the directories
+# bash, zsh and fish read there.
+CLI_DOCS="$BIN/examples/man-and-completions"
+if [[ ! -x "$CLI_DOCS" ]]; then
+  echo "error: $CLI_DOCS is not built (cargo build --release -p designcraft-cli --example man-and-completions)" >&2
+  exit 1
+fi
+"$CLI_DOCS" "$WORK/cli-docs"
+mkdir -p "$STAGE/man/man1" "$STAGE/share/bash-completion/completions" \
+  "$STAGE/share/zsh/site-functions" "$STAGE/share/fish/vendor_completions.d"
+install -m 644 "$WORK"/cli-docs/*.1 "$STAGE/man/man1/"
+install -m 644 "$WORK/cli-docs/designcraft-cli.bash" "$STAGE/share/bash-completion/completions/designcraft-cli"
+install -m 644 "$WORK/cli-docs/_designcraft-cli" "$STAGE/share/zsh/site-functions/_designcraft-cli"
+install -m 644 "$WORK/cli-docs/designcraft-cli.fish" "$STAGE/share/fish/vendor_completions.d/designcraft-cli.fish"
 # The desktop entry, MIME type, metainfo and icons are the freedesktop files Linux ships.
 install -m 644 "$LINUX/$APP_ID.desktop" "$STAGE/share/applications/$APP_ID.desktop"
 install -m 644 "$LINUX/$APP_ID.mime.xml" "$STAGE/share/mime/packages/$APP_ID.xml"
@@ -99,7 +128,9 @@ done
 
 for f in bin/designcraft bin/designcraft-cli "share/applications/$APP_ID.desktop" \
   "share/icons/hicolor/256x256/apps/$APP_ID.png" "share/icons/hicolor/scalable/apps/$APP_ID.svg" \
-  share/doc/designcraft/LICENSE-MIT share/doc/designcraft/LICENSE-APACHE; do
+  share/doc/designcraft/LICENSE-MIT share/doc/designcraft/LICENSE-APACHE \
+  man/man1/designcraft-cli.1 share/bash-completion/completions/designcraft-cli share/zsh/site-functions/_designcraft-cli \
+  share/fish/vendor_completions.d/designcraft-cli.fish; do
   if [[ ! -e "$STAGE/$f" ]]; then echo "error: $f is missing from the package" >&2; exit 1; fi
 done
 

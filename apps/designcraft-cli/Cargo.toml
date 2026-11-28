@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "designcraft_cli"
+path = "src/lib.rs"
+
 [lints]
 workspace = true
 
@@ -26,3 +30,10 @@ craft-file-formats = { workspace = true }
 craft-image-codecs = { workspace = true }
 image = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+# The completions and man pages (examples/man-and-completions.rs), generated from the clap definition.
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }

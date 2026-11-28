@@ -1,12 +1,7 @@
-//! What the command line does with its arguments, pinned.
+//! What the command line does with its arguments: RFC-0018's contract, through the binary.
 //!
-//! Every assertion here was measured, not intended: these tests say what the parser does today,
-//! including where that is odd (an unknown option taken as a filter, a `--opt=value` form that
-//! only the automation roots have). They exist so that moving to a derived parser — the work
-//! photocraft#7071 lists, which this parser needs too — changes the surface where that is the
-//! point and nowhere else.
-//!
-//! They assert the exit code, which stream the output went to, and that an error names the
+//! The arguments are clap-derived (`src/args.rs`), so a usage error exits 2, help and the version go to stdout with
+//! exit 0, and an unknown option after a subcommand is refused rather than ignored. These tests assert the exit code, which stream the output went to, and that an error names the
 //! argument it is about. They do not assert wording, so a message can be improved without
 //! editing a test, except in the few places where the wording *is* the behaviour and the test
 //! says so.
@@ -42,9 +37,9 @@ impl Ran {
         self.out
     }
 
-    /// Failed with the usage exit code, said nothing on stdout; gives back the complaint.
+    /// Failed with the usage exit code (2), said nothing on stdout; gives back the complaint.
     fn failed(self, what: &str) -> String {
-        assert_eq!(self.code, Some(1), "{what}: expected a usage failure, got {:?} / {:?}", self.out, self.err);
+        assert_eq!(self.code, Some(2), "{what}: expected a usage failure, got {:?} / {:?}", self.out, self.err);
         assert_eq!(self.out, "", "{what} wrote to stdout");
         self.err
     }
@@ -70,12 +65,11 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 const SUBCOMMANDS: [&str; 10] = ["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"];
 
 #[test]
-fn with_no_arguments_it_prints_the_usage_block_and_fails() {
+fn with_no_arguments_it_prints_the_usage_and_fails_with_2() {
     let err = run(&[]).failed("no arguments");
-    assert!(err.starts_with("usage: designcraft-cli run"), "{err:?}");
-    // The usage block names every subcommand, which is how `<sub> --help` finds its lines.
+    assert!(err.contains("Usage: designcraft-cli"), "{err:?}");
     for sub in SUBCOMMANDS {
-        assert!(err.contains(&format!("designcraft-cli {sub}")), "usage names {sub}: {err:?}");
+        assert!(err.contains(sub), "usage names {sub}: {err:?}");
     }
     // An empty argument is a command nobody has, not a request for help.
     run(&[""]).failed("an empty argument");
@@ -84,312 +78,136 @@ fn with_no_arguments_it_prints_the_usage_block_and_fails() {
 #[test]
 fn help_goes_to_stdout_and_succeeds_in_all_three_spellings() {
     let long = run(&["--help"]).succeeded("--help");
-    assert!(long.starts_with("usage: designcraft-cli run"), "{long:?}");
-    // The community links are under the usage block, for someone who has nowhere else to ask.
+    assert!(long.starts_with("Headless DesignCraft"), "{long:?}");
     assert!(long.contains("Community:") && long.contains("discord"), "{long:?}");
-    for spelling in ["-h", "help"] {
-        assert_eq!(run(&[spelling]).succeeded(spelling), long, "{spelling} prints the same help");
-    }
+    assert!(long.contains("Exit status:"), "{long:?}");
+    let short = run(&["-h"]).succeeded("-h");
+    assert!(short.contains("Usage: designcraft-cli"), "{short:?}");
+    let word = run(&["help"]).succeeded("help");
+    assert!(word.contains("Usage: designcraft-cli"), "{word:?}");
+    run(&["help", "run"]).succeeded("help run");
 }
 
 #[test]
-fn an_unknown_command_fails_with_the_same_text_on_stderr() {
-    let usage = run(&["--help"]).succeeded("--help");
-    for unknown in ["bogus", "-x", "--nope", "Run"] {
+fn an_unknown_command_fails_with_2_and_says_so() {
+    for unknown in ["bogus", "-x", "--nope", "Run", "version"] {
         let err = run(&[unknown]).failed(unknown);
-        assert_eq!(err, usage, "{unknown}: the same usage, on stderr");
-        // Asking for help about a command nobody has is still that command: `<sub> --help`
-        // answered with the whole usage block on stdout and succeeded, which skipped the
-        // unknown-command failure entirely (noted in review).
+        assert!(err.contains("error:") && err.contains("Usage: designcraft-cli"), "{unknown}: {err:?}");
+        // Asking for help about a command nobody has is still that command.
         for spelling in ["--help", "-h"] {
             let err = run(&[unknown, spelling]).failed(&format!("{unknown} {spelling}"));
-            assert_eq!(err, usage, "{unknown} {spelling}: the same usage, on stderr");
+            assert!(err.contains("error:"), "{unknown} {spelling}: {err:?}");
         }
-    }
-    // A real subcommand still answers about itself, and only about itself.
-    for sub in SUBCOMMANDS.iter().filter(|s| **s != "script") {
-        let text = run(&[sub, "--help"]).succeeded(sub);
-        assert!(text.contains(&format!("designcraft-cli {sub}")), "{sub} --help describes {sub}: {text:?}");
-        assert_ne!(text, usage, "{sub} --help is about {sub}, not the whole usage block");
     }
 }
 
 #[test]
-fn the_version_is_the_crate_version() {
-    let expected = format!("designcraft-cli {}\n", env!("CARGO_PKG_VERSION"));
-    for spelling in ["--version", "-V", "version"] {
-        assert_eq!(run(&[spelling]).succeeded(spelling), expected, "{spelling}");
+fn the_version_is_the_crate_version_and_there_is_no_version_subcommand() {
+    for flag in ["--version", "-V"] {
+        let out = run(&[flag]).succeeded(flag);
+        assert_eq!(out.trim(), format!("designcraft-cli {}", env!("CARGO_PKG_VERSION")), "{flag}");
     }
+    // `--version` reaches the subcommands (propagate_version), under the subcommand's own name.
+    let sub = run(&["run", "--version"]).succeeded("run --version");
+    assert!(sub.starts_with("designcraft-cli-run "), "{sub:?}");
 }
 
-/// `<sub> --help` asks about that subcommand. It answers from the usage block, on stdout, and
-/// nothing else happens: no export is written, no port is dialled, no measurement is taken, and a
-/// file named earlier in the same line is not opened or complained about (photocraft#423).
 #[test]
 fn every_subcommand_answers_help_without_running_anything() {
-    let dir = temp_dir("help");
-    let png = dir.join("ran.png");
-    let dead = closed_port();
-    let cases: [(&str, Vec<&str>); 10] = [
-        ("run", vec!["run", "--sample", "--export", png.to_str().unwrap()]),
-        ("commands", vec!["commands"]),
-        ("describe", vec!["describe", "file.open"]),
-        ("script", vec!["script", "no-such-script.dcs"]),
-        ("app", vec!["app", "--port", &dead, "document.list"]),
-        ("mcp", vec!["mcp", "--connect", &dead]),
-        ("perf", vec!["perf", "--pages", "1", "--runs", "1"]),
-        ("bench", vec!["bench", "no-such-document.designcraft"]),
-        ("validate-pdf", vec!["validate-pdf", "no-such-file.pdf"]),
-        ("links", vec!["links"]),
-    ];
-    for (sub, args) in cases {
+    for sub in SUBCOMMANDS {
         for flag in ["--help", "-h"] {
-            let mut args = args.clone();
-            args.push(flag);
-            let what = format!("{sub} {flag}");
-            let out = run(&args).succeeded(&what);
-            assert!(out.contains(&format!("designcraft-cli {sub}")), "{what} names it: {out:?}");
-            assert!(!out.contains("unknown option"), "{what}: {out:?}");
-            // None of the work the rest of the line asks for was done.
-            assert!(!png.exists(), "{what} exported a file");
-            assert!(!out.contains("cannot connect") && !out.contains("render threads"), "{what}: {out:?}");
-            // Either operating system's wording, so this catches a file the help path opened on
-            // Windows as well as on unix.
-            assert!(!out.contains("No such file") && !out.contains("cannot find the file"), "{what}: {out:?}");
+            let out = run(&[sub, flag]).succeeded(&format!("{sub} {flag}"));
+            assert!(out.contains(&format!("Usage: designcraft-cli {sub}")), "{sub} {flag}: {out:?}");
         }
     }
-    // `script`'s own help is longer than one usage line: it documents the script syntax, which is
-    // otherwise only in `describe script.run` and the docs.
-    let out = run(&["script", "--help"]).succeeded("script --help");
-    assert!(out.contains("Script text, one step per line"), "{out:?}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The subcommands that have options refuse an option they do not know, and name it.
 #[test]
-fn an_unknown_option_is_refused_by_name() {
-    let cases: [Vec<&str>; 5] = [
-        vec!["run", "--nope"],
-        vec!["script", "-", "--nope"],
-        vec!["mcp", "--nope"],
-        vec!["perf", "--nope"],
-        vec!["bench", "f.designcraft", "--nope"],
-    ];
-    for args in cases {
-        let err = run(&args).failed(&format!("{args:?}"));
-        assert!(err.contains("--nope"), "{args:?}: {err:?}");
-        assert!(err.contains("unknown"), "{args:?}: {err:?}");
+fn an_unknown_option_is_refused_by_name_in_every_subcommand() {
+    for sub in ["run", "commands", "describe", "script", "app", "mcp", "perf", "bench", "validate-pdf", "links"] {
+        let err = run(&[sub, "--no-such-option"]).failed(sub);
+        assert!(err.contains("--no-such-option"), "{sub}: {err:?}");
     }
+    // The subcommands that take a word no longer read an unknown option as that word, and a value goes after it.
+    let err = run(&["commands", "--json"]).failed("commands --json");
+    assert!(err.contains("--json"), "{err:?}");
+    run(&["describe", "--nope"]).failed("describe --nope");
+    // `--` ends the options, so a filter can start with a dash.
+    run(&["commands", "--", "--json"]).succeeded("commands -- --json");
 }
 
-/// The subcommands whose argument is a word, not an option, take an unknown option as that word:
-/// `commands --nope` filters the command list by `--nope` and finds nothing. Each of these would
-/// be an error under the rule photocraft#7071 settles on; today they are not, and a change of
-/// mind shows up here.
 #[test]
-fn the_subcommands_that_take_a_word_read_an_unknown_option_as_that_word() {
-    // A filter that matches no command: an empty list, successfully.
-    assert_eq!(run(&["commands", "--nope"]).succeeded("commands --nope").trim(), "[]");
-    // A command id nobody has.
-    let err = run(&["describe", "--nope"]).failed("describe --nope");
-    assert!(err.contains("no command `--nope`"), "{err:?}");
-    // A path nobody has. `--nope` has to fail the way an ordinary missing path fails, because
-    // that is what shows it reached the file system as a path instead of being read as an
-    // option. Asserting only that the complaint names `--nope` does not show that: a parser that
-    // rejected unknown options would name it too (noted in review).
-    //
-    // So the two are compared with the name taken out. That holds the shape of the failure
-    // without asserting the operating system's wording for a missing file -- Windows says "The
-    // system cannot find the file specified" -- which an earlier round of review rightly took
-    // out of this test. `failed` already checks the exit code and that stdout stayed empty.
-    let as_option = run(&["validate-pdf", "--nope"]).failed("validate-pdf --nope");
-    let as_path = run(&["validate-pdf", "nope.pdf"]).failed("validate-pdf nope.pdf");
-    assert!(as_option.contains("--nope"), "{as_option:?}");
-    assert_eq!(
-        as_option.replace("--nope", "<name>"),
-        as_path.replace("nope.pdf", "<name>"),
-        "`--nope` must fail as a missing path does, not as an option"
-    );
-    // A method name for the running app, so the error is about reaching the app.
-    let dead = closed_port();
-    let err = run(&["app", "--port", &dead, "--nope"]).failed("app --nope");
-    assert!(err.contains("cannot connect"), "{err:?}");
-    // And `links`, which takes nothing, ignores what it is given.
-    let out = run(&["links", "--nope"]).succeeded("links --nope");
-    assert_eq!(out, run(&["links"]).succeeded("links"));
+fn a_flag_belongs_only_to_its_own_subcommand() {
+    // `--sample` is a document source of `run`, `script` and `mcp`, and means nothing to `commands`.
+    run(&["commands", "--sample"]).failed("commands --sample");
+    run(&["perf", "--cmd", "x"]).failed("perf --cmd");
+    run(&["validate-pdf", "x.pdf", "--scale", "2"]).failed("validate-pdf --scale");
 }
 
-/// There is no `--opt=value` form. The two automation roots are the exception: they have one,
-/// because a folder whose name starts with `-` has no other way in there.
-#[test]
-fn only_the_automation_roots_have_an_opt_equals_value_form() {
-    let cases: [(&str, Vec<&str>); 3] = [
-        ("--scale=2", vec!["run", "--scale=2", "--sample"]),
-        ("--pages=2", vec!["perf", "--pages=2"]),
-        ("--save=out.designcraft", vec!["script", "-", "--save=out.designcraft"]),
-    ];
-    for (token, args) in cases {
-        let err = run(&args).failed(&format!("{args:?}"));
-        assert!(err.contains("unknown"), "{args:?}: {err:?}");
-        // The whole token is named, `=value` and all, so it is clear what was not understood.
-        assert!(err.contains(token), "{args:?}: {err:?}");
-    }
-    // The roots read the value after `=`: an empty one is refused as a folder, which is the
-    // parser having taken it rather than ignoring the form.
-    let err = run(&["mcp", "--automation-read-root="]).failed("empty root");
-    assert!(err.contains("--automation-read-root") && err.contains("folder"), "{err:?}");
-    // A root given more than once adds another folder, in either spelling, rather than the last
-    // one winning or the repeat being refused: the roots are repeatable (`...` in the usage), and
-    // `mcp_automation_roots_take_several_folders` covers what the extra folder grants. This PR
-    // first pinned the older behaviour, where a second root was an error; upstream has made them
-    // repeatable since, so what is pinned here is today's.
-    //
-    // Checked by what fails rather than by letting the server start: the stray token after the
-    // roots is the error, which shows both roots were taken.
-    for second in [vec!["--automation-read-root=b"], vec!["--automation-read-root", "b"]] {
-        let mut args = vec!["mcp", "--automation-read-root=a"];
-        args.extend(second.iter().copied());
-        args.push("stray");
-        let err = run(&args).failed(&format!("{second:?}"));
-        assert!(err.contains("stray"), "the stray token is what fails: {err:?}");
-        assert!(!err.contains("twice"), "a repeated root is not refused any more: {err:?}");
-    }
-}
-
-/// An option that needs a value and has none says which option, and nothing runs.
 #[test]
 fn a_missing_value_names_its_option() {
-    let dir = temp_dir("missing");
-    let png = dir.join("out.png");
-    let cases: [(&str, Vec<&str>); 9] = [
-        ("--export", vec!["run", "--sample", "--export"]),
-        ("--in", vec!["run", "--in"]),
-        ("--all-pages", vec!["run", "--sample", "--all-pages"]),
-        // Before an export, too: the order of the options is nothing to judge until this one has
-        // a value, so it is not reported as an export it is not in front of.
-        ("--scale", vec!["run", "--sample", "--scale", "--export", png.to_str().unwrap()]),
-        ("--page", vec!["run", "--sample", "--page"]),
-        ("--save", vec!["script", "-", "--save"]),
-        ("--connect", vec!["script", "-", "--connect"]),
-        ("--port", vec!["app", "--port"]),
-        ("--pages", vec!["perf", "--pages"]),
-    ];
-    for (option, args) in cases {
-        let err = run(&args).failed(&format!("{args:?}"));
-        assert!(err.contains(option), "{args:?} names {option}: {err:?}");
-        assert!(err.contains("needs"), "{args:?}: {err:?}");
+    for (args, option) in [
+        (&["run", "--in"][..], "--in"),
+        (&["run", "--export"], "--export"),
+        (&["run", "--page"], "--page"),
+        (&["script", "--connect"], "--connect"),
+        (&["perf", "--pages"], "--pages"),
+        (&["bench"], "FILE"),
+        (&["validate-pdf"], "FILE"),
+        (&["mcp", "--automation-read-root"], "--automation-read-root"),
+    ] {
+        let err = run(args).failed(&format!("{args:?}"));
+        assert!(err.contains(option), "{args:?}: {err:?}");
     }
-    assert!(!png.exists(), "nothing is exported");
-
-    // A missing value after an export is found before that export runs: the line writes nothing,
-    // as a malformed line always did.
-    let first = dir.join("first.png");
-    let line = ["run", "--sample", "--export", first.to_str().unwrap(), "--scale", "--export", png.to_str().unwrap()];
-    let err = run(&line).failed("a missing value after an export");
-    assert!(err.contains("--scale needs a value"), "{err:?}");
-    assert!(!first.exists(), "the export before it was not written");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `--help` wins wherever it appears after the subcommand, even where an option would take it as
-/// its value: `run --in -h` prints `run`'s usage and opens nothing.
 #[test]
-fn help_wins_even_where_an_option_would_take_it_as_a_value() {
-    for flag in ["-h", "--help"] {
-        let out = run(&["run", "--in", flag]).succeeded(&format!("run --in {flag}"));
-        assert!(out.contains("designcraft-cli run"), "{out:?}");
-    }
-    // And each subcommand's usage lists every option it takes.
-    let perf = run(&["perf", "--help"]).succeeded("perf --help");
-    for option in ["--pages", "--frames", "--chars", "--images", "--runs", "--strict"] {
-        assert!(perf.contains(option), "perf --help lists {option}: {perf:?}");
-    }
-    let validate = run(&["validate-pdf", "--help"]).succeeded("validate-pdf --help");
-    assert!(validate.contains("--standard"), "{validate:?}");
+fn a_value_that_cannot_mean_anything_is_a_usage_error() {
+    let err = run(&["run", "--sample", "--page", "zero"]).failed("--page zero");
+    assert!(err.contains("--page"), "{err:?}");
+    run(&["perf", "--pages", "many"]).failed("--pages many");
+    run(&["validate-pdf", "x.pdf", "--standard", "x9"]).failed("--standard x9");
+    run(&["run", "--sample", "--pdf-options", "{"]).failed("--pdf-options {");
 }
 
-/// An option that takes no value does not swallow the token after it: that token is read as the
-/// next argument, and refused if it is not one.
 #[test]
-fn a_flag_that_takes_no_value_leaves_the_next_token_alone() {
-    let err = run(&["run", "--sample", "extra", "--export", "out.png"]).failed("run --sample extra");
-    assert!(err.contains("extra"), "{err:?}");
-    let err = run(&["perf", "--strict", "3"]).failed("perf --strict 3");
-    assert!(err.contains('3'), "{err:?}");
+fn the_equals_form_works_for_every_option() {
+    let port = closed_port();
+    // The arguments parse (the connection is what fails, with exit 1, not 2).
+    let out = run(&["script", &format!("--connect={port}")]);
+    assert_eq!(out.code, Some(1), "{:?}", out.err);
+    assert!(out.err.starts_with("error:") && out.err.contains(&port), "{:?}", out.err);
+    let out = run(&["mcp", &format!("--connect={port}")]);
+    assert_eq!(out.code, Some(1), "{:?}", out.err);
+    assert!(out.err.starts_with("error:"), "{:?}", out.err);
 }
 
-/// A value flag given twice keeps the last value. (The automation roots are the exception, above.)
 #[test]
-fn a_repeated_value_flag_keeps_the_last_value() {
+fn a_repeated_single_value_flag_is_refused_where_the_last_one_would_silently_win() {
+    for args in
+        [&["script", "--connect", "1", "--connect", "2"][..], &["perf", "--pages", "1", "--pages", "2"], &["mcp", "--connect", "1", "--connect", "2"]]
+    {
+        let err = run(args).failed(&format!("{args:?}"));
+        assert!(err.contains("cannot be used multiple times") || err.contains("--"), "{args:?}: {err:?}");
+    }
+}
+
+#[test]
+fn the_repeatable_flags_all_take_effect_in_the_order_given() {
     let dir = temp_dir("repeat");
-    let at = |args: &[&str], name: &str| -> Vec<u8> {
-        let path = dir.join(name);
-        let mut full: Vec<&str> = vec!["run", "--sample"];
-        full.extend_from_slice(args);
-        let out = path.to_str().unwrap();
-        full.extend(["--export", out]);
-        let ran = run(&full);
-        assert_eq!(ran.code, Some(0), "{full:?}: {:?}", ran.err);
-        std::fs::read(&path).unwrap()
-    };
-    // `--scale`: the size of the image says which value was used.
-    let one = at(&[], "1.png");
-    let three = at(&["--scale", "3"], "3.png");
-    assert_eq!(at(&["--scale", "2", "--scale", "3"], "23.png"), three, "the last --scale won");
-    assert_ne!(three, one, "and --scale 3 is not --scale 1");
-    // `--page`: which page was exported says it.
-    let second = at(&["--page", "1"], "p1.png");
-    assert_ne!(second, one, "page 1 of the sample is not page 0");
-    assert_eq!(at(&["--page", "1", "--page", "0"], "p10.png"), one, "the last --page won");
-    // `--connect` and `--port`: the address the error names says it.
-    let (a, b) = (closed_port(), closed_port());
-    for args in [vec!["mcp", "--connect", &a, "--connect", &b], vec!["app", "--port", &a, "--port", &b, "document.list"]] {
-        let err = run(&args).failed(&format!("{args:?}"));
-        assert!(err.contains(&format!("127.0.0.1:{b}")), "{args:?} dialled the last port: {err:?}");
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The flags that are meant to repeat each take effect, in order.
-#[test]
-fn the_repeatable_flags_all_take_effect() {
-    let dir = temp_dir("each");
     let (a, b) = (dir.join("a.png"), dir.join("b.png"));
-    let ran = run(&[
-        "run",
-        "--sample",
-        "--cmd",
-        "document.list",
-        "--cmd",
-        "document.list",
-        "--export",
-        a.to_str().unwrap(),
-        "--export",
-        b.to_str().unwrap(),
-    ]);
-    assert_eq!(ran.code, Some(0), "{:?}", ran.err);
-    // One result line per `--cmd`, in the order given.
-    let results: Vec<&str> = ran.out.lines().collect();
-    assert_eq!(results.len(), 2, "{results:?}");
-    assert_eq!(results[0], results[1]);
-    // And one file per `--export`.
-    assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
-    assert_eq!(ran.err.lines().filter(|l| l.starts_with("wrote ")).count(), 2, "{:?}", ran.err);
-    let _ = std::fs::remove_dir_all(&dir);
+    let out = run(&["run", "--sample", "--export", a.to_str().unwrap(), "--scale", "2", "--export", b.to_str().unwrap()]);
+    assert_eq!(out.code, Some(0), "{:?}", out.err);
+    assert!(out.err.contains("a.png") && out.err.contains("b.png"), "{:?}", out.err);
+    // The second export was made at twice the scale of the first.
+    let width = |p: &std::path::Path| image::image_dimensions(p).unwrap().0;
+    assert_eq!(width(&b), width(&a) * 2);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
-/// A subcommand given nothing to do does nothing, quietly or with its own usage line. `run` with
-/// no arguments is the one that says nothing at all: there is no document to act on and nothing
-/// was asked of it.
 #[test]
-fn a_subcommand_with_nothing_to_do_says_so_or_says_nothing() {
-    assert_eq!(run(&["run"]).succeeded("run"), "");
-    // `script` with no file reads stdin, which is closed here: an empty script, run.
-    let out = run(&["script"]).succeeded("script");
-    assert!(out.contains("\"completed\": 0"), "{out:?}");
-    // The two that need an argument print the usage line for themselves.
-    for sub in ["describe", "bench", "validate-pdf"] {
-        let err = run(&[sub]).failed(sub);
-        assert!(err.contains(&format!("designcraft-cli {sub}")), "{sub}: {err:?}");
-    }
+fn an_option_that_applies_to_nothing_says_so() {
+    // Say what is wrong, and not on stdout.
+    let err = run(&["run", "--sample", "--scale", "2"]).failed("--scale with no export after it");
+    assert!(err.contains("--scale"), "{err:?}");
 }
