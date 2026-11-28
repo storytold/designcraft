@@ -316,6 +316,29 @@ fn justify_keeps_the_first_and_last_lines_on_rows_and_spreads_the_rest() {
 }
 
 #[test]
+fn every_column_under_a_spanning_paragraph_starts_on_the_row_after_its_rows() {
+    // A heading across both columns takes rows 0 to 2 (gyoudori 3). The text under it starts on
+    // row 3 in the first column and in the second.
+    let text = format!("HEAD\n{}", vec!["AB"; 8].join("\n"));
+    let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 300.0, 120.0), aligned(R::EmCenter));
+    let st = d.story_mut(sid).unwrap();
+    st.frame_grid = Some(FrameGrid { size: 12.0, line_aki: 6.0, ..Default::default() });
+    st.format_paras(0..4, |p| {
+        p.para.span_columns = Some(designcraft_doc::SpanColumns::Span(0));
+        p.para.grid_gyoudori = Some(3);
+    });
+    let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+    tf.options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+    tf.options.columns = 2;
+    let rows = frame_specs(&d, sid)[0].frame_grid.expect("a frame grid frame has rows");
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    let at: Vec<f64> = lines.iter().map(|l| (em_box(l).0 - rows.top) / rows.pitch).collect();
+    assert_eq!(lines.len(), 9, "{at:?}");
+    assert!(close(at[1], 3.0) && close(at[5], 3.0), "the columns start on row 3: {at:?}");
+}
+
+#[test]
 fn centre_leaves_the_odd_row_after_the_lines() {
     use designcraft_doc::VerticalJustification::{Bottom, Center};
     for (extent, lines, centre, bottom) in JUSTIFIED_ROWS {

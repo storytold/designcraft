@@ -292,7 +292,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-11-28 | trivial | Frame grids: Center leaves the odd free row after the lines (InDesign, observed); an empty paragraph takes its roman baseline and ICF from its mark's face |
+| 2026-11-28 | trivial | Frame grids: Center leaves the odd free row after the lines (InDesign, observed); an empty paragraph takes its roman baseline and ICF from its mark's face; every column under a spanning paragraph starts after its rows |
 | 2026-11-27 | trivial | Frame grids: an empty paragraph takes its mark's rows; vertical justification by whole rows (InDesign, observed) |
 | 2026-11-11 | trivial | Frame grids: the first line on the first row, a row kept between paragraphs of different references; drop caps noted |
 | 2026-10-29 | minor | Grid alignment: frame grid rows (horizontal), from InDesign observed black-box |

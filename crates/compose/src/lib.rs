@@ -3175,6 +3175,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
             reference: cur.last_reference,
             aki_below: cur.aki_below,
             pending: if spans_in(cur.fi) { pp.space_after.max(pp.span_space_after) } else { pp.space_after },
+            grid_next: cur.grid_next.filter(|(b, _)| *b == l.baseline),
         };
         cur.band = Band { para: pi + 1, line0: ft.lines.len(), above: Some(top_band), tail: None };
     }
@@ -4510,6 +4511,9 @@ struct Above {
     aki_below: Option<f64>,
     /// The spanning paragraph's space after.
     pending: f64,
+    /// The grid end of the spanning paragraph's last line, with its baseline: every column under
+    /// it starts on the first row after the rows it took.
+    grid_next: Option<(f64, f64)>,
 }
 
 /// Balancing the columns above a spanning paragraph: a search for the lowest column bottom at
@@ -4687,11 +4691,13 @@ impl Cursor {
                 self.last_reference = a.reference;
                 self.aki_below = a.aki_below;
                 self.pending = a.pending;
+                self.grid_next = a.grid_next;
             }
             None => {
                 self.last_baseline = None;
                 self.aki_below = None;
                 self.pending = 0.0;
+                self.grid_next = None;
             }
         }
     }
