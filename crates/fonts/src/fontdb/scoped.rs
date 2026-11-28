@@ -62,10 +62,26 @@ impl ScopedFonts<'_> {
             return false;
         }
         let face = self.face(family, style);
+        // The face found must be one `family` names. `face` takes a face's legacy family name
+        // (`Source Serif 4 Semibold`, name ID 1) to its typographic family and looks the style up
+        // there, so `Source Serif 4 Semibold` `Regular` finds Source Serif 4 Regular: another
+        // face, which Find Font and preflight called exact (#2618).
+        let names = |f: &str| f.eq_ignore_ascii_case(&face.family) || face.family_aliases.iter().any(|alias| alias.eq_ignore_ascii_case(f));
+        // A style with axis settings (`Regular {wght:650}`) matches by its base name only on a
+        // face those settings apply to (an instance); a static face draws without them.
+        let axes_apply = !style.contains('{') || !face.coords.is_empty();
+        let wws_named = |w: &(String, String)| {
+            std::iter::once(family).chain(alternate_names(family)).any(|f| w.0.eq_ignore_ascii_case(f))
+                && norm(&w.1) == norm(base_style(style))
+                && axes_apply
+        };
+        if !std::iter::once(family).chain(alternate_names(family)).any(names) {
+            return face.wws.as_ref().is_some_and(wws_named);
+        }
         norm(&face.style) == norm(style)
             || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == norm(style)))
             // An optical-size face asked for by its WWS names.
-            || face.wws.as_ref().is_some_and(|w| w.0.eq_ignore_ascii_case(family) && norm(&w.1) == norm(style))
+            || face.wws.as_ref().is_some_and(wws_named)
     }
 
     /// Prefer known metric-compatible substitutes, then an appropriate script family. This
