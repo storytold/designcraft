@@ -4888,13 +4888,32 @@ fn list_labels_do_not_raise_the_ascent_first_baseline() {
     for list in [ListType::Bullets, ListType::Numbers] {
         let (lb, lasc, llead) = line("Hxg Hxg", list);
         assert!((lb - b).abs() < 1e-6, "{list:?}: {lb} vs {b}");
-        // The 40 pt label still sets the line's ascent and leading.
-        assert!(lasc > asc + 20.0 && (llead - 48.0).abs() < 1e-6 && (lead - 12.0).abs() < 1e-6, "{list:?}: {lasc} {asc} {llead} {lead}");
+        // The 40 pt label still sets the line's ascent, but the 10 pt text sets its leading:
+        // lines are spaced by the text (12 pt), not by the label (which would be 48 pt).
+        assert!(lasc > asc + 20.0 && (llead - 12.0).abs() < 1e-6 && (lead - 12.0).abs() < 1e-6, "{list:?}: {lasc} {asc} {llead} {lead}");
     }
     // An empty bulleted paragraph sits like an empty paragraph.
     let (eb, _, _) = line("", ListType::None);
     let (ebl, _, _) = line("", ListType::Bullets);
     assert!((ebl - eb).abs() < 1e-6, "{ebl} vs {eb}");
+}
+
+#[test]
+fn bulleted_lines_space_by_the_text_not_the_label() {
+    use designcraft_doc::ListType;
+    // Three bulleted paragraphs whose text is 8 pt (auto leading 8 × 1.2 = 9.6), while each
+    // label is shaped from the paragraph's 12 pt character style (auto leading 14.4). Lines
+    // must be spaced by the text, not by the label.
+    let text = "one\ntwo\nthree";
+    let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 300.0, 300.0), ParaAttrs { list_type: Some(ListType::Bullets), ..Default::default() });
+    d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(8.0));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 3, "one line per paragraph");
+    for w in lines.windows(2) {
+        let gap = w[1].baseline - w[0].baseline;
+        assert!((gap - 9.6).abs() < 1e-6, "gap {gap}: expected the 8 pt text's leading 9.6, not the 12 pt label's 14.4");
+    }
 }
 
 #[test]
@@ -10509,6 +10528,22 @@ fn cross_reference_text_breaks_at_its_spaces() {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
         }
     }
+}
+
+/// A bulleted paragraph whose whole text is a drop cap composes a line holding only the list
+/// label (the cap is placed beside it): that line keeps the paragraph's leading instead of
+/// landing on the preceding line's baseline.
+#[test]
+fn a_label_only_line_keeps_the_paragraph_leading() {
+    let text = "one\nD";
+    let para =
+        ParaAttrs { list_type: Some(designcraft_doc::ListType::Bullets), drop_cap_lines: Some(2), drop_cap_chars: Some(1), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 300.0, 400.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert_eq!(lines.len(), 2, "{} lines", lines.len());
+    let gap = lines[1].baseline - lines[0].baseline;
+    assert!((gap - 14.4).abs() < 1e-6, "the label line sits {gap} below the previous line, not a paragraph leading 14.4");
 }
 
 /// A story numbering list `list` (continuing across stories; Upper Roman, no tab after the
