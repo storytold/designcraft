@@ -170,24 +170,31 @@ fn item_area(it: &Item) -> Option<Rect> {
     // and feathers stay inside the shape.
     let scale = max_scale(it.xf)?;
     let stroke = it.stroke.extent().max(0.0) * scale;
-    let pad = stroke + 2.0 + if it.is_text_frame() { 24.0 } else { 0.0 } + crate::fx::outset_scaled(it, scale);
+    let pad = stroke + 2.0 + crate::fx::outset_scaled(it, scale);
     if !pad.is_finite() {
         return None;
     }
     Some(painted_bounds(it)?.inflate(pad, pad))
 }
 
+/// How far a text frame's glyphs paint past its text box: descenders below a frame fitted to its
+/// last baseline, italics, swashes and big initials.
+const GLYPH_OVERHANG: f64 = 24.0;
+
 /// An item's bounds, grown to its text: text is composed in the box around the frame's path in
 /// the frame's own coordinates, which a sheared then rotated frame turns past its path's bounds.
-/// Its children's bounds include their strokes. None when a child's transform is not finite.
+/// Its children's bounds include their strokes and, for text frames, their glyphs' overhang. None
+/// when a child's transform is not finite.
 fn painted_bounds(it: &Item) -> Option<Rect> {
     let mut b = it.bounds();
     if it.is_text_frame() {
-        b = b.union(it.xf.transform_rect_bbox(it.inner_bounds()));
+        // The allowance applies in the frame's own axes: a turned frame's ink reaches past its
+        // turned box's bounding box, which a pad applied after the transform would miss.
+        b = b.union(it.xf.transform_rect_bbox(it.inner_bounds().inflate(GLYPH_OVERHANG, GLYPH_OVERHANG)));
     }
     for c in it.children() {
-        let stroke = c.stroke.extent().max(0.0) * max_scale(c.xf)?;
-        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(stroke, stroke)));
+        let pad = c.stroke.extent().max(0.0) * max_scale(c.xf)?;
+        b = b.union(it.xf.transform_rect_bbox(painted_bounds(c)?.inflate(pad, pad)));
     }
     Some(b)
 }
@@ -215,9 +222,11 @@ fn changed_frame_areas(old: &Document, new: &Document, f: ItemId) -> Option<Vec<
 fn frame_area(d: &Document, f: ItemId) -> Option<(SpreadRef, Rect)> {
     let loc = d.find(f)?;
     let it = d.item_at(&loc)?;
-    let b = d.parent_xf(&loc).transform_rect_bbox(painted_bounds(it)?);
+    let pxf = d.parent_xf(&loc);
+    let b = pxf.transform_rect_bbox(painted_bounds(it)?);
     // Overhang of italics, swashes and big initials, and anchored objects pinned to lines.
-    Some((loc.spread, b.inflate(24.0 + 0.1 * b.width().max(b.height()), 24.0)))
+    let glyph = GLYPH_OVERHANG * max_scale(pxf * it.xf)?.max(1.0);
+    Some((loc.spread, b.inflate(glyph + 0.1 * b.width().max(b.height()), glyph)))
 }
 
 #[cfg(test)]
@@ -560,9 +569,68 @@ mod tests {
         assert!(changed.iter().any(|p| p.x < 70.0), "the child's stroke paints its scaled width");
     }
 
+    /// Text in a group paints its descenders below its frame, as a lone frame's do, and moving the
+    /// group damages them where they were and where they are (#3193). The canvas passes its
+    /// composition cache, which finds the text unchanged by the move, so only the group's own
+    /// area covers its text.
+    /// A turned text frame inside a group reaches the glyph allowance at its box's corners, which
+    /// the turn swings outside a pad applied after the child's transform.
+    #[test]
+    fn a_turned_text_frame_in_a_group_damages_its_glyph_allowance_corners() {
+        use designcraft_geom::{Affine, Point};
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let (f, _) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 200.0, 450.0, 400.0), lid, "gjpqy", ParaFormat::default()).unwrap();
+        let turned = Affine::translate((150.0, 60.0)) * Affine::rotate(45f64.to_radians());
+        d.item_mut(f).unwrap().xf = turned;
+        let inner = d.item(f).unwrap().inner_bounds();
+        let ink = turned.transform_rect_bbox(inner.inflate(GLYPH_OVERHANG, GLYPH_OVERHANG));
+        let i = d.spreads[0].items.iter().position(|it| it.id == f).unwrap();
+        let frame = Arc::make_mut(&mut d.spreads[0]).items.remove(i);
+        let gid = ItemId(d.alloc());
+        let mut group = Item::new(gid, lid, designcraft_doc::Shape::Group, Default::default());
+        group.content = designcraft_doc::Content::Group { items: vec![frame] };
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        let area = item_area(d.item(gid).unwrap()).expect("a group has a damaging area");
+        for p in [Point::new(ink.x0, ink.y0), Point::new(ink.x1, ink.y0), Point::new(ink.x0, ink.y1), Point::new(ink.x1, ink.y1)] {
+            assert!(area.contains(p), "the group's damage misses the glyph allowance at {p:?}");
+        }
+    }
+
+    #[test]
+    fn moving_a_group_damages_its_text_below_the_frame() {
+        let mut d = Document::new(&NewDocument { pages: 1, ..Default::default() });
+        let lid = d.default_layer();
+        let text = "gjpqy gjpqy";
+        let (f, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(100.0, 200.0, 450.0, 400.0), lid, text, ParaFormat::default()).unwrap();
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |c| c.over.size = Some(48.0));
+        // Fit Frame to Content: the frame ends at the baseline, the descenders below it.
+        let baseline = designcraft_compose::Cache::new().get(&d, sid, None).frame(f).unwrap().lines[0].baseline;
+        let bottom = baseline + 1.0;
+        d.item_mut(f).unwrap().path = designcraft_geom::shapes::rectangle(Rect::new(100.0, 200.0, 450.0, bottom));
+        let i = d.spreads[0].items.iter().position(|it| it.id == f).unwrap();
+        let frame = Arc::make_mut(&mut d.spreads[0]).items.remove(i);
+        let gid = ItemId(d.alloc());
+        let mut group = Item::new(gid, lid, designcraft_doc::Shape::Group, Default::default());
+        group.content = designcraft_doc::Content::Group { items: vec![frame] };
+        d.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+        // The canvas has composed the version it shows.
+        let cache = designcraft_compose::Cache::new();
+        let _ = cache.get(&d, sid, None);
+        let old = d.clone();
+        d.item_mut(gid).unwrap().xf = designcraft_geom::Affine::translate((0.0, -80.0));
+        let dmg = damage_with(&old, &d, Some(&cache)).expect("bounded damage");
+        let changed = changed_pixels_in(&old, &d, &dmg);
+        assert!(changed.iter().any(|p| p.y > bottom), "the descenders paint below the frame");
+    }
+
     /// The pixels a page render changes from `old` to `new`, each checked to lie in the damage.
     fn changed_pixels_in_damage(old: &Document, new: &Document) -> Vec<designcraft_geom::Point> {
-        let dmg = damage(old, new).expect("bounded damage");
+        changed_pixels_in(old, new, &damage(old, new).expect("bounded damage"))
+    }
+
+    /// The pixels a page render changes from `old` to `new`, each checked to lie in `dmg`.
+    fn changed_pixels_in(old: &Document, new: &Document, dmg: &[(SpreadRef, Rect)]) -> Vec<designcraft_geom::Point> {
         let cache = designcraft_compose::Cache::new();
         let mut r = crate::Renderer::new();
         r.threads = 0;
