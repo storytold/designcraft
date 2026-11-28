@@ -1046,6 +1046,7 @@ fn text_hidden_by_inherited_conditions_or_deletion_is_not_exported() {
         locked: false,
         printable: true,
         show_guides: true,
+        lock_guides: false,
         suppress_wrap_when_hidden: false,
     });
     d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 200.0, 300.0, 300.0), hidden_layer, "On a hidden layer", ParaFormat::default()).unwrap();

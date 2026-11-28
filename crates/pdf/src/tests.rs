@@ -268,6 +268,29 @@ fn tables_export_cell_text() {
 }
 
 #[test]
+fn cell_diagonal_lines_export_in_front_of_or_behind_the_cell_text() {
+    let export = |lines, in_front| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(9, 1, 1, 0, 0, 200.0);
+        let cell = t.cell_mut(0, 0).unwrap();
+        cell.text.insert(0, "Ink");
+        let stroke = designcraft_doc::CellStroke { weight: 3.0, ..Default::default() };
+        cell.diagonal = designcraft_doc::CellDiagonal { lines, stroke, in_front };
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let bytes = export_pdf(&d, &Cache::new(), &PdfOptions::default()).unwrap();
+        // The table's edges are 1 pt; the diagonals are the 3 pt strokes.
+        paint_order(&bytes).into_iter().filter(|(op, w)| op.ends_with("text") || *w == 3.0).map(|(op, _)| op).collect::<Vec<_>>()
+    };
+    use designcraft_doc::DiagonalLines;
+    let (text, line) = ("fill text".to_string(), "stroke path".to_string());
+    assert_eq!(export(DiagonalLines::None, true), [text.clone(), text.clone(), text.clone()]);
+    assert_eq!(export(DiagonalLines::Crossed, true), [text.clone(), text.clone(), text.clone(), line.clone(), line.clone()], "Diagonal In Front");
+    assert_eq!(export(DiagonalLines::TopLeft, false), [line.clone(), text.clone(), text.clone(), text.clone()], "Content In Front");
+}
+
+#[test]
 fn drop_cap_text_extracts_in_order() {
     let mut d = Document::new(&NewDocument::default());
     let lid = d.default_layer();
@@ -1154,4 +1177,38 @@ fn an_item_a_parent_overrode_and_deleted_is_not_exported() {
     assert!(has_box(&d), "the page exports parent A's box through parent B");
     std::sync::Arc::make_mut(&mut d.parents[1]).pages[0].overridden.push(box_id);
     assert!(!has_box(&d), "removed on B, so the page using B exports no box");
+}
+
+/// Compress Images left a greyscale photo coloured by a swatch, as catalogues place them, at full
+/// size and lossless: the swatch is painted through the photo's coverage, which went in as a
+/// Flate image of every pixel whatever the option said.
+#[test]
+fn compressed_images_include_greyscale_tiffs_coloured_by_a_swatch() {
+    let px: Vec<u8> = (0..32u32).flat_map(|y| (0..64u32).map(move |x| ((x * 7 + y * 3) % 256) as u8)).collect();
+    let mut tif = Vec::new();
+    tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut tif))
+        .unwrap()
+        .with_compression(tiff::encoder::Compression::Lzw)
+        .write_image::<tiff::encoder::colortype::Gray8>(64, 32, &px)
+        .unwrap();
+    for compress_images in [true, false] {
+        let mut d = doc_with_text("x");
+        d.swatches.push(Swatch {
+            name: "PANTONE Test".into(),
+            value: SwatchValue::Color { color: Color::cmyk(1.0, 0.5, 0.0, 0.0), color_type: ColorType::Spot },
+            locked: false,
+            named: true,
+            hidden: false,
+        });
+        place(&mut d, tif.clone(), (64, 32));
+        let id = d.spreads[0].items.last().unwrap().id;
+        if let designcraft_doc::Content::Graphic(g) = &mut d.item_mut(id).unwrap().content {
+            g.fill = Fill::swatch("PANTONE Test");
+        }
+        let r = export_pdf_with_report(&d, &Cache::new(), &PdfOptions { compress_images, compress: false, ..Default::default() }).unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let s = String::from_utf8_lossy(&r.bytes);
+        assert!(s.contains("/PANTONE#20Test"), "still on the spot plate");
+        assert_eq!(s.contains("/DCTDecode"), compress_images, "the coverage is a JPEG only when images are compressed");
+    }
 }
