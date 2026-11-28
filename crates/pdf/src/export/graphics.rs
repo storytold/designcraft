@@ -344,7 +344,8 @@ impl Exporter<'_> {
     /// A greyscale or bitmap image coloured by the swatch applied to it (#1094): the swatch is
     /// painted through the image's ink coverage (its darkness), over 0% ink for a greyscale
     /// image, whose white is opaque. `false`, drawing nothing, when the image keeps its own
-    /// colours: no swatch, one that no longer exists, a colour image.
+    /// colours: no swatch, one that no longer exists, a colour image. With `compress_images` the
+    /// coverage is a grey JPEG, as the image itself would be.
     fn colorized(&mut self, s: &mut Surface, g: &designcraft_doc::Graphic) -> bool {
         if g.fill.is_none() {
             return false;
@@ -354,7 +355,8 @@ impl Exporter<'_> {
         let Some(paint) = self.swatch_color(&g.fill.swatch, g.fill.tint) else { return false };
         let Some(coverage) = designcraft_images::decode_rgba(&bytes).and_then(|img| CoverageImage::new(&img)) else { return false };
         let interpolate = RasterMode::for_standard(self.opts.standard).interpolate;
-        let Ok(mask) = Image::from_custom(coverage, interpolate) else { return false };
+        let mask = if self.opts.compress_images && tone == designcraft_images::Tone::Gray { coverage.jpeg(interpolate) } else { None };
+        let Some(mask) = mask.or_else(|| Image::from_custom(coverage, interpolate).ok()) else { return false };
         let size = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32);
         let (Some(size), Some(rect)) = (size, to_path(&Rect::new(0.0, 0.0, g.size.0, g.size.1).to_path(0.1))) else { return false };
         s.push_transform(&tf(g.xf));

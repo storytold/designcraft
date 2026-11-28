@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use designcraft_doc::{Item, Story};
+
 use super::layers::{duplicate_layer, set_layer};
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
@@ -6,6 +10,52 @@ use super::parents::{
 };
 use super::sections::{ChapterEdit, SectionEdit, chapter_numbering, start_number};
 use super::{CommandSpec, LAYER_COLORS, Layer, LayerId, Margins, Result, SpreadId, Value, bad, cmd, has_doc, json, ok, str_param};
+
+// A group can hold children on other layers, including in inactive states or pasted-into frames.
+// Only references to removed layers change; surviving layers keep their assignments. Containers
+// without such a reference stay shared with the undo history (copy-on-write only where one is).
+fn item_uses_layers(it: &Item, gone: &[LayerId]) -> bool {
+    let mut found = false;
+    it.walk(&mut |i| found |= gone.contains(&i.layer));
+    found
+}
+
+fn story_uses_layers(st: &Story, gone: &[LayerId]) -> bool {
+    st.objects.iter().any(|o| item_uses_layers(&o.item, gone))
+        || st.tables.values().any(|t| t.cells.iter().any(|c| story_uses_layers(&c.text, gone)))
+        || st.notes.iter().chain(&st.endnotes).any(|n| story_uses_layers(&n.text, gone))
+}
+
+fn merge_item_layers(it: &mut Item, gone: &[LayerId], into: LayerId) {
+    if gone.contains(&it.layer) {
+        it.layer = into;
+    }
+    for child in it.children_mut().into_iter().flatten() {
+        if item_uses_layers(child, gone) {
+            merge_item_layers(Arc::make_mut(child), gone, into);
+        }
+    }
+}
+
+fn merge_story_layers(st: &mut Story, gone: &[LayerId], into: LayerId) {
+    for object in &mut st.objects {
+        if item_uses_layers(&object.item, gone) {
+            merge_item_layers(&mut Arc::make_mut(object).item, gone, into);
+        }
+    }
+    for table in st.tables.values_mut() {
+        if table.cells.iter().any(|c| story_uses_layers(&c.text, gone)) {
+            for cell in &mut Arc::make_mut(table).cells {
+                merge_story_layers(&mut cell.text, gone, into);
+            }
+        }
+    }
+    for note in st.notes.iter_mut().chain(st.endnotes.iter_mut()) {
+        if story_uses_layers(&note.text, gone) {
+            merge_story_layers(&mut Arc::make_mut(note).text, gone, into);
+        }
+    }
+}
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -770,33 +820,49 @@ pub fn specs() -> Vec<CommandSpec> {
                     .map(LayerId)
                     .or_else(|| ids.first().copied())
                     .ok_or_else(|| bad("layer.merge", "no layers"))?;
-                s.edit(|d, _| {
+                let gone: Vec<LayerId> = ids.iter().copied().filter(|l| *l != into).collect();
+                let r = s.edit(|d, _| {
                     if d.layer(into).is_none() || ids.iter().any(|l| d.layer(*l).is_none()) {
                         return Err(bad("layer.merge", "no such layer"));
                     }
-                    let gone: Vec<LayerId> = ids.iter().copied().filter(|l| *l != into).collect();
                     for sp in d.spreads.iter_mut().chain(d.parents.iter_mut()) {
-                        if !sp.items.iter().any(|i| gone.contains(&i.layer)) {
+                        if !sp.items.iter().any(|i| item_uses_layers(i, &gone)) {
                             continue;
                         }
-                        for it in &mut std::sync::Arc::make_mut(sp).items {
-                            if gone.contains(&it.layer) {
-                                std::sync::Arc::make_mut(it).layer = into;
+                        for it in &mut Arc::make_mut(sp).items {
+                            if item_uses_layers(it, &gone) {
+                                merge_item_layers(Arc::make_mut(it), &gone, into);
                             }
+                        }
+                    }
+                    for story in d.stories.values_mut() {
+                        if story_uses_layers(story, &gone) {
+                            merge_story_layers(Arc::make_mut(story), &gone, into);
                         }
                     }
                     d.layers.retain(|l| !gone.contains(&l.id));
                     Ok(json!({"merged": gone.len()}))
-                })
+                })?;
+                // Drawing continues on the layer that now holds the active layer's objects.
+                let st = s.doc_mut()?;
+                if gone.contains(&st.active_layer) {
+                    st.active_layer = into;
+                }
+                Ok(r)
             }
         ),
         cmd!("layer.deleteUnused", "Delete Unused Layers", [], None, "{} — layers without objects (one layer always stays)", has_doc, |s, _| {
             s.edit(|d, _| {
-                let used: std::collections::HashSet<LayerId> =
-                    d.spreads.iter().chain(d.parents.iter()).flat_map(|sp| sp.items.iter().map(|i| i.layer)).collect();
+                // Objects inside groups and objects anchored in text (cells and notes included) use their layers too.
+                let in_use = |id: LayerId| {
+                    let layer = [id];
+                    d.spreads.iter().chain(d.parents.iter()).any(|sp| sp.items.iter().any(|i| item_uses_layers(i, &layer)))
+                        || d.stories.values().any(|st| story_uses_layers(st, &layer))
+                };
+                let used: std::collections::HashSet<LayerId> = d.layers.iter().map(|l| l.id).filter(|id| in_use(*id)).collect();
                 let before = d.layers.len();
                 if used.is_empty() {
-                    // Nothing anywhere: keep the first layer.
+                    // No layer has objects: keep the first layer.
                     d.layers.truncate(1);
                 } else {
                     d.layers.retain(|l| used.contains(&l.id));
