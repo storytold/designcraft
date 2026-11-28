@@ -152,6 +152,8 @@ impl<'r> Importer<'r> {
         a
     }
 
+    /// Reads a paragraph's formatting from its IDML attributes, such as alignment, hyphenation and
+    /// keep options. Attributes it doesn't know are left unset.
     pub(super) fn para_attrs(&mut self, e: &El) -> ParaAttrs {
         let mut a = ParaAttrs::default();
         let alignment = craft_idml::model::ParagraphAlignmentValues::from_el(&crate::xml::to_craft(e));
@@ -252,6 +254,7 @@ impl<'r> Importer<'r> {
         a.auto_leading = flow.auto_leading.map(|v| v / 100.0);
         a.single_word_justify = flow.single_word_justification.as_deref().and_then(|v| names::align_in(v.trim()));
         a.keep_with_next = flow.keep_with_next.map(|v| v.max(0.0) as u32);
+        a.keep_with_previous = e.boolean("KeepWithPrevious");
         a.keep_lines_together = flow.keep_lines_together;
         a.ignore_optical_margin = flow.ignore_edge_alignment;
         a.keep_all_lines = flow.keep_all_lines_together;

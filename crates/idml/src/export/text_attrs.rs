@@ -336,6 +336,8 @@ impl<'a> Ex<'a> {
         }
     }
 
+    /// Writes the paragraph's hyphenation, justification and spacing limits, keep options and
+    /// paragraph start position.
     fn para_flow_attrs(&self, el: &mut El, a: &ParaAttrs) {
         let percent = |value: Option<f64>| value.map(|value| value * 100.0);
         let values = craft_idml::model::ParagraphFlowValues {
@@ -364,6 +366,10 @@ impl<'a> Ex<'a> {
         };
         for (key, value) in values.to_attrs() {
             el.set(&key, value);
+        }
+        // The shared model has no Keep with Previous yet.
+        if let Some(v) = a.keep_with_previous {
+            el.set("KeepWithPrevious", bool_s(v));
         }
     }
 

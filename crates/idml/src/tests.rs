@@ -316,6 +316,7 @@ fn indesign_text_defaults() -> Vec<AttrRow> {
         "AutoLeading": "120" => 1.2, "100" => 1.0, |r| r.0.auto_leading;
         "SingleWordJustification": "FullyJustified" => Align::FullyJustified, "LeftAlign" => Align::Left, |r| r.0.single_word_justify;
         "KeepWithNext": "0" => 0, "1" => 1, |r| r.0.keep_with_next;
+        "KeepWithPrevious": "false" => false, "true" => true, |r| r.0.keep_with_previous;
         "KeepLinesTogether": "false" => false, "true" => true, |r| r.0.keep_lines_together;
         "KeepAllLinesTogether": "false" => false, "true" => true, |r| r.0.keep_all_lines;
         "KeepFirstLines": "2" => 2, "3" => 3, |r| r.0.keep_first;

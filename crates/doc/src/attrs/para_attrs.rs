@@ -72,6 +72,9 @@ attr_set! {
         korean_char_breaks: bool = false,
         // Keeps
         keep_with_next: u32 = 0,
+        /// Keep with Previous: the paragraph's first line stays in the same column as the previous
+        /// paragraph's last line (as if that paragraph kept one line with next).
+        keep_with_previous: bool = false,
         keep_lines_together: bool = false,
         /// All lines in paragraph (true) or at start/end of paragraph (false).
         keep_all_lines: bool = false,
