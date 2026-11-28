@@ -388,6 +388,7 @@ impl Cache {
                 page,
                 running,
                 label: None,
+                label_style: None,
                 xrefs: with_xrefs.then(|| self.xref_index(doc)),
                 placed,
                 starts,

@@ -30,6 +30,8 @@ impl<'a> Ex<'a> {
         crate::xml::from_craft(model.to_el(|| self.fresh()))
     }
 
+    /// The document's footnote options as IDML's `FootnoteOption` (custom marks written as Symbols,
+    /// InDesign's nearest style).
     pub(super) fn footnote_option_el(&self) -> El {
         let o = &self.d.footnote_options;
         let marker = if o.ref_char_style == st::NO_CHAR_STYLE {
@@ -39,6 +41,9 @@ impl<'a> Ex<'a> {
         };
         let restart = names::NOTE_RESTART.iter().find(|r| r.0 == o.restart).map_or("DontRestart", |r| r.1);
         let affix = names::NOTE_AFFIX.iter().find(|r| r.0 == o.affix_in).map_or("NoPrefixSuffix", |r| r.1);
+        // Custom marks: InDesign's nearest style is Symbols; the marks themselves go in a document
+        // label (`FOOTNOTE_MARKS_LABEL`) for DesignCraft to read back.
+        let style = if o.custom().is_some() { designcraft_doc::NumberStyle::Symbols } else { o.style };
         let values = craft_idml::model::FootnotePreferences {
             start_at: Some(f64::from(o.start_at)),
             prefix: Some(o.prefix.clone()),
@@ -58,7 +63,7 @@ impl<'a> Ex<'a> {
             rule_width: Some(o.rule.width),
             rule_offset: Some(o.rule.offset),
             rule_color: Some(self.sw(&o.rule.color)),
-            numbering_style: Some(names::number_style_out(o.style).into()),
+            numbering_style: Some(names::number_style_out(style).into()),
             restart_numbering: Some(restart.into()),
             show_prefix_suffix: Some(affix.into()),
             marker_positioning: Some(names::note_marker_out(o.ref_position).into()),
