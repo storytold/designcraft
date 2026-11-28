@@ -13,7 +13,7 @@
 # it) and declares provides/conflicts against the AUR packages. Building a second one here under
 # the same asset name is what made the published package depend on upload order.
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--arch-tar-dir DIRECTORY]
 #
 # Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
@@ -27,10 +27,16 @@ APP_ID=ai.storyteller.designcraft
 
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
+ARCH_TAR_DIR=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
+    --arch-tar-dir)
+      [[ -n "${2:-}" ]] || { echo "error: --arch-tar-dir needs a directory" >&2; exit 2; }
+      ARCH_TAR_DIR="$2"
+      shift 2
+      ;;
     -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -44,9 +50,20 @@ case "$ARCH" in
   *) echo "unsupported architecture $ARCH" >&2; exit 2 ;;
 esac
 export DESIGNCRAFT_MAINTAINER="${DESIGNCRAFT_MAINTAINER:-DesignCraft maintainers <designcraft@storyteller.ai>}"
+IS_NIGHTLY=0
+if [[ "${DESIGNCRAFT_BUILD_CHANNEL:-}" == nightly-v1 || "$VERSION" == *-nightly* ]]; then
+  IS_NIGHTLY=1
+  export DESIGNCRAFT_BUILD_CHANNEL=nightly-v1
+  export DESIGNCRAFT_OVERRIDE_VERSION="$VERSION"
+fi
 BASENAME="designcraft-$VERSION-linux-$ARCH"
 
-echo "==> DesignCraft $VERSION for Linux $ARCH ($FORMATS)"
+if [[ -n "$ARCH_TAR_DIR" && "$IS_NIGHTLY" != 1 ]]; then
+  echo "error: --arch-tar-dir is only for Nightly builds" >&2
+  exit 2
+fi
+
+echo "==> DesignCraft $VERSION for Linux $ARCH ($FORMATS, channel=${DESIGNCRAFT_BUILD_CHANNEL:-stable})"
 
 has() {
   local fmt="$1"
@@ -75,6 +92,11 @@ install -Dm755 "$BIN/designcraft" "$STAGE/usr/bin/designcraft"
 install -Dm755 "$BIN/designcraft-cli" "$STAGE/usr/bin/designcraft-cli"
 "${CROSS_COMPILE:-}strip" "$STAGE/usr/bin/designcraft" "$STAGE/usr/bin/designcraft-cli" 2>/dev/null || true
 install -Dm644 "$HERE/$APP_ID.desktop" "$STAGE/usr/share/applications/$APP_ID.desktop"
+if [[ "$IS_NIGHTLY" = 1 ]]; then
+  sed -e 's|^StartupWMClass=.*|StartupWMClass=ai.storyteller.designcraft.nightly-v1|' \
+      "$STAGE/usr/share/applications/$APP_ID.desktop" >"$STAGE/usr/share/applications/$APP_ID.desktop.tmp"
+  mv "$STAGE/usr/share/applications/$APP_ID.desktop.tmp" "$STAGE/usr/share/applications/$APP_ID.desktop"
+fi
 install -Dm644 "$HERE/$APP_ID.mime.xml" "$STAGE/usr/share/mime/packages/$APP_ID.xml"
 install -Dm644 "$HERE/$APP_ID.thumbnailer" "$STAGE/usr/share/thumbnailers/$APP_ID.thumbnailer"
 mkdir -p "$STAGE/usr/share/metainfo"
@@ -100,13 +122,88 @@ if has tar; then
   echo "wrote $DIST/$BASENAME.tar.gz"
 fi
 
+# The Arch handoff keeps the same basename as the plain tarball in a separate directory.
+# Flatpak, OCI and direct tar consumers still get the original binary, not this launcher.
+if [[ -n "$ARCH_TAR_DIR" ]]; then
+  mkdir -p "$ARCH_TAR_DIR"
+  if [[ "$(cd "$ARCH_TAR_DIR" && pwd -P)" == "$(cd "$DIST" && pwd -P)" ]]; then
+    echo "error: the Arch tar directory must differ from the release directory" >&2
+    exit 2
+  fi
+  bash "$HERE/nightly-arch-tar.sh" "$STAGE/usr" "$WORK/arch-tar" "$ARCH_TAR_DIR" "$BASENAME"
+fi
+
 # ---- .deb / .rpm --------------------------------------------------------------------------------
 if has deb || has rpm; then
   command -v nfpm >/dev/null || { echo "error: nfpm not found (https://nfpm.goreleaser.com/install/)" >&2; exit 1; }
   export VERSION
   export NFPM_ARCH="$DEB_ARCH"
+  NFPM_STAGE="$STAGE"
+  export NFPM_NAME="designcraft"
+  export NFPM_BIN="designcraft"
+  export NFPM_CLI="designcraft-cli"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    NIGHTLY_DESK_ID="$APP_ID.nightly-v1"
+    export NFPM_NAME="designcraft-nightly"
+    export NFPM_BIN="designcraft-nightly"
+    export NFPM_CLI="designcraft-nightly-cli"
+    NFPM_STAGE="$WORK/nfpm-root"
+    rm -rf "$NFPM_STAGE"
+    cp -R "$STAGE" "$NFPM_STAGE"
+    install -Dm755 "$NFPM_STAGE/usr/bin/designcraft" "$NFPM_STAGE/usr/lib/designcraft-nightly/designcraft"
+    cat >"$NFPM_STAGE/usr/bin/$NFPM_BIN" <<'WRAPPER'
+#!/bin/sh
+# Start the compiled nightly-v1 flavor. Its profile is the Launcher's protocol (the app refuses a
+# DESIGNCRAFT_CONFIG_DIR override), so this wrapper passes the same pair the Launcher will.
+set -eu
+real_bin=/usr/lib/designcraft-nightly/designcraft
+if [ "${1:-}" = "--launch-profile" ] || [ "${1:-}" = "--profile-root" ]; then
+  # The Launcher already supplied the protocol: pass its command line through untouched.
+  exec "$real_bin" "$@"
+fi
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  exec "$real_bin" "$@"
+fi
+profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"
+if [ "${1:-}" = "--" ]; then
+  # The caller's own separator stays the only one.
+  exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" "$@"
+fi
+exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
+WRAPPER
+    chmod 755 "$NFPM_STAGE/usr/bin/$NFPM_BIN"
+    rm -f "$NFPM_STAGE/usr/bin/designcraft"
+    mv "$NFPM_STAGE/usr/bin/designcraft-cli" "$NFPM_STAGE/usr/bin/$NFPM_CLI"
+    mv "$NFPM_STAGE/usr/share/doc/designcraft" "$NFPM_STAGE/usr/share/doc/$NFPM_NAME"
+    sed -e "s#^Exec=designcraft\([[:space:]]\|$\)#Exec=$NFPM_BIN\1#" \
+        -e "s|^TryExec=designcraft$|TryExec=$NFPM_BIN|" \
+        -e "s|^Icon=$APP_ID$|Icon=$NIGHTLY_DESK_ID|" \
+        -e "s|^Name=DesignCraft$|Name=DesignCraft Nightly|" \
+        -e '/^MimeType=/d' \
+        "$NFPM_STAGE/usr/share/applications/$APP_ID.desktop" >"$NFPM_STAGE/usr/share/applications/$NIGHTLY_DESK_ID.desktop"
+    rm -f "$NFPM_STAGE/usr/share/applications/$APP_ID.desktop"
+    sed -e "s|<id>$APP_ID</id>|<id>$NIGHTLY_DESK_ID</id>|g" \
+        -e "s|<name>DesignCraft</name>|<name>DesignCraft Nightly</name>|g" \
+        -e "s|<launchable type=\"desktop-id\">$APP_ID.desktop</launchable>|<launchable type=\"desktop-id\">$NIGHTLY_DESK_ID.desktop</launchable>|g" \
+        -e "s|<icon type=\"stock\">$APP_ID</icon>|<icon type=\"stock\">$NIGHTLY_DESK_ID</icon>|g" \
+        -e "s|<binary>designcraft</binary>|<binary>$NFPM_BIN</binary>|g" \
+        "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml" >"$NFPM_STAGE/usr/share/metainfo/$NIGHTLY_DESK_ID.metainfo.xml"
+    rm -f "$NFPM_STAGE/usr/share/metainfo/$APP_ID.metainfo.xml"
+    rm -rf "$NFPM_STAGE/usr/share/mime" "$NFPM_STAGE/usr/share/thumbnailers"
+    NIGHTLY_ICON="$ROOT/assets/app-icon/designcraft-nightly.png"
+    if [[ ! -f "$NIGHTLY_ICON" ]]; then
+      NIGHTLY_ICON="$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png"
+    fi
+    rm -rf "$NFPM_STAGE/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" \
+      "$NFPM_STAGE/usr/share/icons/hicolor/256x256/apps/$NIGHTLY_DESK_ID.png"
+  fi
   # nfpm expands env vars in fields like `version` and `arch`, but not in `contents[].src`.
-  sed "s|\${STAGE}|$STAGE|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
+  DROP_LIB_TREE=
+  # shellcheck disable=SC2016
+  [[ -d "$NFPM_STAGE/usr/lib" ]] || DROP_LIB_TREE='\|^  - src: \${STAGE}/usr/lib/|,+2d;'
+  # shellcheck disable=SC2016
+  sed "${DROP_LIB_TREE}s|\${STAGE}|$NFPM_STAGE|g;s|\${NFPM_BIN}|$NFPM_BIN|g;s|\${NFPM_CLI}|$NFPM_CLI|g" "$HERE/nfpm.yaml" >"$WORK/nfpm.yaml"
   for fmt in deb rpm; do
     if has "$fmt"; then (cd "$ROOT" && nfpm package -f "$WORK/nfpm.yaml" -p "$fmt" -t "$DIST/$BASENAME.$fmt"); fi
   done
@@ -125,10 +222,51 @@ if has appimage; then
   cp -R "$STAGE" "$APPDIR"
   # Keep sctk-adwaita's MIT notice in the AppImage.
   install -Dm644 "$ROOT/NOTICE" "$APPDIR/usr/share/doc/designcraft/NOTICE"
-  ln -s usr/bin/designcraft "$APPDIR/AppRun"
-  cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
-  cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
-  ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
+  if [[ "$IS_NIGHTLY" = 1 ]]; then
+    APPIMAGE_ID="$APP_ID.nightly-v1"
+    cat >"$APPDIR/AppRun" <<'APPRUN'
+#!/bin/sh
+# Start the compiled nightly-v1 flavor. A real file, never a symlink to the binary: the flavor
+# needs the Launcher's profile pair, and the app refuses a DESIGNCRAFT_CONFIG_DIR override.
+set -eu
+APPDIR="${APPDIR:-$(cd "$(dirname "$0")" && pwd)}"
+real_bin="$APPDIR/usr/bin/designcraft"
+if [ "${1:-}" = "--launch-profile" ] || [ "${1:-}" = "--profile-root" ]; then
+  # The Launcher already supplied the protocol: pass its command line through untouched.
+  exec "$real_bin" "$@"
+fi
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-V" ]; then
+  exec "$real_bin" "$@"
+fi
+profile_root="${XDG_DATA_HOME:-${HOME:?HOME is required}/.local/share}/designcraft-nightly"
+if [ "${1:-}" = "--" ]; then
+  # The caller's own separator stays the only one.
+  exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" "$@"
+fi
+exec "$real_bin" --launch-profile nightly-v1 --profile-root "$profile_root" -- "$@"
+APPRUN
+    chmod 755 "$APPDIR/AppRun"
+    sed -e "s|^Icon=$APP_ID$|Icon=$APPIMAGE_ID|" \
+        -e "s|^Name=DesignCraft$|Name=DesignCraft Nightly|" \
+        -e '/^MimeType=/d' \
+        "$APPDIR/usr/share/applications/$APP_ID.desktop" >"$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop"
+    rm -f "$APPDIR/usr/share/applications/$APP_ID.desktop"
+    cp "$APPDIR/usr/share/applications/$APPIMAGE_ID.desktop" "$APPDIR/$APPIMAGE_ID.desktop"
+    NIGHTLY_ICON="$ROOT/assets/app-icon/designcraft-nightly.png"
+    if [[ ! -f "$NIGHTLY_ICON" ]]; then
+      NIGHTLY_ICON="$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png"
+    fi
+    rm -rf "$APPDIR/usr/share/icons/hicolor"
+    install -Dm644 "$NIGHTLY_ICON" \
+      "$APPDIR/usr/share/icons/hicolor/256x256/apps/$APPIMAGE_ID.png"
+    cp "$NIGHTLY_ICON" "$APPDIR/$APPIMAGE_ID.png"
+    ln -s "$APPIMAGE_ID.png" "$APPDIR/.DirIcon"
+  else
+    ln -s usr/bin/designcraft "$APPDIR/AppRun"
+    cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
+    cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"
+    ln -s "$APP_ID.png" "$APPDIR/.DirIcon"
+  fi
 
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
   if [[ -z "$TOOL" ]]; then
@@ -155,11 +293,24 @@ if has appimage; then
   # each AppImage on GitHub Releases. `latest` is the newest published release that is not a
   # pre-release. A fork's builds point at its own releases through GITHUB_REPOSITORY.
   REPO="${GITHUB_REPOSITORY:-storytold/designcraft}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|designcraft-*-linux-$ARCH.AppImage.zsync"
+  UPDATE_ARGS=()
+  if [[ "$IS_NIGHTLY" = 0 ]]; then
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|designcraft-*-linux-$ARCH.AppImage.zsync"
+    UPDATE_ARGS=(-u "$UPDATE_INFO")
+  else
+    # Nightly releases are GitHub pre-releases (`latest` only selects stable releases), so point
+    # zsync update metadata at pre-release tags rather than stable `latest`.
+    NIGHTLY_ZSYNC_PATTERN="designcraft-*-nightly*-linux-$ARCH.AppImage.zsync"
+    if [[ "$VERSION" != *-nightly* ]]; then
+      NIGHTLY_ZSYNC_PATTERN="designcraft-*-linux-$ARCH.AppImage.zsync"
+    fi
+    UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest-pre|$NIGHTLY_ZSYNC_PATTERN"
+    UPDATE_ARGS=(-u "$UPDATE_INFO")
+  fi
   # Extract-and-run: works without FUSE (containers, CI). The output embeds the static runtime,
   # so users don't need libfuse2 either. With zsyncmake on the host (CI installs the zsync
   # package) appimagetool also writes the .zsync, into its working directory, hence the cd.
-  (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")
+  (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream "${UPDATE_ARGS[@]}" "$APPDIR" "$OUT")
   echo "wrote $OUT"
   if [[ -s "$OUT.zsync" ]]; then
     echo "wrote $OUT.zsync"

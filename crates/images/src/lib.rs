@@ -12,8 +12,9 @@ mod eps;
 mod jpeg;
 mod psd;
 mod resolution;
+mod tiff_reduced;
 mod tone;
-pub use craft_eps::is_eps;
+pub use craft_ps::read::is_eps;
 pub use eps::{bounding_box as eps_bounding_box, eps_pixel_size, eps_png, eps_proxy, eps_size};
 pub use tone::{Tone, tone};
 
@@ -306,6 +307,7 @@ pub fn svg_tree(bytes: &[u8]) -> Option<usvg::Tree> {
     let limits = craft_svg::tree::Limits {
         bytes: MAX_SVG_BYTES,
         depth: MAX_SVG_DEPTH,
+        tree_depth: MAX_SVG_DEPTH,
         refuse_entity_markup: true,
         xml_nodes: MAX_SVG_EVENTS as u32,
         embedded_bytes: 32 * 1024 * 1024,
@@ -343,10 +345,11 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
 /// Unpremultiplied RGBA pixels, rows top to bottom, as a PNG file with no resolution stored.
 /// `None` when `rgba` doesn't hold exactly `width × height` pixels.
 pub fn png_from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
-    let img = image::RgbaImage::from_raw(width, height, rgba)?;
-    let mut png = Vec::new();
-    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
-    Some(png)
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let image = craft_image_codecs::Image::from_u8(width, height, craft_image_codecs::ChannelLayout::Rgba, rgba).ok()?;
+    craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &Default::default()).ok()
 }
 
 /// Pixel dimensions of a raster.
@@ -360,11 +363,9 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
         let header = craft_psd::header::Header::from_bytes(bytes).ok()?;
         return Some((header.width, header.height));
     }
-    craft_image_codecs::inspect_raster(bytes)
+    craft_image_codecs::probe_size(bytes)
         .ok()
-        .flatten()
-        .map(|image| (image.width, image.height))
-        .or_else(|| craft_image_codecs::probe_size(bytes).ok())
+        .or_else(|| craft_image_codecs::inspect_raster(bytes).ok().flatten().map(|image| (image.width, image.height)))
         .or_else(|| {
             let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
             Some(image.dimensions())
@@ -377,11 +378,12 @@ const MAX_RGBA_BYTES: u64 = 1 << 30;
 /// Whether a raster's header gives it more pixels than [`decode_rgba`] decodes.
 pub fn too_large_to_decode(bytes: &[u8]) -> bool {
     // `image` limits only its own output, which can be a quarter of the RGBA copy or less.
-    pixel_size(bytes).is_some_and(|(w, h)| over_rgba_budget(w, h))
+    let dims = if is_psd(bytes) { pixel_size(bytes) } else { craft_image_codecs::probe_allocation_size(bytes).ok().or_else(|| pixel_size(bytes)) };
+    dims.is_some_and(|(w, h)| over_rgba_budget(w, h))
 }
 
 /// Whether a `w` × `h` raster takes more than [`MAX_RGBA_BYTES`] as RGBA.
-fn over_rgba_budget(w: u32, h: u32) -> bool {
+pub(crate) fn over_rgba_budget(w: u32, h: u32) -> bool {
     u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4) > MAX_RGBA_BYTES
 }
 
@@ -402,7 +404,7 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
     }
     let decoded = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
     if decoded.layout().is_cmyk() {
-        let raster = cmyk_raster(&decoded, bytes)?;
+        let raster = cmyk_raster(&decoded)?;
         return to_display_rgba(Pixels::Cmyk(raster), decoded.icc.as_deref(), &DisplayColour::active());
     }
     let rgba = image::RgbaImage::from_raw(decoded.width(), decoded.height(), decoded.to_rgba8())?;
@@ -415,9 +417,10 @@ pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
 /// copy of its result. A decode holds the samples as decoded beside the 8-bit RGBA (or, for
 /// CMYK, the 8-bit CMYKA copy and its ink and alpha planes) they are converted to, or two copies
 /// of the decoded samples while they are turned upright; float and Lab samples convert through
-/// 32-bit float copies. A progressive JPEG adds its coefficients (two bytes a component). At
-/// least 8: the RGBA result and its premultiplied copy. An EPS counts as its TIFF preview, or 8
-/// for its placeholder or drawn PostScript.
+/// 32-bit float copies. A JPEG adds its worst-case held DCT coefficients
+/// (`craft_image_codecs::jpeg_worst_case_coefficients`, budgeting progressive, arithmetic, lossless,
+/// and 12-bit frames). At least 8: the RGBA result and its premultiplied copy. An EPS counts as its
+/// TIFF preview, or 8 for its placeholder or drawn PostScript.
 pub fn decode_bytes_per_pixel(bytes: &[u8]) -> usize {
     use craft_image_codecs::{Format, RasterColorType as C};
     if is_eps(bytes) {
@@ -471,7 +474,12 @@ pub fn decode_bytes_per_pixel(bytes: &[u8]) -> usize {
     let converted = if direct && !float { out } else { 4 * channels + 4 * out + out };
     // CMYK splits the 8-bit CMYKA copy into ink and alpha planes.
     let split = if cmyk { 5 } else { 0 };
-    let coefficients = jpeg::progressive_coefficient_bytes(bytes);
+    let pixels = u64::from(info.width).saturating_mul(u64::from(info.height));
+    let coefficients = if format == Some(Format::Jpeg) && pixels > 0 {
+        usize::try_from(craft_image_codecs::jpeg_worst_case_coefficients(bytes).div_ceil(pixels)).unwrap_or(usize::MAX)
+    } else {
+        0
+    };
     (stored + converted + split).max(2 * stored).max(coefficients + stored).max(8)
 }
 
@@ -479,39 +487,20 @@ fn decode_options() -> craft_image_codecs::DecodeOptions {
     craft_image_codecs::DecodeOptions { limits: craft_image_codecs::Limits { max_alloc: MAX_RGBA_BYTES, ..Default::default() }, ..Default::default() }
 }
 
-/// Whether an APP14 "Adobe" segment comes before the image data.
-fn adobe_marker(bytes: &[u8]) -> bool {
-    let mut i = 2;
-    while let Some(&[0xFF, marker, hi, lo]) = bytes.get(i..i + 4).and_then(|s| <&[u8; 4]>::try_from(s).ok()) {
-        // Start of scan or end of image: no more header segments.
-        if marker == 0xDA || marker == 0xD9 {
-            return false;
-        }
-        let len = usize::from(u16::from_be_bytes([hi, lo]));
-        if marker == 0xEE && bytes.get(i + 4..i + 9) == Some(b"Adobe".as_slice()) {
-            return true;
-        }
-        i += 2 + len;
-    }
-    false
-}
-
-fn cmyk_raster(image: &craft_image_codecs::Image, bytes: &[u8]) -> Option<CmykRaster> {
+/// Convert the shared decoder's CMYK values to the app's ink raster without changing their
+/// polarity. `craft-image-codecs` already interprets Adobe-marked and unmarked JPEG CMYK and
+/// YCCK samples; inverting unmarked JPEGs here reverses their documented device-ink values.
+fn cmyk_raster(image: &craft_image_codecs::Image) -> Option<CmykRaster> {
     let converted = image.convert(craft_image_codecs::ChannelLayout::CmykA, craft_image_codecs::SampleType::U8);
     let pixels = usize::try_from(converted.width()).ok()?.checked_mul(usize::try_from(converted.height()).ok()?)?;
     let data = converted.as_u8()?;
     if data.len() != pixels.checked_mul(5)? {
         return None;
     }
-    let invert = bytes.starts_with(&[0xFF, 0xD8]) && !adobe_marker(bytes);
     let mut cmyk = Vec::with_capacity(pixels.checked_mul(4)?);
     let mut alpha = Vec::with_capacity(pixels);
     for &[c, m, y, k, a] in data.as_chunks::<5>().0 {
-        if invert {
-            cmyk.extend([255 - c, 255 - m, 255 - y, 255 - k]);
-        } else {
-            cmyk.extend([c, m, y, k]);
-        }
+        cmyk.extend([c, m, y, k]);
         alpha.push(a);
     }
     let alpha = alpha.iter().any(|&a| a < 255).then_some(alpha);
@@ -523,6 +512,17 @@ fn cmyk_raster(image: &craft_image_codecs::Image, bytes: &[u8]) -> Option<CmykRa
 /// cannot handle the image.
 pub fn reduced_jpeg_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
     jpeg::reduced_estimate(bytes, shrink)
+}
+
+/// Whether [`decode_rgba_reduced`] handles this format (JPEGs and TIFFs).
+pub fn supports_reduced_decode(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8]) || tiff_reduced::is_tiff(bytes)
+}
+
+/// Dimensions and estimated peak bytes for an image decoded at `1/2^shrink`, without decoding its
+/// pixels. `None` when [`decode_rgba_reduced`] cannot handle the image.
+pub fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
+    if tiff_reduced::is_tiff(bytes) { tiff_reduced::reduced_estimate(bytes, shrink) } else { jpeg::reduced_estimate(bytes, shrink) }
 }
 
 /// False when `bytes` is a WebP whose `ICCP` chunk declares more bytes than the file holds or than
@@ -553,13 +553,17 @@ pub(crate) fn embedded_icc(bytes: &[u8]) -> Option<Vec<u8>> {
 /// The largest `shrink` [`decode_rgba_reduced`] takes: 3, an eighth of each side.
 pub const MAX_REDUCED_SHRINK: u8 = jpeg::MAX_SHRINK;
 
-/// [`decode_rgba`] of a JPEG at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each
-/// side rounded up), read from its compressed blocks without a full-size decode. The embedded ICC
-/// profile is applied as [`decode_rgba`] applies it. `None` where only a full decode applies: other
-/// formats, CMYK, 12-bit and lossless JPEGs, files whose size [`pixel_size`] cannot read, and files
-/// [`decode_rgba`] refuses as too large.
+/// [`decode_rgba`] at 1/2^`shrink` of its size (`shrink` 1 to [`MAX_REDUCED_SHRINK`], each side
+/// rounded up), read without a full-size decode. The embedded ICC profile (and working CMYK space
+/// for CMYK TIFFs) is applied as [`decode_rgba`] applies it. `None` where only a full decode
+/// applies: other formats, CMYK/12-bit/lossless JPEGs, non-CMYK separated TIFFs (`InkSet` 2),
+/// files whose size [`pixel_size`] cannot read, JPEGs whose full size is over the full decode's
+/// limit, and TIFFs whose reduced output or strip/tile band exceeds budget.
 pub fn decode_rgba_reduced(bytes: &[u8], shrink: u8) -> Option<image::RgbaImage> {
     use colour::{DisplayColour, Pixels, to_display_rgba};
+    if tiff_reduced::is_tiff(bytes) {
+        return tiff_reduced::decode_reduced(bytes, shrink);
+    }
     // The size check must have a size to check: a header only the JPEG decoder reads is refused.
     pixel_size(bytes)?;
     if too_large_to_decode(bytes) {
@@ -584,7 +588,7 @@ pub struct CmykRaster {
 }
 
 /// The TIFF page that decoding opens; `None` for other formats.
-fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
+pub(crate) fn default_tiff_page(bytes: &[u8]) -> Option<craft_image_codecs::TiffPage> {
     let mut info = craft_image_codecs::tiff_info(bytes).ok()?;
     let page = info.default_page()?;
     (page < info.pages.len()).then(|| info.pages.swap_remove(page))
@@ -609,7 +613,7 @@ pub fn decode_cmyk_tiff(bytes: &[u8]) -> Option<CmykRaster> {
         return None;
     }
     let image = craft_image_codecs::decode_with(bytes, &decode_options()).ok()?;
-    image.layout().is_cmyk().then(|| cmyk_raster(&image, bytes)).flatten()
+    image.layout().is_cmyk().then(|| cmyk_raster(&image)).flatten()
 }
 
 /// An SVG rasterised so its longer side is `max_side` pixels: premultiplied RGBA8.

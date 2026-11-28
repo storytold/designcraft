@@ -209,7 +209,7 @@ fn resolve_in(params: &Value, results: &[Value], max_ref: usize, budget: &mut us
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
     pub results: Vec<Value>,
-    /// The failing step (index, command, message); later steps didn't run.
+    /// The first failing step (index, command, message), if any.
     pub failed: Option<(usize, String, String)>,
 }
 
