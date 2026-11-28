@@ -95,8 +95,11 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             let name = r["name"].as_str().unwrap_or("");
             let storage = r["storage"].as_str().unwrap_or("");
             let thumb = if r["story"].is_null() { app.session.active().and_then(|st| proxy_thumb(ui.ctx(), st.uid, &st.doc, aid)) } else { None };
+            // A grid cell starts a `horizontal` at one line's height and centres it in the row, so
+            // the second line (the source path) would grow past the row's stripe into the next row:
+            // lay the cell out from the row's top edge instead.
             let response = ui
-                .horizontal(|ui| {
+                .scope_builder(egui::UiBuilder::new().layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
                     if let Some(tex) = &thumb {
                         ui.add(egui::Image::new(tex).fit_to_exact_size(vec2(THUMB, THUMB)));
                     }
