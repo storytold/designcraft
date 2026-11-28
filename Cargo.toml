@@ -52,6 +52,7 @@ designcraft-images = { path = "crates/images" }
 designcraft-render = { path = "crates/render" }
 designcraft-pdf = { path = "crates/pdf" }
 designcraft-idml = { path = "crates/idml" }
+designcraft-sla = { path = "crates/sla" }
 designcraft-epub = { path = "crates/epub" }
 designcraft-pptx = { path = "crates/pptx" }
 designcraft-textimport = { path = "crates/textimport" }
@@ -97,6 +98,7 @@ flo_curves = "0.8"
 # QR codes (Object › Generate QR Code); MIT.
 qrcodegen = "1.8"
 quick-xml = "0.41"
+flate2 = "1"
 zip = { version = "3", default-features = false, features = ["deflate"] }
 # Which paths stored in documents may be followed (craft-libs).
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "33be35625e252cc4f06aa375b3b428521faea37d" }

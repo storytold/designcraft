@@ -102,6 +102,8 @@ enum ReadContent {
     Native { doc: Box<Document>, warnings: Vec<String>, links: crate::cmd::native_links::Opened },
     /// An IDML or InDesign file's bytes, imported when installed.
     Interchange(Vec<u8>),
+    /// A Scribus `.sla` file's bytes, imported when installed (the document starts unsaved).
+    Scribus(Vec<u8>),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -132,8 +134,12 @@ pub fn read_document(path: &str, cancel: &std::sync::atomic::AtomicBool) -> Resu
     if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
         return Ok(ReadDocument { path: path.to_string(), content: ReadContent::Interchange(bytes) });
     }
+    let ext = std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).unwrap_or_default().to_ascii_lowercase();
+    if !native && (crate::cmd::scribus::is_sla(&bytes) || ext == designcraft_sla::EXTENSION) {
+        return Ok(ReadDocument { path: path.to_string(), content: ReadContent::Scribus(bytes) });
+    }
     if !native && legacy.is_none() {
-        return Err(bad("file.open", format!("{path}: not a DesignCraft or IDML file")));
+        return Err(bad("file.open", format!("{path}: not a DesignCraft, IDML or Scribus file")));
     }
     let (mut d, warnings) = match legacy {
         Some(loaded) => loaded,
@@ -156,8 +162,10 @@ pub fn read_document(path: &str, cancel: &std::sync::atomic::AtomicBool) -> Resu
 #[cfg(not(target_arch = "wasm32"))]
 fn install_document(s: &mut Session, read: ReadDocument) -> Result<Value> {
     let ReadDocument { path, content } = read;
-    let r = match content {
-        ReadContent::Interchange(bytes) => crate::cmd::interchange::open_idml_file(s, bytes, &path)?,
+    let (r, note_recent) = match content {
+        ReadContent::Interchange(bytes) => (crate::cmd::interchange::open_idml_file(s, bytes, &path)?, true),
+        // A Scribus file starts unsaved and is not entered as a recent native path.
+        ReadContent::Scribus(bytes) => (crate::cmd::scribus::open_sla_from(s, &bytes, Some(path.as_str()))?, false),
         ReadContent::Native { doc, mut warnings, links } => {
             let mut d = *doc;
             let (fonts, faces, font_warnings) = load_document_fonts(&mut d, &path);
@@ -167,10 +175,12 @@ fn install_document(s: &mut Session, read: ReadDocument) -> Result<Value> {
             st.fonts = fonts;
             let checks = crate::cmd::native_links::start(&mut st, links);
             let i = s.add_document(st);
-            json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks})
+            (json!({"index": i, "documentFonts": faces, "warnings": warnings, "linkChecks": checks}), true)
         }
     };
-    s.prefs.note_recent_file(&path);
+    if note_recent {
+        s.prefs.note_recent_file(&path);
+    }
     Ok(r)
 }
 
@@ -227,6 +237,9 @@ pub(super) fn file_open_bytes(s: &mut Session, p: &Value) -> Result<Value> {
     let legacy = (format == Some(craft_file_formats::Format::Indd) && !native).then(|| load_bytes(&b).ok()).flatten();
     if format == Some(craft_file_formats::Format::Idml) || (!native && format == Some(craft_file_formats::Format::Indd) && legacy.is_none()) {
         return crate::cmd::interchange::open_idml(s, p);
+    }
+    if crate::cmd::scribus::is_sla(&b) {
+        return crate::cmd::scribus::open_sla(s, p);
     }
     let (mut d, warnings) = match legacy {
         Some(loaded) => loaded,
