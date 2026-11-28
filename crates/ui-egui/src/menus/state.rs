@@ -116,10 +116,12 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         "view.baselineGrid" => app.ui.baseline_grid,
         "view.documentGrid" => app.ui.document_grid,
         "view.textThreads" => app.ui.text_threads,
+        "view.linkBadge" => app.ui.link_badge,
         "view.hiddenCharacters" => app.ui.hidden_characters,
         "view.taggedFrames" => app.ui.tagged_frames,
         "view.storyEditorStyleColumn" => app.ui.story_editor_style_column,
         "view.storyEditorDepthRuler" => app.ui.story_editor_depth_ruler,
+        "view.storyEditorParagraphMarks" => app.ui.story_editor_paragraph_marks,
         "changes.track" => app.session.active().is_some_and(|d| d.doc.settings.track_changes),
         // Pressed, as the Bulleted and Numbered List buttons: every paragraph the command applies
         // to (selected text, cells or text frames) has it.
@@ -154,7 +156,7 @@ pub fn checked(app: &DesignApp, id: &str, params: &Value) -> Option<bool> {
         },
         "edit.dynamicSpelling" => app.ui.dynamic_spelling,
         "app.language" => app.ui.language == params.get("lang").and_then(Value::as_str).unwrap_or(""),
-        "app.flattener" => app.ui.flattener == params.get("preset").and_then(Value::as_str).unwrap_or(""),
+        "app.flattener" => app.ui.pdf_export.resolved_flatten(&app.ui.flattener) == params.get("preset").and_then(Value::as_str).unwrap_or(""),
         "window.taskBar" => app.ui.task_bar,
         "window.taskBarPin" => app.ui.task_bar_pin.is_some(),
         "window.toolsDoubleColumn" => app.ui.tools_double_column,

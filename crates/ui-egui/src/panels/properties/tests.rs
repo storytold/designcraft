@@ -135,6 +135,48 @@ fn stroke_panel_shows_the_text_stroke_options_while_text_is_selected() {
     h.get_by_label("Stroke Behind Fill");
 }
 
+#[test]
+fn stroke_panel_with_no_selection_edits_default_stroke_for_pencil_tool() {
+    use designcraft_tools::{PointerEvent, PointerKind};
+
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    let existing = app.run("frame.create", json!({"rect": [10, 10, 50, 50], "content": "unassigned"})).unwrap()["id"].as_u64().unwrap();
+    app.run("selection.set", json!({"ids": []})).unwrap();
+
+    let mut ready = false;
+    let mut h = Harness::builder().with_size(vec2(320.0, 400.0)).build_ui_state(
+        move |ui, app: &mut DesignApp| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx(), "");
+                crate::theme::apply(ui.ctx(), &Tokens::for_brightness(Default::default()));
+                ready = true;
+                return;
+            }
+            stroke_panel(app, ui);
+        },
+        app,
+    );
+    h.run_steps(3);
+    assert!(h.query_by_label("Select an object.").is_none());
+    let field = h.get_all_by_role(egui::accesskit::Role::TextInput).next().unwrap().rect();
+    type_in_field(&mut h, field, "6");
+
+    let app = h.state_mut();
+    assert_eq!(app.session.active().unwrap().doc.settings.new_object.stroke_weight, 6.0);
+    assert_eq!(app.session.active().unwrap().doc.item(designcraft_doc::ItemId(existing)).unwrap().stroke.weight, 1.0);
+
+    app.session.set_tool("pencil");
+    let v = designcraft_engine::ViewInfo::at_zoom(1.0);
+    app.session.pointer(&PointerEvent::new(PointerKind::Down, 100.0, 100.0), v).unwrap();
+    for i in 1..=15 {
+        app.session.pointer(&PointerEvent::new(PointerKind::Drag, 100.0 + i as f64 * 4.0, 100.0 + i as f64 * 2.0), v).unwrap();
+    }
+    app.session.pointer(&PointerEvent::new(PointerKind::Up, 160.0, 130.0), v).unwrap();
+    let drawn = *app.session.active().unwrap().selection.items.first().unwrap();
+    assert_eq!(app.session.active().unwrap().doc.item(drawn).unwrap().stroke.weight, 6.0);
+}
+
 /// The text Stroke panel's Weight keeps a typed value inside the character stroke weight's
 /// range of 0 to 800 pt, as the character style's Weight field does.
 #[test]
@@ -408,6 +450,49 @@ fn paragraph_panel_keeps_first_line_only() {
     h.get_by_label("☰").click();
     h.run_steps(3);
     let _ = h.get_by_label("✓ Only Align First Line to Grid");
+}
+
+/// Show Right-to-Left Features adds the Paragraph Direction buttons to the Paragraph panel: off,
+/// only the panel menu has direction; on, Right to Left sets it and mirrors left alignment, and
+/// Left to Right switches back.
+#[test]
+fn paragraph_panel_direction_buttons_follow_show_right_to_left_features() {
+    let mut app = text_app();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = panel_harness(app, paragraph_panel);
+    h.run_steps(3);
+    assert!(h.query_by_label("Right-to-Left Paragraph Direction").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Left-to-Right Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Right-to-Left Paragraph Direction").click();
+    h.run_steps(3);
+    let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+    assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    // With the preference off in an English interface, a right-to-left paragraph still shows them.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+    h.get_by_label("Left-to-Right Paragraph Direction").click();
+    h.run_steps(3);
+    let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("leftToRight"), Some("left")));
+}
+
+/// Left unset, Show Right-to-Left Features follows the interface language in the panels too: the
+/// Paragraph panel shows the direction buttons in an Arabic interface and not in an English one.
+#[test]
+fn paragraph_panel_direction_buttons_follow_the_interface_language_when_unset() {
+    for (lang, shown) in [("", false), ("ar", true)] {
+        let mut app = text_app();
+        app.ui.language = lang.into();
+        assert_eq!(app.session.prefs.rtl_features, None, "unset");
+        let label = crate::i18n::tr(lang, "Right-to-Left Paragraph Direction").to_string();
+        let mut h = panel_harness(app, paragraph_panel);
+        h.run_steps(3);
+        assert_eq!(h.query_by_label(&label).is_some(), shown, "{lang:?}");
+    }
 }
 
 #[test]
@@ -902,6 +987,45 @@ fn the_bulleted_list_button_applies_a_hanging_indent() {
     h.run_steps(3);
     let a = h.state_mut().run("type.selectionAttrs", json!({})).unwrap();
     assert_eq!((a["para"]["listType"].as_str(), a["para"]["leftIndent"].as_f64()), (Some("none"), Some(0.0)));
+}
+
+/// Show Right-to-Left Features adds the Paragraph Direction buttons to Properties › Paragraph,
+/// right after alignment.
+#[test]
+fn properties_paragraph_direction_follows_show_right_to_left_features() {
+    let mut app = text_app();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = panel(app);
+    assert!(h.query_by_label("Right-to-Left Paragraph Direction").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Right-to-Left Paragraph Direction").click();
+    h.run_steps(3);
+    let p = text_attrs(h.state_mut()).unwrap()["para"].clone();
+    assert_eq!((p["direction"].as_str(), p["align"].as_str()), (Some("rightToLeft"), Some("right")));
+    // With the preference off in an English interface, a right-to-left paragraph still shows them.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right-to-Left Paragraph Direction").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
+}
+
+/// Show Right-to-Left Features adds Binding beside the orientation in Properties › Document.
+#[test]
+fn properties_document_binding_follows_show_right_to_left_features() {
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    let mut h = panel(app);
+    assert!(h.query_by_label("Right to Left").is_none(), "hidden while the preference is off");
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": true})).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Right to Left").click();
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().doc.settings.right_to_left_binding);
+    // With the preference off in an English interface, a right-to-left bound document still shows it.
+    h.state_mut().run("prefs.set", json!({"rtlFeatures": false})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Right to Left").accesskit_node().toggled(), Some(egui::accesskit::Toggled::True));
 }
 
 #[test]
@@ -1629,4 +1753,39 @@ fn text_frame_section_shows_the_frame_that_shows_the_caret() {
         Selection::text(TextSel { story: StoryId(sid), anchor: text.len(), focus: text.len(), frame: Some(ItemId(a)), cell: None });
     let shown = super::text::text_frame_target(&app).map(|(id, o, _)| (id, o.columns));
     assert_eq!(shown, Some((ItemId(b), 3)));
+}
+
+/// #2543: Relink to Folder opens a folder picker (not a file picker) and relinks the missing
+/// graphic from the chosen folder.
+#[test]
+fn relink_to_folder_asks_for_a_folder_and_relinks() {
+    use std::{cell::RefCell, rc::Rc};
+    let dir = tempfile::tempdir().unwrap();
+    let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+    std::fs::create_dir_all(&from).unwrap();
+    std::fs::create_dir_all(&to).unwrap();
+    let png = designcraft_render::Rendered { width: 10, height: 10, pixels: vec![200; 400] }.to_png();
+    let old = from.join("photo.png");
+    std::fs::write(&old, &png).unwrap();
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({})).unwrap();
+    app.run("file.place", json!({"path": old.to_string_lossy()})).unwrap();
+    let moved = to.join("photo.png");
+    std::fs::rename(&old, &moved).unwrap();
+    let rows = app.session.execute("links.list", &json!({})).unwrap();
+    assert_eq!(rows[0]["status"], "missing");
+    let seen: Rc<RefCell<Option<craft_dialogs::Kind>>> = Rc::default();
+    let seen2 = seen.clone();
+    let dest = to.to_string_lossy().to_string();
+    app.answer_dialogs(move |request| {
+        let craft_dialogs::Request::File(dialog) = request else { return craft_dialogs::Answer::Cancelled };
+        *seen2.borrow_mut() = Some(dialog.kind);
+        craft_dialogs::Answer::Paths(vec![dest.clone().into()])
+    });
+    super::links::relink_to_folder(&mut app).unwrap();
+    app.settle_dialogs();
+    assert_eq!(seen.borrow().clone(), Some(craft_dialogs::Kind::Folder), "Relink to Folder opens a folder picker");
+    let rows = app.session.execute("links.list", &json!({})).unwrap();
+    assert_eq!(rows[0]["status"], "ok", "{rows:?}");
+    assert!(app.ui.status.contains("Relinked 1"), "status line says what happened: {:?}", app.ui.status);
 }
