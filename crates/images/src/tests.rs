@@ -1873,7 +1873,7 @@ fn layered_tiff(w: u32, h: u32, resources_len: usize, layers_len: usize) -> Vec<
         (273, 4, 1, 0),
         (277, 3, 1, 4),
         (278, 4, 1, h),
-        (279, 4, 1, (w * h * 4) as u32),
+        (279, 4, 1, w * h * 4),
         (34377, 1, resources_len as u32, 0),
         (37724, 1, layers_len as u32, 0),
     ];
@@ -1883,9 +1883,7 @@ fn layered_tiff(w: u32, h: u32, resources_len: usize, layers_len: usize) -> Vec<
     let mut extra_data_off = ifd_start + ifd_len;
     let bps_off = extra_data_off;
     extra_data_off += 4 * 2;
-    let strip_offsets_off = extra_data_off;
     extra_data_off += 4;
-    let strip_counts_off = extra_data_off;
     extra_data_off += 4;
     let mut data_off = extra_data_off;
     let strip_offset = data_off;
@@ -1898,7 +1896,7 @@ fn layered_tiff(w: u32, h: u32, resources_len: usize, layers_len: usize) -> Vec<
         match *tag {
             258 => *val = bps_off as u32,
             273 => *val = strip_offset as u32,
-            279 => *val = (w * h * 4) as u32,
+            279 => *val = w * h * 4,
             34377 => *val = resources_off as u32,
             37724 => *val = layers_off as u32,
             _ => {}
