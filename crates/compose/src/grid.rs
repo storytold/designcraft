@@ -66,15 +66,20 @@ impl crate::FrameRows {
     /// The grid [`place`] takes for reference `r`: the first row's reference point and the row
     /// pitch. The cell is an em box of the line's largest face (the grid's font once Apply Grid
     /// Format has set it): its roman baseline and ICF sit where that face puts them.
-    pub(crate) fn grid_for(&self, line: &[Glyph], r: Reference) -> (f64, f64) {
+    ///
+    /// A line without a glyph takes `empty`: its paragraph mark's roman baseline and ICF top and
+    /// bottom, as fractions of the em box from its top. A character typed there then stays where
+    /// the empty line was.
+    pub(crate) fn grid_for(&self, line: &[Glyph], r: Reference, empty: Option<(f64, f64, f64)>) -> (f64, f64) {
         let face = line.iter().filter(|g| g.adv > 0.0).max_by(|a, b| a.size.total_cmp(&b.size)).map(|g| {
             let (top, bottom) = crate::cjk_em_box(g);
             let (icf_top, icf_bottom) = crate::cjk_icf_box(g);
             let em = (bottom - top).max(1e-9);
             ((0.0 - top) / em, (icf_top - top) / em, (icf_bottom - top) / em)
         });
-        // Without a glyph: the em box 0.88 em above the baseline and an ICF inset by 5 %.
-        let (roman, icf_top, icf_bottom) = face.filter(|f| f.0.is_finite() && f.1.is_finite() && f.2.is_finite()).unwrap_or((0.88, 0.05, 0.95));
+        // Without a glyph or a mark: the em box 0.88 em above the baseline and an ICF inset by 5 %.
+        let (roman, icf_top, icf_bottom) =
+            face.or(empty).filter(|f| f.0.is_finite() && f.1.is_finite() && f.2.is_finite()).unwrap_or((0.88, 0.05, 0.95));
         let at = match r {
             Reference::EmTop => 0.0,
             Reference::EmCenter => 0.5,

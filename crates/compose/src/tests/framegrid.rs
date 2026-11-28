@@ -285,6 +285,37 @@ fn justified_first_row(vertical: bool, extent: f64, lines: usize, vj: designcraf
 const JUSTIFIED_ROWS: [(f64, usize, i64, i64); 4] = [(300.0, 2, 7, 15), (300.0, 3, 7, 14), (282.0, 2, 7, 14), (282.0, 3, 6, 13)];
 
 #[test]
+fn an_empty_paragraph_sits_where_a_character_typed_in_it_does() {
+    // The rows' roman baseline and ICF come from the face: an empty paragraph takes its mark's
+    // face, so typing a character there doesn't move the line.
+    for r in [R::Baseline, R::IcfTop, R::IcfBottom, R::EmCenter] {
+        let second = |text: &str| grid_lines(text, aligned(r), |_, _| {}).0[1].baseline;
+        assert!(close(second("AB\n\nCD"), second("AB\nX\nCD")), "{r:?}: empty {} typed {}", second("AB\n\nCD"), second("AB\nX\nCD"));
+    }
+}
+
+#[test]
+fn justify_keeps_the_first_and_last_lines_on_rows_and_spreads_the_rest() {
+    // Measured in InDesign 20.4.1, the same in both directions: in 16 rows, 3 lines go on row 0,
+    // halfway between rows 7 and 8, and on row 15; 4 lines in 5 rows go 24 pt apart, off the
+    // 18 pt rows.
+    let tops = |extent: f64, lines: usize| {
+        let text = vec!["AB"; lines].join("\n");
+        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, extent), aligned(R::EmCenter));
+        d.story_mut(sid).unwrap().frame_grid = Some(FrameGrid { size: 12.0, line_aki: 6.0, ..Default::default() });
+        let tf = d.item_mut(fid).unwrap().text_frame_mut().unwrap();
+        tf.options.first_baseline = designcraft_doc::FirstBaseline::Fixed;
+        tf.options.vertical_justification = designcraft_doc::VerticalJustification::Justify;
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        all_lines(&cs).iter().map(|l| em_box(l).0).collect::<Vec<f64>>()
+    };
+    for (extent, lines, expected) in [(282.0, 3, vec![0.0, 135.0, 270.0]), (84.0, 4, vec![0.0, 24.0, 48.0, 72.0]), (300.0, 2, vec![0.0, 288.0])] {
+        let got = tops(extent, lines);
+        assert!(got.len() == expected.len() && got.iter().zip(&expected).all(|(a, b)| close(*a, *b)), "{extent} pt, {lines} lines: {got:?}");
+    }
+}
+
+#[test]
 fn centre_leaves_the_odd_row_after_the_lines() {
     use designcraft_doc::VerticalJustification::{Bottom, Center};
     for (extent, lines, centre, bottom) in JUSTIFIED_ROWS {

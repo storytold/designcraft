@@ -1954,6 +1954,12 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                 (top, top + height)
             })
             .filter(|(top, bottom)| top.is_finite() && bottom.is_finite());
+        // Where the mark's face puts its roman baseline and ICF in that em box, for the rows'
+        // reference points: the ones a character of that face would take.
+        let mark_cell = mark_em.map(|(top, bottom)| {
+            let (icf_top, icf_bottom) = icf_insets(&db.face(&mark_chars.font_family, &mark_chars.font_style));
+            (-top / (bottom - top).max(1e-9), icf_top, 1.0 - icf_bottom)
+        });
         let reference_offset = |r: designcraft_doc::cjk::CharacterAlignment| {
             use designcraft_doc::cjk::CharacterAlignment as R;
             match mark_em {
@@ -1983,7 +1989,7 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         // A frame grid's rows replace the baseline grid; its ICF references take the line's em box.
         let line_ref = if f.frame_grid.is_some() { grid::frame_line_reference(pp.grid_reference) } else { pp.grid_reference };
         let grid = match f.frame_grid {
-            Some(rows) => Some(rows.grid_for(line_glyphs, pp.grid_reference)),
+            Some(rows) => Some(rows.grid_for(line_glyphs, pp.grid_reference, mark_cell)),
             None => f.grid,
         }
         .filter(|&(g_start, inc)| aligned && inc > 0.0 && inc.is_finite() && g_start.is_finite() && countable(g_start, inc));
@@ -4803,12 +4809,18 @@ fn cjk_em_box(g: &Glyph) -> (f64, f64) {
 /// [`cjk_em_box`] inset by the font's own ICF insets (`BASE` `icft`/`icfb`, else 5% of the em).
 fn cjk_icf_box(g: &Glyph) -> (f64, f64) {
     let (top, bottom) = cjk_em_box(g);
-    let (em_top, em_bottom) = g.face.em_box();
-    let (icf_top, icf_bottom) = g.face.icf_box();
-    let em = (em_top - em_bottom).max(1e-9);
+    let (inset_top, inset_bottom) = icf_insets(&g.face);
     let height = bottom - top;
+    (top + inset_top * height, bottom - inset_bottom * height)
+}
+/// A face's ICF insets from the top and the bottom of its em box, as fractions of the em: the
+/// font's own (`BASE` `icft`/`icfb`), else 5 %.
+fn icf_insets(face: &designcraft_fonts::FontFace) -> (f64, f64) {
+    let (em_top, em_bottom) = face.em_box();
+    let (icf_top, icf_bottom) = face.icf_box();
+    let em = (em_top - em_bottom).max(1e-9);
     let inset = |v: f64| if v.is_finite() { v.clamp(0.0, 0.5) } else { 0.05 };
-    (top + inset((em_top - icf_top) / em) * height, bottom - inset((icf_bottom - em_bottom) / em) * height)
+    (inset((em_top - icf_top) / em), inset((icf_bottom - em_bottom) / em))
 }
 /// Em box that character alignment lines up, relative to the baseline (y down) at the glyph's
 /// size: the font's `BASE` em box, else 0.88 em above and 0.12 em below the baseline. A font's
