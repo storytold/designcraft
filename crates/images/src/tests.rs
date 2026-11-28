@@ -1859,3 +1859,88 @@ fn png_phys_exif_fallback_orientation_swap_and_shared_chunk_limit() {
     past_limit.push(phys);
     assert_eq!(raster_resolution(&png_with_chunks(1, 1, &past_limit)), None);
 }
+
+/// A striped RGBA TIFF carrying Photoshop payloads in the first directory: a 34377 image
+/// resources tag and a 37724 `ImageSourceData` (layer) payload of `layers_len` bytes.
+fn layered_tiff(w: u32, h: u32, resources_len: usize, layers_len: usize) -> Vec<u8> {
+    let strip = vec![90u8; (w * h * 4) as usize];
+    let mut entries: Vec<(u16, u16, u32, u32)> = vec![
+        (256, 4, 1, w),
+        (257, 4, 1, h),
+        (258, 3, 4, 0),
+        (259, 3, 1, 1),
+        (262, 3, 1, 2),
+        (273, 4, 1, 0),
+        (277, 3, 1, 4),
+        (278, 4, 1, h),
+        (279, 4, 1, w * h * 4),
+        (34377, 1, resources_len as u32, 0),
+        (37724, 1, layers_len as u32, 0),
+    ];
+    entries.sort_by_key(|e| e.0);
+    let ifd_start = 8usize;
+    let ifd_len = 2 + entries.len() * 12 + 4;
+    let mut extra_data_off = ifd_start + ifd_len;
+    let bps_off = extra_data_off;
+    extra_data_off += 4 * 2;
+    extra_data_off += 4;
+    extra_data_off += 4;
+    let mut data_off = extra_data_off;
+    let strip_offset = data_off;
+    data_off += strip.len();
+    let resources_off = data_off;
+    data_off += resources_len;
+    let layers_off = data_off;
+    data_off += layers_len;
+    for (tag, _, _, val) in &mut entries {
+        match *tag {
+            258 => *val = bps_off as u32,
+            273 => *val = strip_offset as u32,
+            279 => *val = w * h * 4,
+            34377 => *val = resources_off as u32,
+            37724 => *val = layers_off as u32,
+            _ => {}
+        }
+    }
+    let mut out = Vec::with_capacity(data_off);
+    out.extend(b"II*\0");
+    out.extend(8u32.to_le_bytes());
+    out.extend((entries.len() as u16).to_le_bytes());
+    for (tag, kind, count, val) in entries {
+        out.extend(tag.to_le_bytes());
+        out.extend(kind.to_le_bytes());
+        out.extend(count.to_le_bytes());
+        out.extend(val.to_le_bytes());
+    }
+    out.extend(0u32.to_le_bytes());
+    for _ in 0..4 {
+        out.extend(8u16.to_le_bytes());
+    }
+    out.extend(strip_offset.to_le_bytes());
+    out.extend((strip.len() as u32).to_le_bytes());
+    out.extend_from_slice(&strip);
+    out.extend(std::iter::repeat_n(7u8, resources_len));
+    out.extend(std::iter::repeat_n(9u8, layers_len));
+    out
+}
+
+#[test]
+fn reduced_tiff_estimate_counts_retained_photoshop_payloads() {
+    // The Photoshop payloads are copied into the decode's metadata and retained for the whole
+    // decode: the estimate must count them, so the reserve gate sees their cost. The probe walks
+    // the header only, so a layered TIFF with a 1 MiB layer payload is estimated without
+    // materialising the copy beyond the decode itself.
+    let layers_len = 1 << 20;
+    let resources_len = 512;
+    let bytes = layered_tiff(16, 12, resources_len, layers_len);
+    let est = reduced_estimate(&bytes, 1).expect("a layered TIFF is still reducible").2;
+    let plain = layered_tiff(16, 12, 0, 0);
+    let base = reduced_estimate(&plain, 1).expect("the payload-free twin is reducible").2;
+    assert!(
+        est >= base + layers_len + resources_len,
+        "estimate {est} does not count the retained payloads ({layers_len} + {resources_len} bytes; payload-free {base})"
+    );
+    // The layer payload does not keep a layered TIFF from its reduced decode.
+    let reduced = decode_rgba_reduced(&bytes, 1).expect("a layered TIFF decodes reduced");
+    assert_eq!(reduced.dimensions(), (8, 6));
+}
