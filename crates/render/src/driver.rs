@@ -19,6 +19,7 @@ impl Renderer {
             cmyk_ran: false,
             images_pending: false,
             kept: Default::default(),
+            bare: false,
             #[cfg(test)]
             cmyk_passes: 0,
             #[cfg(test)]

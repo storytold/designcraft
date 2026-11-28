@@ -198,37 +198,41 @@ impl Renderer {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, Some(blend_mode(it.blend)), Some(it.opacity), None, None);
         }
+        // Drop shadow and outer glow: cast by the group's objects together.
+        let e = &it.effects;
+        if f.opts.quality != DisplayQuality::Fast && !self.bare && (e.drop_shadow.on || e.outer_glow.on) {
+            let reach = fx::group_reach(it, xf);
+            self.draw_below(ctx, f, it, &it.path.to_bezpath(), xf, page, reach);
+        }
         // Gradient feather: the group's objects drawn together, then faded as one.
-        let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast;
+        let feather = it.effects.gradient_feather.on && f.opts.quality != DisplayQuality::Fast && !self.bare;
         if feather {
             ctx.set_transform(Affine::IDENTITY);
             ctx.push_layer(None, None, None, None, None);
         }
-        if it.knockout {
-            // Knockout: each object first clears its area of those behind it, so it composites
-            // with the group's backdrop rather than with its siblings.
-            for c in it.shown_children() {
-                if !c.hidden {
-                    ctx.set_transform(Affine::IDENTITY);
-                    ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
-                    ctx.set_transform(f.view * xf * c.xf);
-                    ctx.set_paint(peniko::Color::BLACK);
-                    ctx.fill_path(&c.path.to_bezpath());
-                    ctx.pop_layer();
-                }
-                self.draw_item(ctx, f, c, xf, page);
-            }
-        } else {
-            for c in it.shown_children() {
-                self.draw_item(ctx, f, c, xf, page);
-            }
-        }
+        self.draw_children(ctx, f, it, xf, page);
         if feather {
             fx::gradient_feather_mask(ctx, f, it, xf);
             ctx.pop_layer();
         }
         if layered {
             ctx.pop_layer();
+        }
+    }
+
+    /// A group's objects in order; in a knockout group each object first clears its area of those
+    /// behind it, so it composites with the group's backdrop rather than with its siblings.
+    pub(crate) fn draw_children(&mut self, ctx: &mut RenderContext, f: &Frame, it: &Item, xf: Affine, page: ShownOn) {
+        for c in it.shown_children() {
+            if it.knockout && !c.hidden {
+                ctx.set_transform(Affine::IDENTITY);
+                ctx.push_layer(None, Some(BlendMode::new(Mix::Normal, Compose::DestOut)), None, None, None);
+                ctx.set_transform(f.view * xf * c.xf);
+                ctx.set_paint(peniko::Color::BLACK);
+                ctx.fill_path(&c.path.to_bezpath());
+                ctx.pop_layer();
+            }
+            self.draw_item(ctx, f, c, xf, page);
         }
     }
 
@@ -253,7 +257,7 @@ impl Renderer {
             Content::Text(_) => 36.0 + 0.25 * vb.width().max(vb.height()),
             _ => 0.0,
         };
-        let effects = it.effects.any() && f.opts.quality != DisplayQuality::Fast;
+        let effects = it.effects.any() && f.opts.quality != DisplayQuality::Fast && !self.bare;
         let fx_outset = if effects { fx::outset_scaled(it, scale) } else { 0.0 };
         if !rect_overlaps(vb.inflate(margin + fx_outset, margin + fx_outset), f.visible) {
             return;

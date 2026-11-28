@@ -186,6 +186,8 @@ pub struct Renderer {
     images_pending: bool,
     /// Drop shadow and outer glow images kept between renders.
     kept: fx::KeptEffects,
+    /// Drawing a group's silhouette for its drop shadow or outer glow: objects without effects.
+    bare: bool,
     #[cfg(test)]
     cmyk_passes: usize,
     /// Pixels the last ink pass covered (tests).
