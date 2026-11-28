@@ -11,6 +11,7 @@ use table::TABLE;
 mod ar;
 mod cs;
 mod de;
+mod es;
 mod fr;
 mod hu;
 mod it;
@@ -122,6 +123,13 @@ fn lookup<'a>(lang: &str, s: &'a str) -> &'a str {
     {
         return text;
     }
+    static SPANISH: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+if lang == "es"
+    && let Some(text) = SPANISH.get_or_init(|| es::TABLE.iter().copied().collect()).get(s).copied().filter(|text| !text.trim().is_empty())
+{
+    return text;
+}
+
     if lang == "pt-br" {
         return PORTUGUESE_BR.get_or_init(|| pt_br::TABLE.iter().copied().collect()).get(s).copied().unwrap_or(s);
     }
