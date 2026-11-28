@@ -661,6 +661,7 @@ pub(crate) fn annotate(
                 byte: first.byte,
                 len: 0,
                 generated_text: None,
+                text_variable: false,
                 visible: true,
                 upright: r.tcy.is_none() && upright_in_vertical(r.ch),
                 tcy: r.tcy,

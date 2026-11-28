@@ -753,12 +753,12 @@ pub fn hit_cell(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize, 
 
 /// [`hit_cell`] with the hit test for the cell's text: [`crate::hit`] (caret position) or
 /// [`crate::hit_char`] (character under the point).
-pub fn hit_cell_with(
+pub fn hit_cell_with<T: Default>(
     cs: &ComposedStory,
     fi: usize,
     p: Point,
-    hit: fn(&ComposedStory, usize, Point) -> Option<usize>,
-) -> Option<(u64, usize, usize, usize)> {
+    hit: fn(&ComposedStory, usize, Point) -> Option<T>,
+) -> Option<(u64, usize, usize, T)> {
     let ft = cs.frames.get(fi)?;
     for t in &ft.tables {
         if !t.rect.contains(p) {
@@ -767,7 +767,7 @@ pub fn hit_cell_with(
         for c in &t.cells {
             if c.rect.contains(p) {
                 let local = Point::new(p.x - c.origin.x, p.y - c.origin.y);
-                let b = hit(&c.text, 0, local).unwrap_or(0);
+                let b = hit(&c.text, 0, local).unwrap_or_default();
                 return Some((t.table, c.row, c.col, b));
             }
         }
@@ -844,8 +844,20 @@ pub fn find_cell(cs: &ComposedStory, table: u64, row: usize, col: usize) -> Opti
 /// Caret geometry for byte `pos` of a cell's story, in frame inner space:
 /// (frame index, x, baseline, ascent, descent).
 pub fn cell_caret(cs: &ComposedStory, table: u64, row: usize, col: usize, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
+    cell_caret_with_variable_side(cs, table, row, col, pos, None)
+}
+
+/// Caret geometry inside a table cell, including the chosen visual side of a text variable.
+pub fn cell_caret_with_variable_side(
+    cs: &ComposedStory,
+    table: u64,
+    row: usize,
+    col: usize,
+    pos: usize,
+    side: Option<designcraft_doc::TextVariableSide>,
+) -> Option<(usize, f64, f64, f64, f64)> {
     let (fi, _, c) = find_cell(cs, table, row, col)?;
-    match crate::caret(&c.text, pos) {
+    match crate::caret_with_variable_side(&c.text, pos, side) {
         Some((_, x, bl, a, d)) => Some((fi, x + c.origin.x, bl + c.origin.y, a, d)),
         None => Some((fi, c.origin.x, c.origin.y + 10.0, 9.0, 3.0)),
     }

@@ -15,6 +15,7 @@ pub(super) fn draw_text_selection(
 ) {
     let cs = app.session.cache.get(doc, ts.story, None);
     let range = ts.range();
+    let side = app.session.active().and_then(|st| st.selection.text_variable_side());
     let tint = Color32::from_rgba_unmultiplied(80, 140, 255, 110);
     // Selected table cells: tint every selected cell.
     if let Some(sel) = cells.filter(|c| c.story == ts.story) {
@@ -37,7 +38,7 @@ pub(super) fn draw_text_selection(
         return;
     }
     if let Some(cell) = ts.cell {
-        draw_cell_selection(app, painter, xf, doc, layout, &cs, ts, cell);
+        draw_cell_selection(painter, xf, doc, layout, &cs, ts, cell, side);
         return;
     }
     let mut runs: Vec<(Affine, Vec<[Point; 4]>)> = Vec::new();
@@ -101,7 +102,7 @@ pub(super) fn draw_text_selection(
         draw_inverse_highlight(app, painter, xf, doc, layout, ts.story, &runs);
     }
     if ts.is_caret()
-        && let Some((fi, x, bl, asc, desc)) = compose::caret(&cs, ts.focus)
+        && let Some((fi, x, bl, asc, desc)) = compose::caret_with_variable_side(&cs, ts.focus, side)
         && let Some(ft) = cs.frames.get(fi)
         && let (Some((a, _)), Some(it)) = (item_canvas_xf(doc, layout, ft.frame), doc.item(ft.frame))
     {
@@ -110,7 +111,7 @@ pub(super) fn draw_text_selection(
         let on = |p: Point| compose::PathTextMap::new(it, ft).map_or(p, |map| map.to_path(p));
         let p0 = xf.to_screen(m * on(Point::new(x, bl - asc)));
         let p1 = xf.to_screen(m * on(Point::new(x, bl + desc)));
-        if caret::visible(painter.ctx(), ts) {
+        if caret::visible(painter.ctx(), ts, side) {
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
     }
@@ -119,7 +120,6 @@ pub(super) fn draw_text_selection(
 /// Caret / text highlight inside a table cell (the cell's lines are offset by the cell origin).
 #[allow(clippy::too_many_arguments)]
 fn draw_cell_selection(
-    _app: &DesignApp,
     painter: &egui::Painter,
     xf: &Xf,
     doc: &Document,
@@ -127,6 +127,7 @@ fn draw_cell_selection(
     cs: &compose::ComposedStory,
     ts: designcraft_doc::TextSel,
     cell: designcraft_doc::CellAddr,
+    side: Option<designcraft_doc::TextVariableSide>,
 ) {
     // Footnote text or a cell: its composed story and where it sits in the frame.
     let found = match cell.footnote_id() {
@@ -154,15 +155,10 @@ fn draw_cell_selection(
             }
         }
     }
-    if ts.is_caret()
-        && let Some((_, x, bl, asc, desc)) = match cell.footnote_id() {
-            Some(id) => compose::note_caret(cs, id, ts.focus),
-            None => compose::cell_caret(cs, cell.table, cell.row, cell.col, ts.focus),
-        }
-    {
-        let m = a * doc.text_xf(it);
+    if ts.is_caret() {
+        let (_, x, bl, asc, desc) = compose::caret_with_variable_side(&text, ts.focus, side).unwrap_or((0, 0.0, 10.0, 9.0, 3.0));
         let (p0, p1) = (xf.to_screen(m * Point::new(x, bl - asc)), xf.to_screen(m * Point::new(x, bl + desc)));
-        if caret::visible(painter.ctx(), ts) {
+        if caret::visible(painter.ctx(), ts, side) {
             painter.line_segment([p0, p1], Stroke::new(1.0, Color32::BLACK));
         }
     }

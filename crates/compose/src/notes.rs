@@ -306,18 +306,28 @@ pub fn hit_note(cs: &ComposedStory, fi: usize, p: Point) -> Option<(u64, usize)>
 }
 
 /// [`hit_note`] with the hit test for the note's text (see [`crate::hit_cell_with`]).
-pub fn hit_note_with(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedStory, usize, Point) -> Option<usize>) -> Option<(u64, usize)> {
+pub fn hit_note_with<T: Default>(cs: &ComposedStory, fi: usize, p: Point, hit: fn(&ComposedStory, usize, Point) -> Option<T>) -> Option<(u64, T)> {
     let ft = cs.frames.get(fi)?;
     let n = ft.notes.iter().find(|n| n.rect.contains(p))?;
     let local = Point::new(p.x - n.origin.x, p.y - n.origin.y);
-    Some((n.id, hit(&n.text, 0, local).unwrap_or(0)))
+    Some((n.id, hit(&n.text, 0, local).unwrap_or_default()))
 }
 
 /// Caret geometry for byte `pos` of a footnote's story, in frame inner space:
 /// (frame index, x, baseline, ascent, descent).
 pub fn note_caret(cs: &ComposedStory, id: u64, pos: usize) -> Option<(usize, f64, f64, f64, f64)> {
+    note_caret_with_variable_side(cs, id, pos, None)
+}
+
+/// Caret geometry inside a footnote, including the chosen visual side of a text variable.
+pub fn note_caret_with_variable_side(
+    cs: &ComposedStory,
+    id: u64,
+    pos: usize,
+    side: Option<designcraft_doc::TextVariableSide>,
+) -> Option<(usize, f64, f64, f64, f64)> {
     let (fi, n) = find_note(cs, id)?;
-    match crate::caret(&n.text, pos) {
+    match crate::caret_with_variable_side(&n.text, pos, side) {
         Some((_, x, bl, a, d)) => Some((fi, x + n.origin.x, bl + n.origin.y, a, d)),
         None => Some((fi, n.origin.x, n.origin.y + 10.0, 9.0, 3.0)),
     }

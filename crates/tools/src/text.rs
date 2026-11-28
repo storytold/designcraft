@@ -171,12 +171,13 @@ fn marked_start(cx: &ToolContext, ts: TextSel, p: &Preedit) -> usize {
 /// when `pos` isn't composed (overset).
 fn caret_line(cx: &ToolContext, ts: TextSel, pos: usize) -> Option<(Point, Point)> {
     let cs = cx.cache.get(cx.doc, ts.story, None);
+    let side = cx.selection.text_variable_side().filter(|_| pos == ts.focus);
     let (fi, x, bl, asc, desc) = match ts.cell {
         Some(c) => match c.footnote_id() {
-            Some(id) => compose::note_caret(&cs, id, pos)?,
-            None => compose::cell_caret(&cs, c.table, c.row, c.col, pos)?,
+            Some(id) => compose::note_caret_with_variable_side(&cs, id, pos, side)?,
+            None => compose::cell_caret_with_variable_side(&cs, c.table, c.row, c.col, pos, side)?,
         },
-        None => compose::caret(&cs, pos)?,
+        None => compose::caret_with_variable_side(&cs, pos, side)?,
     };
     let ft = cs.frames.get(fi)?;
     let m = text_canvas_xf(cx, ft.frame)?;
