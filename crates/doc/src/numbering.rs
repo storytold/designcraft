@@ -120,7 +120,9 @@ impl crate::Document {
         for (pos, st) in self.stories_in_page_order().into_iter().enumerate() {
             if footnotes_run {
                 out.footnotes.insert(st.id, footnote);
-                footnote = footnote.saturating_add(u32::try_from(st.notes.len()).unwrap_or(u32::MAX));
+                // Nested notes take numbers too (see `Footnote::nested`).
+                let count = st.notes.len().saturating_add(st.nested_notes().len());
+                footnote = footnote.saturating_add(u32::try_from(count).unwrap_or(u32::MAX));
             }
             if !st.endnotes.is_empty() {
                 out.endnotes.insert(st.id, out.endnote_end);
