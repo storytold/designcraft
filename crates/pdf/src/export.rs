@@ -70,6 +70,9 @@ pub(crate) struct Exporter<'a> {
     /// change while it runs, and asking the cache checks every frame of the story again.
     composed: HashMap<(designcraft_doc::StoryId, Option<usize>), Arc<designcraft_compose::ComposedStory>>,
     pub opts: &'a PdfOptions,
+    /// The frames that get a form-field widget: their text isn't drawn as well (#2810). Empty for
+    /// an export that adds no fields, such as a booklet.
+    pub(crate) field_items: std::collections::HashSet<designcraft_doc::ItemId>,
     /// Current sheet's visible area (spread space) for culling.
     pub clip: Rect,
     pub warnings: Vec<String>,

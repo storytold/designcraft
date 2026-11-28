@@ -33,6 +33,19 @@ fn visit(doc: &Document, sheets: &[Sheet], mut f: impl FnMut(usize, [f64; 4], &I
     }
 }
 
+/// The frames that get a form-field widget in this export: the page must not draw their text as
+/// well, or it stays in the file to be read out from under the widget (#2810). The same items
+/// [`collect`] turns into fields, so a frame's text and its widget are always decided together.
+pub(crate) fn field_items(doc: &Document, sheets: &[Sheet]) -> std::collections::HashSet<designcraft_doc::ItemId> {
+    let mut out = std::collections::HashSet::new();
+    visit(doc, sheets, |_, _, it| {
+        if it.form_field.is_some() {
+            out.insert(it.id);
+        }
+    });
+    out
+}
+
 /// The form fields of every exported page.
 pub(crate) fn collect(doc: &Document, sheets: &[Sheet]) -> Vec<Placed> {
     let mut out = Vec::new();
@@ -110,9 +123,48 @@ fn checkbox_border(bw: f64, w: f64, h: f64) -> String {
     }
 }
 
+/// Test-only fault injection: a file structure this can't read, which the export must survive
+/// with the field's frame text drawn instead of its widget.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod unreadable_tests {
+    use std::cell::Cell;
+
+    thread_local! {
+        static UNREADABLE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Clears the fault when dropped, so a failing assertion can't leak it into another test.
+    pub(crate) struct Unreadable;
+
+    impl Drop for Unreadable {
+        fn drop(&mut self) {
+            UNREADABLE.set(false);
+        }
+    }
+
+    /// Make form-field insertion fail as it does on a PDF whose structure it can't read.
+    pub(crate) fn unreadable() -> Unreadable {
+        UNREADABLE.set(true);
+        Unreadable
+    }
+
+    pub(super) fn failing() -> bool {
+        UNREADABLE.get()
+    }
+}
+
 /// Add `fields` and `media` to `pdf` (page indices in output order). `None` when the file's
 /// structure isn't the simple kind this understands.
 pub(crate) fn add_fields(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -> Option<Vec<u8>> {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if unreadable_tests::failing() {
+        return None;
+    }
+    add_fields_to(pdf, fields, media)
+}
+
+/// [`add_fields`], with the file's structure read as written.
+fn add_fields_to(pdf: &[u8], fields: &[Placed], media: &[PlacedMedia]) -> Option<Vec<u8>> {
     if fields.is_empty() && media.is_empty() {
         return Some(pdf.to_vec());
     }
