@@ -62,11 +62,7 @@ fn open_checked(bytes: &[u8], shrink: u8) -> Option<(TiffBands<'_>, u32, u32, us
     }
     let (pw, ph) = crate::pixel_size(bytes)?;
     let bands = TiffBands::open(bytes, None, &limits()).ok()?.upright();
-    // Orientations 5..=8 swap stored dimensions relative to the pixel grid. `probe_size` already
-    // applies that swap to `pixel_size`, so the dimension check below cannot tell them apart from
-    // an upright file; they need a full decode. Orientations 1..=4 keep the band dimensions and
-    // are handled by the upright copy inside `TiffBands::decode`.
-    if (5..=8).contains(&bands.orientation()) || bands.dimensions() != (pw, ph) {
+    if bands.dimensions() != (pw, ph) {
         return None;
     }
     let step = 1u32 << shrink;

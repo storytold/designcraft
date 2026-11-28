@@ -18,9 +18,10 @@ fn populated() -> UiState {
 
 #[test]
 fn saved_preferences_preserve_valid_layouts_and_hidden_origins() {
-    let original = serde_json::to_value(populated()).unwrap();
+    let mut original = serde_json::to_value(populated()).unwrap();
     let loaded = UiState::from_preferences_json(&serde_json::to_vec(&original).unwrap()).unwrap();
-    assert_eq!(serde_json::to_value(loaded).unwrap(), original);
+    original["pdfExport"]["flattenChosen"] = json!(true);
+    assert_eq!(serde_json::to_value(&loaded).unwrap(), original);
 }
 
 #[test]
@@ -320,4 +321,81 @@ fn hidden_panels_is_not_persisted_across_restarts() {
     ui.hidden_panels = 2;
     let saved = serde_json::to_value(&ui).unwrap();
     assert!(saved.get("hiddenPanels").is_none());
+}
+
+#[test]
+fn read_preferences_migrates_named_pdf_preset_flatten_and_keeps_custom() {
+    for preset in ["Desktop Printing", "Commercial Printing", "Screen and Email", "PDF/X-4", "PDF/A-2b"] {
+        for saved_flatten in ["high", ""] {
+            let saved = json!({
+                "flattener": "low",
+                "pdfExport": { "preset": preset, "flatten": saved_flatten }
+            });
+            let ui = UiState::read_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap().ui;
+            assert_eq!(ui.pdf_export.flatten, "", "{preset} ({saved_flatten:?}) should use live transparency");
+            assert!(ui.pdf_export.flatten_chosen, "{preset} ({saved_flatten:?}) should mark flatten as chosen");
+            assert_eq!(ui.pdf_export.resolved_flatten(&ui.flattener), "");
+        }
+    }
+
+    let saved_default = json!({ "flattener": "low" });
+    let ui_default = UiState::read_preferences(&serde_json::to_vec(&saved_default).unwrap()).unwrap().ui;
+    assert_eq!(ui_default.pdf_export.flatten, "");
+    assert!(ui_default.pdf_export.flatten_chosen);
+    assert_eq!(ui_default.pdf_export.resolved_flatten(&ui_default.flattener), "");
+
+    for saved_flatten in ["", "high"] {
+        let saved_x1a = json!({
+            "pdfExport": { "preset": "PDF/X-1a:2003", "flatten": saved_flatten }
+        });
+        let ui_x1a = UiState::read_preferences(&serde_json::to_vec(&saved_x1a).unwrap()).unwrap().ui;
+        assert_eq!(ui_x1a.pdf_export.flatten, "high");
+        assert!(ui_x1a.pdf_export.flatten_chosen);
+    }
+
+    let saved_x1a_global_high = json!({
+        "flattener": "high",
+        "pdfExport": { "preset": "PDF/X-1a:2003", "flatten": "", "flattenChosen": false }
+    });
+    let ui_x1a_global = UiState::read_preferences(&serde_json::to_vec(&saved_x1a_global_high).unwrap()).unwrap().ui;
+    assert!(ui_x1a_global.pdf_export.uses_global_flatten());
+    assert_eq!(ui_x1a_global.pdf_export.resolved_flatten(&ui_x1a_global.flattener), "high");
+
+    let saved_custom = json!({
+        "flattener": "low",
+        "pdfExport": { "preset": "Custom", "flatten": "" }
+    });
+    let ui_custom_global = UiState::read_preferences(&serde_json::to_vec(&saved_custom).unwrap()).unwrap().ui;
+    assert_eq!(ui_custom_global.pdf_export.flatten, "");
+    assert!(!ui_custom_global.pdf_export.flatten_chosen);
+    assert_eq!(ui_custom_global.pdf_export.resolved_flatten(&ui_custom_global.flattener), "low");
+
+    let saved_custom_medium = json!({
+        "pdfExport": { "preset": "Custom", "flatten": "medium" }
+    });
+    let ui_custom = UiState::read_preferences(&serde_json::to_vec(&saved_custom_medium).unwrap()).unwrap().ui;
+    assert_eq!(ui_custom.pdf_export.flatten, "medium");
+    assert!(!ui_custom.pdf_export.flatten_chosen);
+
+    // Loading preferences syncs the Edit › Transparency Flattener Presets menu checkmark immediately.
+    let mut app = DesignApp::new(designcraft_engine::Session::new(), Default::default());
+    let old_desktop = json!({
+        "flattener": "low",
+        "pdfExport": { "preset": "Desktop Printing", "flatten": "" }
+    });
+    app.ui = UiState::read_preferences(&serde_json::to_vec(&old_desktop).unwrap()).unwrap().ui;
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(false));
+
+    let old_x1a = json!({
+        "flattener": "low",
+        "pdfExport": { "preset": "PDF/X-1a:2003", "flatten": "" }
+    });
+    app.ui = UiState::read_preferences(&serde_json::to_vec(&old_x1a).unwrap()).unwrap().ui;
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "high"})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(false));
+
+    app.ui = ui_custom_global;
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": "low"})), Some(true));
+    assert_eq!(crate::menus::checked(&app, "app.flattener", &json!({"preset": ""})), Some(false));
 }

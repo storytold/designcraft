@@ -80,4 +80,5 @@ Paths and conventions:
 - Test corpora: `storytold/photocraft-corpus`, fetched pinned and sha256-verified.
 - Progress log: `ROADMAP.md`. `plan/` is an optional gitignored notebook.
 - Run with a control channel: `cargo run --release -p designcraft -- --sample --control 7979`. Methods are in `crates/ui-egui/src/control.rs`, the protocol in `docs/control-protocol.md`. Headless: `designcraft-cli run --sample --cmd 'frame.create={"rect":[0,0,100,100]}' --export out.png`; `--all-pages DIR` renders every page.
+- Headless column ([RFC-0052](https://github.com/storytold/craft-contrib/blob/main/rfcs/0052-headless-reach.md)): `docs/parity-checklist.md` rows may carry a fifth `Headless` cell, `no (<reach>)` or `partial (<reach>)` with a reach of `window`, `os` or `engine-gap`; without one a row is `unknown`, and `cargo xtask parity` counts them in the summary. The rows name no command ids yet, so the check refuses `yes`: adding the engine command id a row needs comes first (LightCraft's `cmd:<id>` is the model).
 - Docs: `ROADMAP.md`, `docs/gaps.md` (ranked work), `docs/target-app-parity.md`, `docs/roadmap.md`, `docs/agents.md`, `docs/contributors.md`.
