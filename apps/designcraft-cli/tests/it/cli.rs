@@ -884,9 +884,16 @@ fn subcommand_help_names_the_options_that_subcommand_takes() {
     };
     let v = help("validate-pdf");
     assert!(v.contains("--standard"), "validate-pdf --help hides --standard: {v:?}");
-    // The option is refused for a value it cannot mean, so the help and the parser agree on it.
-    let out = cli().arg("validate-pdf").arg("x.pdf").arg("--standard").arg("x9").output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "an unknown standard is refused");
+    // Both an unknown standard and a PDF/A standard are refused before the input is opened.
+    let missing = std::env::temp_dir().join(format!("dc-cli-missing-validation-{}.pdf", std::process::id()));
+    assert!(!missing.exists());
+    for standard in ["x9", "a2b"] {
+        let out = cli().arg("validate-pdf").arg(&missing).args(["--standard", standard]).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{standard} must be refused");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("usage: designcraft-cli validate-pdf FILE.pdf [--standard x4|x1a]"), "{standard}: {stderr}");
+        assert!(out.stdout.is_empty());
+    }
 
     // A couple of others, so this is about subcommand help in general and not one line.
     assert!(help("run").contains("--cmd"), "run --help hides --cmd");
