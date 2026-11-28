@@ -2317,6 +2317,39 @@ fn direct_selection_pulls_one_corner_of_an_unselected_frame() {
     assert!(corners(&s).iter().zip(&before).all(|(p, q)| (p.y - q.y - 50.0).abs() < 1e-6), "{:?}", corners(&s));
 }
 
+/// Issue #2564: with Direct Selection, pressing a point of a path that isn't selected selects
+/// that point (drawn solid), whether the press is a click or a drag.
+#[test]
+fn direct_selection_press_on_an_unselected_path_selects_the_point() {
+    use designcraft_tools::{PointerEvent, PointerKind, SnapView};
+    let mut s = session();
+    let id = s.execute("path.create", &json!({"anchors": [{"p": [100, 300]}, {"p": [300, 400]}]})).unwrap()["id"].as_u64().unwrap();
+    s.set_tool("directSelection");
+    let v = ViewInfo { snap: SnapView::OFF, ..ViewInfo::at_zoom(1.0) };
+    let layout = s.layout();
+    let at = |x: f64, y: f64| layout.to_canvas(designcraft_doc::SpreadRef::Doc(0), designcraft_geom::Point::new(x, y));
+    let item = designcraft_doc::ItemId(id);
+    // A click on the end point.
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let p = at(300.0, 400.0);
+    s.pointer(&PointerEvent::new(PointerKind::Down, p.x, p.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, p.x, p.y), v).unwrap();
+    let sel = s.doc().unwrap().selection.clone();
+    assert_eq!(sel.items, [item]);
+    assert_eq!(sel.anchors, [(item, 0, 1)], "the clicked point is selected");
+    // A drag from the start point: it moves and stays selected.
+    s.execute("edit.deselectAll", &json!({})).unwrap();
+    let (a, b) = (at(100.0, 300.0), at(100.0, 250.0));
+    s.pointer(&PointerEvent::new(PointerKind::Down, a.x, a.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, a.x, a.y - 20.0), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Drag, b.x, b.y), v).unwrap();
+    s.pointer(&PointerEvent::new(PointerKind::Up, b.x, b.y), v).unwrap();
+    let st = s.doc().unwrap();
+    let it = st.doc.item(item).unwrap();
+    assert!((it.xf * it.path.subpaths[0].anchors[0].p - designcraft_geom::Point::new(100.0, 250.0)).hypot() < 1e-6);
+    assert_eq!(st.selection.anchors, [(item, 0, 0)], "the dragged point is selected");
+}
+
 #[test]
 fn direct_selection_on_a_selected_frame_deletes_only_its_image() {
     use designcraft_tools::{Mods, PointerEvent, PointerKind, ToolKey};
