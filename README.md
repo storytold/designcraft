@@ -294,7 +294,7 @@ Installers and executables are code-signed.
 | Arch Linux/Manjaro | `designcraft-<ver>-linux-x86_64.pkg.tar.zst` | `designcraft-<ver>-linux-aarch64.pkg.tar.zst` | `sudo pacman -U <file>`; installs as `ai.storyteller.designcraft`, replacing an AUR package |
 | Tarball | `designcraft-<ver>-linux-x86_64.tar.gz` | `designcraft-<ver>-linux-aarch64.tar.gz` | Unpack anywhere |
 
-RISC-V (riscv64): `designcraft-<ver>-linux-riscv64.tar.gz` only, cross-compiled; needs glibc 2.39+ (Ubuntu 24.04 or newer).
+RISC-V (riscv64) builds are available as `designcraft-<ver>-linux-riscv64.tar.gz`, `designcraft-<ver>-linux-riscv64.deb`, and `designcraft-<ver>-linux-riscv64.rpm`. The builds are cross-compiled and need glibc 2.39+ (Ubuntu 24.04 or newer).
 
 #### Community packages
 
