@@ -1,5 +1,12 @@
 /// English → [German, French, Spanish, Japanese, Simplified Chinese].
 pub(super) const TABLE: &[(&str, [&str; 5])] = &[
+    ("Images", ["Bilder", "Images", "Imágenes", "画像", "图像"]),
+    ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
+    ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
+    ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
+    ("Reset To Base", ["Auf Basis zurücksetzen", "Rétablir la base", "Restablecer a base", "基準に戻す", "重置为基准"]),
+    ("New Paragraph Style", ["Neues Absatzformat", "Nouveau style de paragraphe", "Nuevo estilo de párrafo", "新規段落スタイル", "新建段落样式"]),
+    ("New Character Style", ["Neues Zeichenformat", "Nouveau style de caractère", "Nuevo estilo de carácter", "新規文字スタイル", "新建字符样式"]),
     ("New Object Style", ["Neues Objektformat", "Nouveau style d'objet", "Nuevo estilo de objeto", "新規オブジェクトスタイル", "新建对象样式"]),
     (
         "Object Style Options",
@@ -39,12 +46,6 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
             "请输入样式名称。",
         ],
     ),
-    ("Keep In Frame", ["Im Rahmen behalten", "Conserver dans le bloc", "Mantener en el marco", "フレーム内に保持", "保持在框架内"]),
-    ("Next Style:", ["Nächstes Format:", "Style suivant :", "Estilo siguiente:", "次のスタイル :", "下一样式："]),
-    ("[Same style]", ["[Gleiches Format]", "[Même style]", "[Mismo estilo]", "[同じスタイル]", "[相同样式]"]),
-    ("Reset To Base", ["Auf Basis zurücksetzen", "Rétablir la base", "Restablecer a base", "基準に戻す", "重置为基准"]),
-    ("New Paragraph Style", ["Neues Absatzformat", "Nouveau style de paragraphe", "Nuevo estilo de párrafo", "新規段落スタイル", "新建段落样式"]),
-    ("New Character Style", ["Neues Zeichenformat", "Nouveau style de caractère", "Nuevo estilo de carácter", "新規文字スタイル", "新建字符样式"]),
     (
         "Clear Frame Fitting Options",
         [
@@ -272,6 +273,11 @@ pub(super) const TABLE: &[(&str, [&str; 5])] = &[
     ("Cut", ["Ausschneiden", "Couper", "Cortar", "カット", "剪切"]),
     ("Copy", ["Kopieren", "Copier", "Copiar", "コピー", "复制"]),
     ("Paste", ["Einfügen", "Coller", "Pegar", "ペースト", "粘贴"]),
+    ("Mixed Objects", ["Mixed Objects", "Objets mixtes", "Objetos mixtos", "Mixed Objects", "混合对象"]),
+    ("Text Frames", ["Text Frames", "Blocs de texte", "Marcos de texto", "Text Frames", "文本框架"]),
+    ("Linked Files", ["Linked Files", "Fichiers liés", "Archivos vinculados", "Linked Files", "链接的文件"]),
+    ("Linked File", ["Linked File", "Fichier lié", "Archivo vinculado", "Linked File", "链接的文件"]),
+    ("Frames", ["Frames", "Blocs", "Marcos", "Frames", "框架"]),
     ("Stroke Type", ["Stroke Type", "Type de contour", "Tipo de trazo", "Stroke Type", "描边类型"]),
     ("Corner Shape", ["Corner Shape", "Forme d'angle", "Forma de esquina", "Corner Shape", "角形状"]),
     (
