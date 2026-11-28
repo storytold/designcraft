@@ -55,7 +55,7 @@ pub use datamerge::{
 };
 pub use designcraft_color as color;
 pub use designcraft_geom as geom;
-pub use edit::{Gap, ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hit};
+pub use edit::{Gap, ItemLoc, ItemPath, SpreadRef, hit_descendant, item_hit as edit_hit, item_hit_where as edit_hit_where};
 pub use endnotes::{ENDNOTE_REF, EditorialNote, EndnoteOptions, NOTE_MARK};
 pub use file_info::FileInfo;
 pub use flex::{FlexAlign, FlexDirection, FlexJustify, FlexLayout, FlexSize};

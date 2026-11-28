@@ -238,6 +238,8 @@ struct Listing<'a> {
     layer_color: Color32,
     layer_visible: bool,
     layer_closed: bool,
+    /// The rows are inside a locked group: like the group, they can't be selected.
+    in_locked_group: bool,
 }
 
 /// Rows for `items` (topmost first) under `group` at `depth`; the commands their clicks run go
@@ -331,7 +333,9 @@ fn object_rows(
                 // Its own name, or the label it shows without the brackets.
                 let current = if it.name.is_empty() { name.trim_start_matches('<').trim_end_matches('>').to_string() } else { it.name.clone() };
                 start_rename(ui, it.id.0, &current);
-            } else {
+            } else if !ls.layer_closed && !ls.in_locked_group && !it.locked {
+                // Locked objects, the objects of a locked group, and objects on a locked or hidden
+                // layer, can't be selected (they couldn't be edited).
                 cmds.push(("selection.set", json!({"ids": [it.id.0], "add": add})));
             }
         }
@@ -345,7 +349,8 @@ fn object_rows(
             end: row.max.y,
         });
         if open {
-            object_rows(ui, ls, it.children(), Some(it.id), depth + 1, rows, cmds);
+            let inner = Listing { in_locked_group: ls.in_locked_group || it.locked, ..*ls };
+            object_rows(ui, &inner, it.children(), Some(it.id), depth + 1, rows, cmds);
             let end = rows.last().map_or(row.max.y, |r| r.end.max(r.rect.max.y));
             if let Some(r) = rows.get_mut(at) {
                 r.end = end;
@@ -437,8 +442,9 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             cmds.push(("layer.set", json!({"id": l.id.0, "locked": !l.locked})));
         } else if tri_r.clicked() {
             ui.data_mut(|d| d.insert_temp(open_id, !open));
-        } else if sq.clicked() {
-            let ids: Vec<u64> = spread_items.iter().filter(|i| i.layer == l.id).map(|i| i.id.0).collect();
+        } else if sq.clicked() && l.visible && !l.locked {
+            // Locked objects stay unselected (they can't be edited).
+            let ids: Vec<u64> = spread_items.iter().filter(|i| i.layer == l.id && !i.locked).map(|i| i.id.0).collect();
             cmds.push(("selection.set", json!({"ids": ids})));
         } else if resp.double_clicked() {
             // The first click of the pair activated the layer; the second opens its options.
@@ -506,6 +512,7 @@ pub fn show(app: &mut DesignApp, ui: &mut Ui) {
             layer_color: lc,
             layer_visible: l.visible,
             layer_closed: l.locked || !l.visible,
+            in_locked_group: false,
         };
         object_rows(ui, &ls, &on_layer, None, 0, &mut rows, &mut cmds);
         let end = rows.last().map_or(row.max.y, |r| r.end.max(r.rect.max.y));
@@ -755,6 +762,82 @@ mod tests {
         h.drag_at(p);
         h.drop_at(p);
         h.run_steps(3);
+    }
+
+    /// Objects on a locked layer can't be selected from the panel either (they couldn't be edited),
+    /// and locking a layer deselects its objects.
+    #[test]
+    fn objects_on_a_locked_layer_are_not_selected_from_the_panel() {
+        let mut app = app();
+        let lid = app.session.active().unwrap().active_layer;
+        let a = app.run("frame.create", json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        app.run("selection.set", json!({"ids": [a]})).unwrap();
+        app.run("layer.set", json!({"id": lid.0, "locked": true})).unwrap();
+        let selected = |h: &egui_kittest::Harness<'static, DesignApp>| h.state().session.active().unwrap().selection.items.clone();
+        let mut h = panel(app);
+        assert!(selected(&h).is_empty(), "locking the layer deselected its object");
+        // Rows: Layer 1, a (the layer opened when a was selected, or open it).
+        if egui_kittest::kittest::Queryable::query_by_label(&h, "<rectangle>").is_none() {
+            click(&mut h, pos2(8.0 + 2.0 * COL_W + 9.0, row(0, 0.5, false).y));
+        }
+        click(&mut h, row(1, 0.5, false));
+        assert!(selected(&h).is_empty(), "the object's row selects nothing");
+        click(&mut h, row(0, 0.5, true));
+        assert!(selected(&h).is_empty(), "the layer's selection square selects nothing");
+        // Unlocked, both select again.
+        h.state_mut().run("layer.set", json!({"id": lid.0, "locked": false})).unwrap();
+        h.run_steps(2);
+        click(&mut h, row(0, 0.5, true));
+        assert_eq!(selected(&h), [ItemId(a)]);
+    }
+
+    /// The objects of a locked group can't be selected from their rows either.
+    #[test]
+    fn the_rows_inside_a_locked_group_select_nothing() {
+        let mut app = app();
+        let a = app.run("frame.create", json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        let g = app.run("object.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.lock", json!({"ids": [g]})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = panel(app);
+        if egui_kittest::kittest::Queryable::query_by_label(&h, "<group>").is_none() {
+            click(&mut h, pos2(8.0 + 2.0 * COL_W + 9.0, row(0, 0.5, false).y));
+        }
+        // Rows: Layer 1, the group, and its two objects once it is opened.
+        click(&mut h, pos2(8.0 + 2.0 * COL_W + 21.0, row(1, 0.5, false).y));
+        assert_eq!(egui_kittest::kittest::Queryable::query_all_by_label(&h, "<rectangle>").count(), 2, "the group is open");
+        click(&mut h, row(2, 0.5, false));
+        click(&mut h, row(3, 0.5, true));
+        assert!(h.state().session.active().unwrap().selection.items.is_empty(), "nothing inside the locked group is selected");
+    }
+
+    /// An unlocked layer's selection square selects its objects but not the locked ones.
+    #[test]
+    fn a_layers_selection_square_leaves_its_locked_objects_out() {
+        let mut app = app();
+        let a = app.run("frame.create", json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        let b = app.run("frame.create", json!({"rect": [20, 0, 30, 10]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.lock", json!({"ids": [b]})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = panel(app);
+        click(&mut h, row(0, 0.5, true));
+        assert_eq!(h.state().session.active().unwrap().selection.items, [ItemId(a)]);
+    }
+
+    /// A locked object's row selects nothing either.
+    #[test]
+    fn a_locked_objects_row_selects_nothing() {
+        let mut app = app();
+        let a = app.run("frame.create", json!({"rect": [0, 0, 10, 10]})).unwrap()["id"].as_u64().unwrap();
+        app.run("object.lock", json!({"ids": [a]})).unwrap();
+        app.run("selection.set", json!({"ids": []})).unwrap();
+        let mut h = panel(app);
+        if egui_kittest::kittest::Queryable::query_by_label(&h, "<rectangle>").is_none() {
+            click(&mut h, pos2(8.0 + 2.0 * COL_W + 9.0, row(0, 0.5, false).y));
+        }
+        click(&mut h, row(1, 0.5, false));
+        assert!(h.state().session.active().unwrap().selection.items.is_empty());
     }
 
     #[test]

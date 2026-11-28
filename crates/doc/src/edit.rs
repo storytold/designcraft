@@ -1048,13 +1048,19 @@ fn story_has_hit(st: &Story, depth: usize, hit: &impl Fn(&Item) -> bool) -> bool
 
 /// Does `p` (in the item's parent space) hit `it`?
 pub fn item_hit(it: &Item, p: Point, tol: f64) -> bool {
+    item_hit_where(it, p, tol, &|_| true)
+}
+
+/// [`item_hit`] counting only the parts of a group that `take` accepts: a group whose locked
+/// child lies under `p` is not hit there, so the click reaches what is behind it.
+pub fn item_hit_where(it: &Item, p: Point, tol: f64, take: &dyn Fn(&Item) -> bool) -> bool {
     // A group is hit through its children. A frame with items pasted into it shows them clipped
     // to its path, so it is hit by its own area: not where a nested image runs past the frame.
     if let Content::Group { items } = &it.content
         && !it.has_nested_items()
     {
         let inner = it.xf.inverse() * p;
-        return items.iter().any(|c| item_hit(c, inner, tol));
+        return items.iter().any(|c| take(c) && item_hit_where(c, inner, tol, take));
     }
     let inner = it.xf.inverse() * p;
     let bp = it.path.to_bezpath();

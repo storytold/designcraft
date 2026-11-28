@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use designcraft_doc::{Item, Story};
 
-use super::layers::{duplicate_layer, set_layer};
+use super::layers::{deselect_on_layers, duplicate_layer, set_layer};
 use super::margins::{adjust_layout, column_guides_unlocked, margin_boxes, move_column_guide, set_margins_columns, set_page_width};
 use super::pages::{document_setup, page_options, page_size};
 use super::parents::{
@@ -881,7 +881,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let id = LayerId(p.get("id").and_then(Value::as_u64).unwrap_or(0));
                 let f = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
                 let (hide, lock, show, unlock) = (f("hide"), f("lock"), f("show"), f("unlock"));
-                s.edit(|d, _| {
+                s.edit(|d, sel| {
                     for l in &mut d.layers {
                         if show {
                             l.visible = true;
@@ -897,6 +897,11 @@ pub fn specs() -> Vec<CommandSpec> {
                                 l.locked = true;
                             }
                         }
+                    }
+                    // As locking or hiding one layer does.
+                    if hide || lock {
+                        let others: Vec<LayerId> = d.layers.iter().map(|l| l.id).filter(|l| *l != id).collect();
+                        deselect_on_layers(d, sel, &others);
                     }
                     ok()
                 })
