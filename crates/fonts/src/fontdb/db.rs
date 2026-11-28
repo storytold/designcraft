@@ -56,6 +56,8 @@ impl FontDb {
             catalog: RwLock::new(Vec::new()),
             #[cfg(not(target_arch = "wasm32"))]
             installed_files: Mutex::new(HashMap::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            styles_tried: Mutex::new(std::collections::HashSet::new()),
             font_dirs,
             font_files: Vec::new,
             #[cfg(not(target_arch = "wasm32"))]
