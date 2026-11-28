@@ -123,6 +123,27 @@ fn shapes_keep_geometry_fill_stroke_and_effects() {
     assert!(s.contains("rot=\"1800000\""), "{s}");
 }
 
+/// A dashed table edge with no pattern of its own is written with the pattern a dashed frame
+/// gets (three weights on, two off), not PowerPoint's fixed `dash` preset, so it matches the
+/// PDF and the screen.
+#[test]
+fn a_dashed_table_edge_keeps_the_dash_pattern() {
+    let mut d = Document::new(&NewDocument::default());
+    let lid = d.default_layer();
+    let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 300.0), lid, "", ParaFormat::default()).unwrap();
+    let mut t = designcraft_doc::Table::new(1, 1, 2, 0, 0, 200.0);
+    t.rows[0].height = 40.0;
+    t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+    t.options.border.weight = 2.0;
+    t.options.border.kind = StrokeType::Dashed { pattern: vec![] };
+    d.story_mut(sid).unwrap().insert_table(0, t);
+    let mut z = export(&d, &PptxOptions::default());
+    let s = part(&mut z, "ppt/slides/slide1.xml");
+    assert!(s.contains("<a:tbl>"), "the table is exported as a table: {s}");
+    assert!(s.contains("<a:custDash><a:ds d=\"300000\" sp=\"200000\"/></a:custDash>"), "6 on, 4 off for a 2 pt edge: {s}");
+    assert!(!s.contains("<a:prstDash val=\"dash\"/>"), "{s}");
+}
+
 #[test]
 fn composed_lines_become_line_breaks_with_the_story_text() {
     let mut d = Document::new(&NewDocument::default());

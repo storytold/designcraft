@@ -87,10 +87,19 @@ fn model_border(ex: &Exporter, s: Option<&StrokeSeg>, k: f64, opacity: f32) -> c
     let Some(color) = ex.model_color(&stroke.stroke.color, stroke.stroke.tint, opacity) else { return craft_pptx::Line::none() };
     let mut line = craft_pptx::Line::solid(color, stroke.stroke.weight * k);
     line.cap = Some(craft_pptx::style::LineCap::Flat);
-    line.dash = match stroke.stroke.kind {
-        StrokeType::Dashed { .. } => Some(craft_pptx::style::Dash::Preset { name: "dash".into() }),
-        StrokeType::Dotted => Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() }),
-        _ => None,
+    // The pattern items use, not the fixed `dash` preset, so a dashed edge matches the PDF.
+    let st = &stroke.stroke;
+    line.dash = if let Some(mut pattern) = st.kind.dashes(st.weight).filter(|p| st.weight > 0.0 && p.len() <= designcraft_doc::MAX_DASH_ENTRIES) {
+        if pattern.len() % 2 == 1 {
+            pattern.extend(pattern.clone());
+        }
+        let pairs =
+            pattern.chunks(2).filter_map(|pair| pair.first().zip(pair.get(1))).map(|(dash, gap)| (*dash / st.weight, *gap / st.weight)).collect();
+        Some(craft_pptx::style::Dash::Custom { pattern: pairs })
+    } else if matches!(st.kind, StrokeType::Dotted) {
+        Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() })
+    } else {
+        None
     };
     line
 }

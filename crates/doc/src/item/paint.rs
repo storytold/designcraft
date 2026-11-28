@@ -191,6 +191,27 @@ impl StrokeType {
             && length / period <= MAX_DASH_PERIODS
     }
 
+    /// The dash pattern to draw for a dashed stroke `weight` points wide, or `None` for a type
+    /// that is not dashed.
+    ///
+    /// A dashed stroke with no pattern of its own is drawn three weights on, two off: that is
+    /// what `type: "dashed"` on a table cell stroke and a dashed paragraph border have always
+    /// resolved to, and it is the only pattern an IDML `StrokeStyle/$ID/Dashed` carries (the
+    /// built-in dashed styles name no array). Without it such a stroke drew solid (#1467).
+    pub fn dashes(&self, weight: f64) -> Option<Vec<f64>> {
+        let StrokeType::Dashed { pattern } = self else { return None };
+        let kept: Vec<f64> = pattern.iter().copied().filter(|v| v.is_finite() && *v >= 0.0).collect();
+        // No pattern at all (or only zeros, which no command accepts and only a file can carry):
+        // the dashes come from the weight. A pattern that is there but degenerate is left alone,
+        // so [`StrokeType::expandable_dashes`] still draws it solid rather than expanding 10^8
+        // dashes along an edge.
+        if kept.iter().all(|v| *v == 0.0) {
+            let w = weight.max(1.0);
+            return Some(vec![w * 3.0, w * 2.0]);
+        }
+        Some(kept)
+    }
+
     /// The bands of a striped type (start, width as fractions of the weight).
     pub fn bands(&self) -> Option<Vec<(f64, f64)>> {
         Some(match self {
@@ -354,4 +375,28 @@ impl Stroke {
     pub fn is_none(&self) -> bool {
         self.swatch == designcraft_color::swatch::NONE || self.weight <= 0.0
     }
+}
+
+/// A dashed stroke with no pattern of its own — an IDML `StrokeStyle/$ID/Dashed`, or
+/// `type: "dashed"` with no array — dashes by its weight instead of drawing solid (#1467).
+#[test]
+fn a_dashed_stroke_without_a_pattern_dashes_by_its_weight() {
+    let dashed = |p: Vec<f64>| StrokeType::Dashed { pattern: p };
+    assert_eq!(dashed(vec![]).dashes(1.0), Some(vec![3.0, 2.0]));
+    assert_eq!(dashed(vec![]).dashes(4.0), Some(vec![12.0, 8.0]));
+    // A hairline still dashes visibly: the weight counts as at least a point.
+    assert_eq!(dashed(vec![]).dashes(0.25), Some(vec![3.0, 2.0]));
+    // Only zeros is nothing specified too (no command accepts such a pattern).
+    assert_eq!(dashed(vec![0.0, 0.0]).dashes(2.0), Some(vec![6.0, 4.0]));
+    // A pattern of its own is kept, as are the entries of a degenerate one, which
+    // `expandable_dashes` then refuses so that it draws solid rather than expanding forever.
+    assert_eq!(dashed(vec![6.0, 3.0]).dashes(2.0), Some(vec![6.0, 3.0]));
+    assert_eq!(dashed(vec![1e-6, 1e-6]).dashes(2.0), Some(vec![1e-6, 1e-6]));
+    assert!(!StrokeType::expandable_dashes(&[1e-6, 1e-6], 200.0));
+    // Negative and non-finite entries are dropped, as every drawing site did before.
+    assert_eq!(dashed(vec![6.0, -1.0, f64::NAN, 3.0]).dashes(1.0), Some(vec![6.0, 3.0]));
+    // Nothing else has dashes.
+    assert_eq!(StrokeType::Solid.dashes(1.0), None);
+    assert_eq!(StrokeType::Dotted.dashes(1.0), None);
+    assert_eq!(StrokeType::Style { name: "x".into() }.dashes(1.0), None);
 }

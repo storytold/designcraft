@@ -452,21 +452,20 @@ impl<'a> Exporter<'a> {
             }),
             ..Default::default()
         };
-        match &stroke.kind {
-            StrokeType::Dashed { pattern } if pattern.iter().any(|length| *length > 0.0) => {
-                let mut pattern = pattern.iter().map(|length| length.max(0.0)).collect::<Vec<_>>();
-                if pattern.len() % 2 == 1 {
-                    pattern.extend(pattern.clone());
-                }
-                let pairs = pattern
-                    .chunks(2)
-                    .filter_map(|pair| pair.first().zip(pair.get(1)))
-                    .map(|(dash, gap)| (*dash / stroke.weight, *gap / stroke.weight))
-                    .collect();
-                line.dash = Some(craft_pptx::style::Dash::Custom { pattern: pairs });
+        // Resolve empty Dashed patterns through StrokeType::dashes so a named dashed
+        // style with no array of its own still exports dashed (#1467).
+        if let Some(mut pattern) = stroke.kind.dashes(stroke.weight).filter(|p| stroke.weight > 0.0 && p.len() <= designcraft_doc::MAX_DASH_ENTRIES) {
+            if pattern.len() % 2 == 1 {
+                pattern.extend(pattern.clone());
             }
-            StrokeType::Dotted => line.dash = Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() }),
-            _ => {}
+            let pairs = pattern
+                .chunks(2)
+                .filter_map(|pair| pair.first().zip(pair.get(1)))
+                .map(|(dash, gap)| (*dash / stroke.weight, *gap / stroke.weight))
+                .collect();
+            line.dash = Some(craft_pptx::style::Dash::Custom { pattern: pairs });
+        } else if matches!(stroke.kind, StrokeType::Dotted) {
+            line.dash = Some(craft_pptx::style::Dash::Preset { name: "sysDot".into() });
         }
         let end = |arrow: Arrowhead| {
             match arrow {
