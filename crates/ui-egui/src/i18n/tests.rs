@@ -359,10 +359,17 @@ fn a_column_count_and_a_list_number_read_differently() {
         ("ar", "العدد:", "الرقم:"),
         ("fr", "Nombre :", "Numéro:"),
         ("zh", "数量：", "编号："),
+        ("zh-hant", "數量：", "編號："),
+        ("ko", "개수:", "번호:"),
     ] {
         assert_eq!((tr_context(lang, "Number:", "count"), tr(lang, "Number:")), (count, numeral), "{lang}");
     }
     assert_eq!(tr_context("en", "Number:", "count"), "Number:");
+    // Korean table and grid columns are 열; a text frame's stay 단.
+    assert_eq!((tr_context("ko", "Columns", "table"), tr("ko", "Columns")), ("열", "단"));
+    assert_eq!((tr_context("ko", "Columns:", "grid"), tr("ko", "Columns:")), ("열 수:", "단 수:"));
+    assert_eq!(tr_context("zh-hant", "Columns", "table"), "欄");
+    assert_eq!((tr_context("zh-hant", "Name", "contributors"), tr("zh-hant", "Name")), ("姓名", "名稱"));
     assert_eq!(tr("de", "Gutter:"), "Spaltenabstand:");
     // The Pages panel menu.
     for key in [
@@ -514,7 +521,7 @@ fn category_first_counts_put_the_category_before_every_number() {
 
 /// Every English string the interface passes to `tr`, as far as the command and tool tables and
 /// the list of UI-only labels know them.
-fn interface_strings() -> HashSet<&'static str> {
+pub(super) fn interface_strings() -> HashSet<&'static str> {
     let mut keys = HashSet::new();
     // Command labels and menu names reach `tr` from the engine and the UI command table.
     for spec in designcraft_engine::command_specs() {
