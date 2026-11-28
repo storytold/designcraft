@@ -971,6 +971,18 @@ fn contour_path(doc: &Document, it: &Item, wrap: &designcraft_doc::TextWrap) -> 
     Outline { path: frame, frame: None, graphic_clip: None }
 }
 
+/// The rows of a frame grid story's frame ([`designcraft_doc::framegrid`]), in inner space.
+/// Grid-aligned lines sit on them in place of the baseline grid's lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameRows {
+    /// Top of the first row.
+    pub top: f64,
+    /// Row height: the grid's cell across lines.
+    pub cell: f64,
+    /// From one row's top to the next: the cell plus the grid's line aki.
+    pub pitch: f64,
+}
+
 /// One frame of the thread, ready for composition.
 #[derive(Clone, Debug)]
 pub struct FrameSpec {
@@ -994,6 +1006,8 @@ pub struct FrameSpec {
     pub parent: bool,
     /// Baseline grid in inner space: (first grid line y, increment).
     pub grid: Option<(f64, f64)>,
+    /// A frame grid's rows in inner space, in place of the baseline grid (see [`FrameRows`]).
+    pub frame_grid: Option<FrameRows>,
     /// The frame is on a left page (for towards/away-from-spine alignment).
     pub left_page: bool,
     /// The frame is on a right page of a facing spread (spine-relative anchored objects mirror
@@ -1214,6 +1228,12 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         let grid = (inc > 0.0 && inc.is_finite() && start.is_finite()).then_some((start - ty, inc));
         // Type on a path: one line as long as the path (from the start offset).
         let (area, opts) = frame_text_area(doc, st, item, tf);
+        // A frame grid's rows start at the top of the text area and replace the baseline grid.
+        let frame_grid = st.frame_grid.filter(|_| tf.options.path.is_none()).map(|g| {
+            let g = g.sanitized();
+            FrameRows { top: area.y0, cell: g.cell(false).1, pitch: g.row_pitch(false) }
+        });
+        let grid = if frame_grid.is_some() { None } else { grid };
         // A non-rectangular frame keeps the top inset inward from its outline; its rectangular text
         // area (all four insets) still bounds the lines.
         let outline = match &tf.options.path {
@@ -1234,6 +1254,8 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
         } else {
             (area, exclusions, grid, page_rect, outline)
         };
+        // Vertical frame grids aren't set on their rows yet.
+        let frame_grid = if vertical { None } else { frame_grid };
         out.push(FrameSpec {
             id: fid,
             area,
@@ -1246,6 +1268,7 @@ pub(crate) fn frame_specs_placed(doc: &Document, sid: StoryId, placed: &[(ItemId
             page,
             parent: matches!(spread_ref, Some(designcraft_doc::SpreadRef::Parent(_))),
             grid,
+            frame_grid,
             left_page,
             right_page,
             page_rect,
@@ -1954,21 +1977,64 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
         if cur.last_baseline.is_some() {
             baseline += cur.last_reference - reference;
         }
+        // A frame grid's first line, under an Ascent or Em Box Height first baseline, starts with
+        // its own em box at the column top, so it goes on the first row whatever the face's
+        // ascender (InDesign, observed black-box: Ascent sets as Em Box Height there).
+        // An empty line has no glyph to measure: in a frame grid its em box is its paragraph mark's,
+        // split as the face's ascent and descent split it (InDesign gives an empty 36 pt paragraph
+        // the rows a 36 pt em box needs). Its height is scaled vertically, as a glyph's em is.
+        let mark_em = (f.frame_grid.is_some() && line_glyphs.iter().all(|g| g.adv <= 0.0))
+            .then(|| {
+                let height = mark_chars.size * mark_chars.v_scale.abs();
+                let top = -height * asc / (asc + desc).max(1e-9);
+                (top, top + height)
+            })
+            .filter(|(top, bottom)| top.is_finite() && bottom.is_finite());
+        // Where the mark's face puts its roman baseline and ICF in that em box, for the rows'
+        // reference points: the ones a character of that face would take.
+        let mark_cell = mark_em.map(|(top, bottom)| {
+            let (icf_top, icf_bottom) = icf_insets(&db.face(&mark_chars.font_family, &mark_chars.font_style));
+            (-top / (bottom - top).max(1e-9), icf_top, 1.0 - icf_bottom)
+        });
+        let reference_offset = |r: designcraft_doc::cjk::CharacterAlignment| {
+            use designcraft_doc::cjk::CharacterAlignment as R;
+            match mark_em {
+                Some((top, bottom)) => match r {
+                    R::Baseline => 0.0,
+                    R::EmTop => top,
+                    R::EmCenter => (top + bottom) / 2.0,
+                    R::EmBottom => bottom,
+                    R::IcfTop => top + 0.05 * (bottom - top),
+                    R::IcfBottom => bottom - 0.05 * (bottom - top),
+                },
+                None => grid::reference_offset(line_glyphs, r),
+            }
+        };
+        let em_start = (f.frame_grid.is_some()
+            && cur.last_baseline.is_none()
+            && matches!(f.opts.first_baseline, FirstBaseline::Ascent | FirstBaseline::EmboxHeight))
+        .then(|| {
+            let above = -reference_offset(designcraft_doc::cjk::CharacterAlignment::EmTop);
+            col.y0 + above.max(f.opts.first_baseline_min)
+        })
+        .filter(|b| b.is_finite());
         // A step so small that the column holds more steps than an f64 can count is no grid: the
         // line is placed as it is without one.
         let countable = |g_start: f64, inc: f64| [baseline, col.y0, col.y1].iter().all(|y| ((y - g_start) / inc).is_finite());
-        let grid = f.grid.filter(|&(g_start, inc)| {
-            inc > 0.0
-                && inc.is_finite()
-                && countable(g_start, inc)
-                && (pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0))
-        });
+        let aligned = pp.grid_align == GridAlign::AllLines || (pp.grid_align == GridAlign::FirstLineOnly && line_no == 0);
+        // A frame grid's rows replace the baseline grid; its ICF references take the line's em box.
+        let line_ref = if f.frame_grid.is_some() { grid::frame_line_reference(pp.grid_reference) } else { pp.grid_reference };
+        let grid = match f.frame_grid {
+            Some(rows) => Some(rows.grid_for(line_glyphs, pp.grid_reference, mark_cell)),
+            None => f.grid,
+        }
+        .filter(|&(g_start, inc)| aligned && inc > 0.0 && inc.is_finite() && g_start.is_finite() && countable(g_start, inc));
         if let Some((g_start, inc)) = grid {
             let n = pp.grid_gyoudori.min(grid::MAX_GYOUDORI);
             match para_block.filter(|(at, _)| line_no > 0 && *at == (cur.fi, cur.col)) {
                 Some((_, end)) => grid_end = Some(end),
                 None => {
-                    let r = grid::reference_offset(line_glyphs, pp.grid_reference);
+                    let r = reference_offset(line_ref);
                     let block = n > 0 && pp.paragraph_gyoudori && line_no == 0;
                     let span = if block {
                         let aki_below = |line_model, line_lead| (line_model == designcraft_doc::cjk::LeadingModel::AkiBelow).then_some(line_lead);
@@ -1985,16 +2051,42 @@ fn position_line(input: PositionLineInput<'_, '_>) -> LinePosition {
                             down += prev_aki.unwrap_or(next_lead) + prev - next_reference;
                             prev = next_reference;
                             prev_aki = aki_below(next_model, next_lead);
-                            last_r = grid::reference_offset(next_glyphs, pp.grid_reference);
+                            last_r = grid::reference_offset(next_glyphs, line_ref);
                         }
                         (down + last_r - r).max(0.0)
                     } else {
                         0.0
                     };
-                    let lines = if block { grid::lines_for(span, inc, n) } else { n.max(1) };
-                    let free = cur.grid_next.filter(|(b, _)| cur.last_baseline == Some(*b)).map(|(_, y)| y);
-                    let band = grid::Band { natural: baseline + r, free, pending: cur.pending, fixed: n > 0, lines, span };
+                    let lines = match f.frame_grid {
+                        _ if block => grid::lines_for(span, inc, n),
+                        // Auto gyoudori in a frame grid: the rows the line's em box needs.
+                        Some(rows) if n == 0 => {
+                            let em = reference_offset(designcraft_doc::cjk::CharacterAlignment::EmBottom)
+                                - reference_offset(designcraft_doc::cjk::CharacterAlignment::EmTop);
+                            rows.rows_for(em)
+                        }
+                        _ => n.max(1),
+                    };
+                    // A frame grid's `g_start` moves with the line's reference, so the end of a band
+                    // is kept from the row tops and taken back to this line's reference here.
+                    let row_shift = f.frame_grid.map_or(0.0, |rows| g_start - rows.top);
+                    // At the top of a column, a frame grid's first row is free: gyoudori given starts there.
+                    let free = cur
+                        .grid_next
+                        .filter(|(b, _)| cur.last_baseline == Some(*b))
+                        .map(|(_, y)| y + row_shift)
+                        .or_else(|| (f.frame_grid.is_some() && cur.last_baseline.is_none()).then_some(g_start));
+                    let band = grid::Band {
+                        natural: em_start.unwrap_or(baseline) + r,
+                        free,
+                        pending: cur.pending,
+                        fixed: n > 0,
+                        lines,
+                        span,
+                        at_reference: f.frame_grid.is_some(),
+                    };
                     let (y, end) = grid::place((g_start, inc), pp.grid_reference, band);
+                    let end = end - row_shift;
                     baseline = y - r;
                     grid_end = Some(end);
                     if block {
@@ -3122,6 +3214,7 @@ fn finish_paragraph(input: ParagraphFinishInput<'_>) -> ParagraphFinish {
             reference: cur.last_reference,
             aki_below: cur.aki_below,
             pending: if spans_in(cur.fi) { pp.space_after.max(pp.span_space_after) } else { pp.space_after },
+            grid_next: cur.grid_next.filter(|(b, _)| *b == l.baseline),
         };
         cur.band = Band { para: pi + 1, line0: ft.lines.len(), above: Some(top_band), tail: None };
     }
@@ -4463,6 +4556,9 @@ struct Above {
     aki_below: Option<f64>,
     /// The spanning paragraph's space after.
     pending: f64,
+    /// The grid end of the spanning paragraph's last line, with its baseline: every column under
+    /// it starts on the first row after the rows it took.
+    grid_next: Option<(f64, f64)>,
 }
 
 /// Balancing the columns above a spanning paragraph: a search for the lowest column bottom at
@@ -4640,11 +4736,13 @@ impl Cursor {
                 self.last_reference = a.reference;
                 self.aki_below = a.aki_below;
                 self.pending = a.pending;
+                self.grid_next = a.grid_next;
             }
             None => {
                 self.last_baseline = None;
                 self.aki_below = None;
                 self.pending = 0.0;
+                self.grid_next = None;
             }
         }
     }
@@ -4762,12 +4860,18 @@ fn cjk_em_box(g: &Glyph) -> (f64, f64) {
 /// [`cjk_em_box`] inset by the font's own ICF insets (`BASE` `icft`/`icfb`, else 5% of the em).
 fn cjk_icf_box(g: &Glyph) -> (f64, f64) {
     let (top, bottom) = cjk_em_box(g);
-    let (em_top, em_bottom) = g.face.em_box();
-    let (icf_top, icf_bottom) = g.face.icf_box();
-    let em = (em_top - em_bottom).max(1e-9);
+    let (inset_top, inset_bottom) = icf_insets(&g.face);
     let height = bottom - top;
+    (top + inset_top * height, bottom - inset_bottom * height)
+}
+/// A face's ICF insets from the top and the bottom of its em box, as fractions of the em: the
+/// font's own (`BASE` `icft`/`icfb`), else 5 %.
+fn icf_insets(face: &designcraft_fonts::FontFace) -> (f64, f64) {
+    let (em_top, em_bottom) = face.em_box();
+    let (icf_top, icf_bottom) = face.icf_box();
+    let em = (em_top - em_bottom).max(1e-9);
     let inset = |v: f64| if v.is_finite() { v.clamp(0.0, 0.5) } else { 0.05 };
-    (top + inset((em_top - icf_top) / em) * height, bottom - inset((icf_bottom - em_bottom) / em) * height)
+    (inset((em_top - icf_top) / em), inset((icf_bottom - em_bottom) / em))
 }
 /// Em box that character alignment lines up, relative to the baseline (y down) at the glyph's
 /// size: the font's `BASE` em box, else 0.88 em above and 0.12 em below the baseline. A font's
@@ -6389,7 +6493,10 @@ fn vertical_justify(
             }
         };
         let center = f.opts.vertical_justification == VerticalJustification::Center;
-        let step = f.countable_grid().map(|(_, inc)| inc).filter(|_| match f.opts.vertical_justification {
+        // A frame grid's lines move by whole rows, as a baseline grid's move by whole steps. A frame
+        // grid comes first, as it does when the lines are placed.
+        let rows_step = f.frame_grid.map(|rows| rows.pitch).filter(|p| *p > 0.0 && p.is_finite());
+        let step = rows_step.or(f.countable_grid().map(|(_, inc)| inc)).filter(|_| match f.opts.vertical_justification {
             VerticalJustification::Justify => idx.iter().zip(&rows).any(|(&i, &k)| k == n && on_grid(i)),
             _ => idx.iter().any(|&i| on_grid(i)),
         });
@@ -6405,7 +6512,10 @@ fn vertical_justify(
                 // The last baseline stays above the bottom of the text, and the rows above it fit.
                 let most = (space / inc + 1e-9).floor().min((room / unit + 1e-9).floor()).max(0.0);
                 // Bottom and Justify take the lowest grid line, Center the one nearest the middle.
-                let target = if center { (space / 2.0 / inc).round().min(most) } else { most };
+                // In a frame grid Center counts the free rows and leaves the odd one after the
+                // lines (InDesign, observed: 2 lines in 17 rows start on row 7, not 8).
+                let middle = if rows_step.is_some() { ((space / inc + 1e-9).floor() / 2.0).floor() } else { (space / 2.0 / inc).round() };
+                let target = if center { middle.min(most) } else { most };
                 // A shaped frame can narrow and widen again, so the target step may not fit: take
                 // the fitting step nearest it, up to `most` (the lower one on a tie, and no step
                 // when that is as near), and leave the lines in place when none within
@@ -7146,6 +7256,7 @@ mod column_allocation_safety_tests {
             page: None,
             parent: false,
             grid: None,
+            frame_grid: None,
             left_page: false,
             right_page: false,
             page_rect: None,
