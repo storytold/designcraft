@@ -92,7 +92,7 @@ fn status(s: &Session, id: AssetId) -> Option<LinkStatus> {
 /// The names of the entries in the package at `path` that hold placed files.
 fn stored_assets(path: &Path) -> Vec<String> {
     let zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
-    zip.file_names().filter(|n| n.starts_with("assets/")).map(str::to_string).collect()
+    zip.file_names().map(Result::unwrap).filter(|n| n.starts_with("assets/")).map(|n| n.into_owned()).collect()
 }
 
 /// Set the file's modification time `secs` seconds into the past.
