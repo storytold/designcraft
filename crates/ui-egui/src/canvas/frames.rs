@@ -181,7 +181,11 @@ pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
     // A rectangle (slanted or not: four corner points, no handles). Ellipses, polygons (a
     // four-sided one is a diamond) and curved paths keep the X across their bounds. Edited points
     // make any of them a path: a four-cornered one whose corners would cross as a plus (a diamond,
-    // edited) keeps the bounds too.
+    // edited) keeps the bounds too. A rectangle whose points were moved keeps two edges on its
+    // bounds (opposite ones when a side was slanted, adjacent ones when one corner moved), which a
+    // diamond doesn't have (one of its points moved in line with another gives it one): slanted by
+    // about its own width, one of its diagonals is near vertical, and the X still joins its
+    // corners (#2280).
     let crosses = |a: Point, b: Point| {
         let d = b - a;
         d.x.abs() > 0.18 * d.hypot() && d.y.abs() > 0.18 * d.hypot()
@@ -191,12 +195,28 @@ pub(super) fn frame_x(it: &Item) -> [(Point, Point); 2] {
         && sp.closed
         && let [c0, c1, c2, c3] = sp.anchors.as_slice()
         && sp.anchors.iter().all(|a| a.h_in == a.p && a.h_out == a.p)
-        && (it.shape == designcraft_doc::Shape::Rectangle || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
+        && (it.shape == designcraft_doc::Shape::Rectangle
+            || edges_on_bounds([c0.p, c1.p, c2.p, c3.p]) >= 2
+            || (crosses(c0.p, c2.p) && crosses(c1.p, c3.p)))
     {
         return [(c0.p, c2.p), (c1.p, c3.p)];
     }
     let r = it.inner_bounds();
     [(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)), (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1))]
+}
+
+/// How many edges of the quadrilateral `c` lie along a side of its bounds.
+fn edges_on_bounds(c: [Point; 4]) -> usize {
+    let (x0, x1) = (c.iter().map(|p| p.x).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max));
+    let (y0, y1) = (c.iter().map(|p| p.y).fold(f64::INFINITY, f64::min), c.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max));
+    let eps = 1e-9 * (x1 - x0 + y1 - y0).max(1.0);
+    let near = |a: f64, b: f64| (a - b).abs() <= eps;
+    let on = |a: Point, b: Point| (near(a.x, b.x) && (near(a.x, x0) || near(a.x, x1))) || (near(a.y, b.y) && (near(a.y, y0) || near(a.y, y1)));
+    // Three points in line along a side make a diagonal an edge (a triangle): it keeps the bounds X.
+    if on(c[0], c[2]) || on(c[1], c[3]) {
+        return 0;
+    }
+    (0..4).filter(|&k| on(c[k], c[(k + 1) % 4])).count()
 }
 
 /// Layer colour of the first selected item: live-corner marks are outlined in it.
