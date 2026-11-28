@@ -71,6 +71,9 @@ pub struct Glyph {
     pub allow_kashidas: bool,
     pub safe_tatweel_before: bool,
     pub shaping_rtl: bool,
+    /// Tracking and manual kerning included in `adv`, the space after the character in reading
+    /// order. Right-to-left, that is at the glyph's left (see `reorder_visual`).
+    pub track: f64,
     /// The character's language as a BCP 47 tag ([`designcraft_doc::language_tag`]).
     pub lang: Option<&'static str>,
     /// Upright in a vertical frame: shaped top to bottom (`adv` is its vertical advance) and hung
@@ -1145,6 +1148,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         allow_kashidas: p.allow_kashidas,
         safe_tatweel_before: false,
         shaping_rtl: false,
+        track: 0.0,
         lang: designcraft_doc::language_tag(&p.language),
         upright: false,
         list_label: false,
@@ -1262,10 +1266,12 @@ fn shape_segment(
         };
         let (ascent, descent) = if up { (em_top * k_v, -em_bottom * k_v) } else { (ascent, descent) };
         let body = adv;
+        let mut track = 0.0;
         if ch == SOFT_HYPHEN {
             adv = 0.0;
         } else if last_in_cluster {
-            adv += tracking + manual;
+            track = tracking + manual;
+            adv += track;
         }
         let mark = face.glyph_is_mark(sg.gid);
         let mark_x = if mark { p.diacritic_x_offset.clamp(-1000.0, 1000.0) / 1000.0 * p.size * hs } else { 0.0 };
@@ -1319,6 +1325,7 @@ fn shape_segment(
             allow_kashidas: p.allow_kashidas,
             safe_tatweel_before: sg.safe_tatweel_before,
             shaping_rtl: sg.rtl,
+            track,
             lang,
             upright: up,
             list_label: false,
@@ -1433,6 +1440,7 @@ pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     let mut h = g.clone();
     h.gid = gid;
     h.adv = g.face.advance(gid) * g.sx;
+    h.track = 0.0;
     h.dx = 0.0;
     h.dy = 0.0;
     h.byte = g.byte + g.len;
