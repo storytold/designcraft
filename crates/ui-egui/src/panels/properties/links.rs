@@ -188,14 +188,26 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             p[k] = v;
             p
         };
+        // A browser hands over the chosen files' bytes, not paths: they arrive through the inbox.
+        let browser = app.services.open_async.is_some();
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Relink…"))).clicked() {
-            let target = with("path", Value::Null);
-            let asked = app.ask_open("relink", Bound::Document, move |app, path| {
-                let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
-                app.status_error("Relink", e);
+            if browser {
+                // A linked text story is read from its path, which a browser doesn't give: say so
+                // rather than ignore the click.
+                if is_text {
+                    app.status(crate::i18n::tr(&app.ui.language, "A linked text file can't be relinked in the browser"));
+                } else {
+                    app.request_files(&format!("relink:{aid}"));
+                }
+            } else {
+                let target = with("path", Value::Null);
+                let asked = app.ask_open("relink", Bound::Document, move |app, path| {
+                    let _ = app.run("links.relink", crate::app::file_dialogs::with_path(&target, "path", path));
+                    Ok(Value::Null)
+                });
+                if let Err(e) = asked {
+                    app.status_error("Relink", e);
+                }
             }
         }
         if ui.button(crate::rtl::widget(ui, crate::i18n::tr(&app.ui.language, "Go To"))).clicked() {
@@ -247,22 +259,19 @@ pub fn links_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         }
     });
     ui.horizontal(|ui| {
-        // Choose any file in the folder: missing links are looked up there by name.
+        // Missing links are looked up in the chosen folder by name. In a browser, which hands over
+        // files rather than paths, the folder's files are chosen instead.
+        let browser = app.services.open_async.is_some();
         if ui
             .button(crate::i18n::tr(&app.ui.language, "Relink to Folder…"))
             .on_hover_ui(|ui| {
-                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Pick a file in the folder holding the moved graphics"));
+                crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Choose the folder holding the moved graphics"));
             })
             .clicked()
         {
-            let asked = app.ask_open("relink", Bound::Document, |app, path| {
-                let Some(dir) = std::path::Path::new(&path).parent() else { return Ok(Value::Null) };
-                if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir.to_string_lossy()})) {
-                    app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
-                }
-                Ok(Value::Null)
-            });
-            if let Err(e) = asked {
+            if browser {
+                app.request_files("relinkFiles");
+            } else if let Err(e) = relink_to_folder(app) {
                 app.status_error("Relink", e);
             }
         }
@@ -353,6 +362,18 @@ impl DesignApp {
             self.status_error("Unembed", e);
         }
     }
+}
+
+/// Relink to Folder: asks for the folder holding the moved graphics and looks missing
+/// links up there by name.
+pub(crate) fn relink_to_folder(app: &mut DesignApp) -> Result<Value, String> {
+    let title = crate::i18n::tr(&app.ui.language, "Relink to Folder").to_string();
+    app.ask_folder(&title, Bound::Document, |app, dir| {
+        if let Ok(v) = app.run("links.relinkFolder", json!({"dir": dir})) {
+            app.status(crate::i18n::tr(&app.ui.language, "Relinked {count}").replace("{count}", &v["relinked"].to_string()));
+        }
+        Ok(Value::Null)
+    })
 }
 
 /// Update Link from the Links panel or the menu (`{asset}`, `{story}`, or `{}` for all): asks

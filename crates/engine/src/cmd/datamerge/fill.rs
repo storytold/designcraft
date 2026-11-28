@@ -3,6 +3,7 @@
 //! Placeholders are addressed through an id map so each record's copy can be filled from the
 //! unfilled template. A placeholder whose frame or story is not in the map is left as it is.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -232,10 +233,10 @@ pub fn fill_row(
         if !fields.iter().any(|f| f.name == ph.field) {
             continue;
         }
-        let cell = cell_of(fields, row, &ph.field).to_string();
+        let cell = cell_of(fields, row, &ph.field);
         match &ph.anchor {
             PlaceholderAnchor::Text { story, start, end } => plan_text(doc, maps, ph, (*story, *start, *end), cell, &mut pending),
-            PlaceholderAnchor::Item { .. } => plan_item(doc, maps, ph, &cell, record, sources, &mut pending),
+            PlaceholderAnchor::Item { .. } => plan_item(doc, maps, ph, cell, record, sources, &mut pending),
         }
     }
     let Pending { mut reps, mut images, links, parent, mut report } = pending;
@@ -271,7 +272,7 @@ fn plan_text(
     maps: &Maps,
     ph: &designcraft_doc::Placeholder,
     (story, start, end): (StoryId, usize, usize),
-    cell: String,
+    cell: &str,
     pending: &mut Pending,
 ) {
     let Some(&mapped) = maps.stories.get(&story) else {
@@ -281,10 +282,10 @@ fn plan_text(
         return;
     };
     match ph.role {
-        PlaceholderRole::Text => pending.reps.push(Rep { story: mapped, start, end, text: cell, object: None }),
+        PlaceholderRole::Text => pending.reps.push(Rep { story: mapped, start, end, text: merged_text(cell).into_owned(), object: None }),
         PlaceholderRole::Image => pending.images.push(InlineImage { story: mapped, start, end, field: ph.field.clone() }),
         PlaceholderRole::Hyperlink => {
-            if let Some(dest) = classify_link(&cell) {
+            if let Some(dest) = classify_link(cell) {
                 pending.links.push((PlaceholderAnchor::Text { story: mapped, start, end }, dest, ph.field.clone()));
             }
         }
@@ -352,7 +353,7 @@ fn typed_reps(
                 images.push(InlineImage { story: mapped, start, end, field: name });
                 continue;
             }
-            reps.push(Rep { story: mapped, start, end, text: cell_of(fields, row, &name).to_string(), object: None });
+            reps.push(Rep { story: mapped, start, end, text: merged_text(cell_of(fields, row, &name)).into_owned(), object: None });
         }
     }
 }
@@ -442,8 +443,13 @@ fn fill_own(st: &mut Story, fields: &[DataField], row: &[String]) {
     let found: Vec<(usize, usize, String)> =
         find_markers(&st.text).into_iter().filter(|(_, _, name)| fields.iter().any(|f| f.name == *name)).collect();
     for (start, end, name) in found.into_iter().rev() {
-        st.replace(start..end, cell_of(fields, row, &name));
+        st.replace(start..end, &merged_text(cell_of(fields, row, &name)));
     }
+}
+
+/// A story uses LF as its paragraph separator. Keep the line breaks without inserting CR glyphs.
+fn merged_text(cell: &str) -> Cow<'_, str> {
+    if cell.contains('\r') { Cow::Owned(cell.replace("\r\n", "\n").replace('\r', "\n")) } else { Cow::Borrowed(cell) }
 }
 
 pub(super) fn find_markers(text: &str) -> Vec<(usize, usize, String)> {

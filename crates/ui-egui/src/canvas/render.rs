@@ -95,7 +95,7 @@ pub struct DisplayKey {
     highlight_custom_tracking: bool,
 }
 
-fn display_key(app: &DesignApp) -> DisplayKey {
+pub(super) fn display_key(app: &DesignApp) -> DisplayKey {
     let (ui, prefs) = (&app.ui, &app.session.prefs);
     DisplayKey {
         quality: ui.display_quality,
@@ -150,6 +150,11 @@ pub(super) fn image_generation(seen: &mut (u64, f64), live: u64, now: f64, rende
 pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rect, xf: &Xf, layout: &CanvasLayout, preview: bool) {
     invalidate_on_display_change(app);
     let Some(st) = app.session.active() else { return };
+    // The copy of the canvas's pixels serves the text highlight only: none without a text
+    // selection, so a canvas without one holds no second full-size image.
+    if st.selection.text.is_none() {
+        app.canvas.pixels = None;
+    }
     let ppp = ctx.pixels_per_point() as f64;
     let doc_key = (st.uid, std::sync::Arc::as_ptr(&st.doc) as u64, st.revision, preview);
     let editing_parents = st.editing_parents;
@@ -194,7 +199,10 @@ pub(super) fn render_texture(app: &mut DesignApp, ctx: &egui::Context, rect: Rec
             x0 >= -0.5 && y0 >= -0.5 && x0 + rect.width() as f64 <= s.size.0 as f64 + 0.5 && y0 + rect.height() as f64 <= s.size.1 as f64 + 0.5
         }
     };
-    if app.canvas.shown.is_some_and(|s| covers(&s)) {
+    // Text just selected: the highlight needs the canvas's pixels (see `upload`), so the view is
+    // rendered again, on the worker, to keep a copy.
+    let needs_pixels = app.canvas.pixels.is_none() && app.session.active().is_some_and(|st| st.selection.text.is_some());
+    if app.canvas.shown.is_some_and(|s| covers(&s)) && !needs_pixels {
         return;
     }
     let doc_changed = app.canvas.shown.is_none_or(|s| s.doc != doc_key);
@@ -313,10 +321,25 @@ fn patch_texture(app: &mut DesignApp, layout: &CanvasLayout, ppp: f64, doc_key: 
         * Affine::scale(sh.zoom)
         * Affine::translate((-sh.origin.x, -sh.origin.y));
     let opts = screen_options(app, layout, preview, ppp);
-    let img = app.canvas.patcher.render(&new, &app.session.cache, &placed, ((x1 - x0) as u32, (y1 - y0) as u32), view, &opts);
+    let mut img = app.canvas.patcher.render(&new, &app.session.cache, &placed, ((x1 - x0) as u32, (y1 - y0) as u32), view, &opts);
+    // Proof Colors as for a full upload: the repainted region (and the highlight's copy of it)
+    // showed the unproofed colours until the next full render.
+    screen_post(app, &mut img);
     let ci = egui::ColorImage::from_rgba_premultiplied([img.width as usize, img.height as usize], &img.pixels);
     if let Some(tex) = app.canvas.texture.as_mut() {
         tex.set_partial([x0 as usize, y0 as usize], ci, egui::TextureOptions::LINEAR);
+    }
+    // The same region in the canvas's own copy of its pixels.
+    if let Some(all) = app.canvas.pixels.as_mut() {
+        let all = std::sync::Arc::make_mut(all);
+        let (aw, pw) = (all.width as usize, img.width as usize);
+        for (row, src) in img.pixels.chunks_exact(pw * 4).enumerate() {
+            let start = ((y0 as usize + row) * aw + x0 as usize) * 4;
+            if let Some(dst) = all.pixels.get_mut(start..start + pw * 4) {
+                dst.copy_from_slice(src);
+            }
+        }
+        app.canvas.pixels_generation += 1;
     }
     done(app);
     app.canvas.patches += 1;
@@ -351,4 +374,8 @@ fn upload(app: &mut DesignApp, ctx: &egui::Context, mut img: designcraft_render:
         Some(tex) => tex.set(ci, egui::TextureOptions::LINEAR),
         None => app.canvas.texture = Some(ctx.load_texture("canvas", ci, egui::TextureOptions::LINEAR)),
     }
+    // Kept only while text is selected (see `render_texture`).
+    let selecting = app.session.active().is_some_and(|st| st.selection.text.is_some());
+    app.canvas.pixels = selecting.then(|| std::sync::Arc::new(img));
+    app.canvas.pixels_generation += 1;
 }
