@@ -92,8 +92,20 @@ display_name = "Jonathan Cardoso"
 real_name = "Adithya Shankaran"
 sync_github_name = true
 
+[people.AlPaka1234]
+real_name = "Christian Holtbrügger"
+
 [people.alejo-c]
 sync_github_name = true
 
 [people.gmrmad1]
 real_name = "Madhav Agarwal"
+
+[people.thib-cal]
+display_name = "TS-Ca"
+sync_github_name = true
+
+[people.Marantz5779]
+real_name = "Mendi Marantz"
+display_name = "Mendi Marantz"
+sync_github_name = false
