@@ -59,6 +59,18 @@ pub fn mode() -> Mode {
     })
 }
 
+/// Does the window hide the pointer only while it is the key window? macOS does: winit hides it with
+/// a cursor rect holding a transparent cursor, and macOS applies the rect only in the key window.
+/// Over a window behind another app or under a sheet, the system pointer shows.
+pub const HIDES_ONLY_WHEN_KEY: bool = cfg!(target_os = "macos");
+
+/// Does a [`Mode::Painted`] window paint the glyph over a hidden pointer, `focused` or not? Not where
+/// the system shows its pointer over a window without the focus ([`HIDES_ONLY_WHEN_KEY`]): the system
+/// pointer shows alone there, instead of next to the painted glyph.
+pub fn paint_glyphs(hides_only_when_key: bool, focused: bool) -> bool {
+    focused || !hides_only_when_key
+}
+
 /// The shapes of one glyph: every halo goes under all the ink, so one part's halo never cuts
 /// through another part's ink.
 #[derive(Default)]
@@ -313,9 +325,17 @@ pub fn system(c: Cursor) -> egui::CursorIcon {
 }
 
 /// Show cursor `c` with the pointer at `hover` (screen points): set the OS cursor bitmap or paint
-/// the glyph per [`mode`], and return the cursor icon to set.
+/// the glyph per [`mode`], and return the cursor icon to set. A painted glyph needs the focus where
+/// [`HIDES_ONLY_WHEN_KEY`]; without it the system cursor stands in.
 pub fn show(ctx: &egui::Context, images: &mut Images, c: Cursor, hover: Pos2) -> egui::CursorIcon {
-    match mode() {
+    show_in(mode(), ctx, images, c, hover)
+}
+
+/// [`show`] in `mode`, so tests can take the painted path on any platform: a painted glyph
+/// over a window without the focus where [`HIDES_ONLY_WHEN_KEY`] gives way to the system cursor.
+fn show_in(mode: Mode, ctx: &egui::Context, images: &mut Images, c: Cursor, hover: Pos2) -> egui::CursorIcon {
+    match mode {
+        Mode::Painted if !paint_glyphs(HIDES_ONLY_WHEN_KEY, ctx.input(|i| i.focused)) => system(c),
         Mode::Os => {
             // The glyphs keep the system cursors' size whatever the interface scale.
             let ppp = ctx.pixels_per_point() / ctx.zoom_factor().max(0.01);
@@ -405,6 +425,31 @@ mod tests {
         assert!(frame(false, false), "the next frame too");
         assert!(!frame(true, false), "back over the main window");
         assert!(!frame(false, false), "and resting there");
+    }
+
+    #[test]
+    fn macos_windows_paint_the_glyphs_only_with_the_focus() {
+        assert!(paint_glyphs(true, true), "macOS with the focus");
+        assert!(!paint_glyphs(true, false), "macOS without the focus: the system pointer shows");
+        assert!(paint_glyphs(false, true) && paint_glyphs(false, false), "Wayland: painted with the focus or without");
+    }
+
+    /// A painted window over which the pointer passes without the focus (another app is active)
+    /// sets the system cursor on macOS instead of painting the glyph next to the system pointer.
+    #[test]
+    fn a_painted_window_without_the_focus_shows_the_system_cursor_alone_on_macos() {
+        let icon = |focused: bool| {
+            let ctx = egui::Context::default();
+            let mut icon = egui::CursorIcon::Default;
+            let mut out = ctx.run_ui(egui::RawInput { focused, ..Default::default() }, |ui| {
+                icon = show_in(Mode::Painted, ui.ctx(), &mut Images::default(), Cursor::Pen, egui::pos2(50.0, 50.0));
+            });
+            out.textures_delta.clear();
+            icon
+        };
+        assert_eq!(icon(true), egui::CursorIcon::None, "with the focus: the glyph alone");
+        let away = if HIDES_ONLY_WHEN_KEY { system(Cursor::Pen) } else { egui::CursorIcon::None };
+        assert_eq!(icon(false), away, "without the focus");
     }
 
     #[test]
