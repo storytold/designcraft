@@ -1,6 +1,7 @@
 use super::frame::{fit_columns, margins_of};
 use super::{
-    Affine, Arc, Columns, Guide, Importer, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point, Rect, Spread, SpreadId, names,
+    Affine, Arc, Columns, Content, Guide, HashMap, HashSet, Importer, Item, ItemId, Margins, Orientation, Page, PageId, PageSide, ParentInfo, Point,
+    Rect, Spread, SpreadId, names,
 };
 
 /// View › Rotate Spread from a `Spread` element's `ItemTransform`: quarter turns clockwise on
@@ -152,7 +153,6 @@ impl<'r> Importer<'r> {
                 show_parent_overlay: false,
             });
         }
-        let overrides: Vec<Vec<String>> = pages.iter().map(|(_, p)| p.override_list().into_iter().map(str::to_string).collect()).collect();
         let mut items = Vec::new();
         for item in model_spread.items() {
             let item_el = crate::xml::from_craft(item.to_el());
@@ -160,9 +160,7 @@ impl<'r> Importer<'r> {
                 items.push(Arc::new(it));
             }
         }
-        for (pg, ov) in out_pages.iter_mut().zip(overrides) {
-            pg.overridden = ov.iter().filter_map(|s| self.item_ids.get(s)).copied().filter(|i| self.is_parent_item(*i)).collect();
-        }
+        self.link_page_overrides(&pages, &mut out_pages, &mut items);
         let parent = if master {
             let prefix = model_spread.parent_prefix();
             let name = model_spread.base_name();
@@ -188,6 +186,74 @@ impl<'r> Importer<'r> {
             }
         }
         Spread { id, pages: out_pages, items, parent, allow_shuffle: model_spread.allow_shuffle() }
+    }
+
+    /// Restore parent/copy links from complete page lists, keeping the first conflicting pair.
+    fn link_page_overrides(&mut self, pages: &[(Rect, craft_idml::model::Page)], out_pages: &mut [Page], items: &mut [Arc<Item>]) {
+        // Spreads without override tokens need neither the parent index nor mutable copy slots.
+        if pages.iter().all(|(_, p)| p.override_list().is_empty()) {
+            return;
+        }
+        // Cache the same membership as is_parent_item, and each local item's override slot once.
+        // Per-token tree searches are quadratic on pages with thousands of overrides. Explicit
+        // stacks also reach copies nested in groups without adding recursive walks.
+        let mut parent_items = HashSet::new();
+        let mut stack: Vec<_> = self.parents.iter().flat_map(|p| p.items.iter()).collect();
+        while let Some(it) = stack.pop() {
+            parent_items.insert(it.id);
+            stack.extend(it.children());
+        }
+        let mut copies = HashMap::new();
+        let mut stack: Vec<_> = items.iter_mut().collect();
+        while let Some(it) = stack.pop() {
+            let it = Arc::make_mut(it);
+            copies.insert(it.id, &mut it.overrides);
+            if let Content::Group { items } = &mut it.content {
+                stack.extend(items.iter_mut());
+            }
+        }
+        let mut paired = HashMap::new();
+        let mut conflicts = HashSet::new();
+        for (pg, (_, p)) in out_pages.iter_mut().zip(pages) {
+            let page_name = p.values.name().or_else(|| p.self_id()).unwrap_or("(unnamed)");
+            let ov = p.override_list();
+            let resolved: Vec<_> = ov.iter().map(|s| self.item_ids.get(*s).copied()).collect();
+            pg.overridden = resolved.iter().flatten().copied().filter(|id| parent_items.contains(id)).collect();
+            // Old DesignCraft files listed parents only, even in lists of even length. Keep
+            // those without warnings; otherwise require (parent, local copy or n) pairs.
+            if resolved.iter().all(|id| id.is_some_and(|id| parent_items.contains(&id)))
+                || !ov.len().is_multiple_of(2)
+                || !resolved.iter().step_by(2).all(|id| id.is_some_and(|id| parent_items.contains(&id)))
+            {
+                continue;
+            }
+            let unresolved =
+                ov.iter().zip(&resolved).skip(1).step_by(2).filter(|(s, id)| **s != "n" && !id.is_some_and(|id| copies.contains_key(&id))).count();
+            if unresolved > 0 {
+                self.warnings.push(format!(
+                    "page {}: OverrideList has {unresolved} copy ids not found on this spread; keeping the parent list only",
+                    page_name
+                ));
+                continue;
+            }
+            for pair in ov.chunks_exact(2) {
+                let [parent, copy] = pair else { continue };
+                // InDesign uses n for a deleted override, even if a malformed file has Self=n.
+                if *copy == "n" {
+                    continue;
+                }
+                let (Some(parent), Some(copy_id)) = (self.item_ids.get(*parent), self.item_ids.get(*copy)) else { continue };
+                let Some(slot) = copies.get_mut(copy_id) else { continue };
+                if let Some(first) = paired.get(copy_id) {
+                    if first != parent && conflicts.insert(*copy_id) {
+                        self.warnings.push(format!("page {page_name}: OverrideList copy {copy} names more than one parent; keeping the first pair"));
+                    }
+                } else {
+                    paired.insert(*copy_id, *parent);
+                    **slot = Some(*parent);
+                }
+            }
+        }
     }
 
     pub(super) fn is_parent_item(&self, id: ItemId) -> bool {

@@ -1,3 +1,5 @@
+use std::collections::{HashMap, VecDeque};
+
 use super::common::{bool_s, uid};
 use super::{Affine, Document, El, Ex, PageSide, Spread, names, num};
 
@@ -64,10 +66,55 @@ impl<'a> Ex<'a> {
             },
         );
         let based_on = sp.parent.as_ref().and_then(|i| i.based_on);
+        // The spread's local copies of parent items: (parent item, copy, page the copy is on).
+        let mut copies = Vec::new();
+        collect_copies(sp, &mut copies);
+        let mut used = vec![false; copies.len()];
+        // Queues retain writer order. A copy occurs in both indexes, so consumed candidates
+        // must be skipped when the other queue reaches them.
+        let mut by_page: HashMap<_, VecDeque<usize>> = HashMap::new();
+        let mut by_parent: HashMap<_, VecDeque<usize>> = HashMap::new();
+        for (k, &(parent, _, page)) in copies.iter().enumerate() {
+            if let Some(page) = page {
+                by_page.entry((parent, page)).or_default().push_back(k);
+            }
+            by_parent.entry(parent).or_default().push_back(k);
+        }
+        // Each page's own copies are paired first, for every page, so one page's spread-wide fallback
+        // can't take the copy another page overrides with.
+        let mut own: Vec<Vec<Option<usize>>> = Vec::with_capacity(sp.pages.len());
+        for (i, pg) in sp.pages.iter().enumerate() {
+            let mut row = Vec::with_capacity(pg.overridden.len());
+            for parent in &pg.overridden {
+                let k = by_page.get_mut(&(*parent, i)).and_then(|candidates| take_copy(candidates, &mut used));
+                row.push(k);
+            }
+            own.push(row);
+        }
         for (i, pg) in sp.pages.iter().enumerate() {
             let name = if master { sp.parent.as_ref().map(|i| i.prefix.clone()).unwrap_or_default() } else { d.page_name(first_page + i) };
             let applied = if master { based_on } else { pg.parent };
-            let overrides: Vec<String> = pg.overridden.iter().map(|i| uid(i.0)).collect();
+            // InDesign reads OverrideList two ids at a time: the parent item, then the item that
+            // overrides it, and a list of parent items alone crashed it on open (#2896). The copy is
+            // the one on this page paired in the first pass, else any on the spread not yet paired.
+            // InDesign writes n in the copy slot for a deleted override. An unused id instead makes
+            // InDesign 2026 discard the page's whole override list, leaving local copies unlinked
+            // and the original parent items visible on top of them.
+            let mut overrides: Vec<String> = Vec::with_capacity(pg.overridden.len() * 2);
+            for (j, parent) in pg.overridden.iter().enumerate() {
+                let k = own
+                    .get(i)
+                    .and_then(|r| r.get(j))
+                    .copied()
+                    .flatten()
+                    .or_else(|| by_parent.get_mut(parent).and_then(|candidates| take_copy(candidates, &mut used)));
+                let copy = match k.and_then(|k| copies.get(k)) {
+                    Some(c) => uid(c.1.0),
+                    None => "n".into(),
+                };
+                overrides.push(uid(parent.0));
+                overrides.push(copy);
+            }
             let pe = El::new("Page")
                 .attr("Self", uid(pg.id.0))
                 .attr("Name", name)
@@ -88,6 +135,17 @@ impl<'a> Ex<'a> {
         }
         el
     }
+}
+
+fn take_copy(candidates: &mut VecDeque<usize>, used: &mut [bool]) -> Option<usize> {
+    while let Some(k) = candidates.pop_front() {
+        let Some(slot) = used.get_mut(k) else { continue };
+        if !*slot {
+            *slot = true;
+            return Some(k);
+        }
+    }
+    None
 }
 
 pub(super) fn margin_el(pg: &designcraft_doc::Page) -> El {
@@ -134,5 +192,91 @@ fn push_page_guides(d: &Document, sp: &Spread, pg: &designcraft_doc::Page, pe: &
         }
         .to_el();
         pe.push(crate::xml::from_craft(ge));
+    }
+}
+
+/// The items on the spread that override a parent item, in the order they are written: (parent
+/// item, item, page). A copy's page is the one under its own centre, a nested copy's through the
+/// groups it sits in. The walk keeps its own stack, so it reaches every copy the writer writes,
+/// however deep, and asks for the bounds of copies only.
+fn collect_copies(sp: &Spread, out: &mut Vec<(designcraft_doc::ItemId, designcraft_doc::ItemId, Option<usize>)>) {
+    let mut stack: Vec<(&designcraft_doc::Item, Affine)> = sp.items.iter().rev().map(|it| (&**it, Affine::IDENTITY)).collect();
+    while let Some((it, outer)) = stack.pop() {
+        if let Some(parent) = it.overrides {
+            let centre = bounds_under(it, outer).map_or_else(|| outer * it.xf * designcraft_geom::Point::ZERO, |r| r.center());
+            out.push((parent, it.id, sp.page_at_x(centre.x)));
+        }
+        let inner = outer * it.xf;
+        stack.extend(it.children().iter().rev().map(|c| (&**c, inner)));
+    }
+}
+
+/// `it`'s bounds under `outer`, as `Item::bounds` measures them (a group's are its children's
+/// outlines under the full transform), with a stack of its own: a copy that is a group can hold
+/// groups nested deeper than a recursive walk should go (#2940 review). `None` for a group with
+/// nothing in it.
+fn bounds_under(it: &designcraft_doc::Item, outer: Affine) -> Option<designcraft_geom::Rect> {
+    let mut stack = vec![(it, outer)];
+    let mut out: Option<designcraft_geom::Rect> = None;
+    while let Some((it, outer)) = stack.pop() {
+        let xf = outer * it.xf;
+        if it.shape == designcraft_doc::Shape::Group
+            && let designcraft_doc::Content::Group { items } = &it.content
+        {
+            stack.extend(items.iter().map(|c| (&**c, xf)));
+            continue;
+        }
+        if let Some(r) = it.path.transformed(xf).bounds() {
+            out = Some(out.map_or(r, |o| o.union(r)));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use designcraft_doc::{Content, Item, ItemId, LayerId, Shape};
+    use designcraft_geom::{Affine, Rect, shapes};
+    use std::sync::Arc;
+
+    fn rect(id: u64, r: Rect) -> Item {
+        Item::new(ItemId(id), LayerId(0), Shape::Rectangle, shapes::rectangle(r))
+    }
+
+    fn group(id: u64, items: Vec<Item>, xf: Affine) -> Item {
+        let mut g = Item::new(ItemId(id), LayerId(0), Shape::Group, Default::default());
+        g.content = Content::Group { items: items.into_iter().map(Arc::new).collect() };
+        g.xf = xf;
+        g
+    }
+
+    /// The same bounds as `Item::bounds`, for a plain item, nested and turned groups, a frame
+    /// with items pasted into it (its own outline) and an empty group.
+    #[test]
+    fn bounds_match_the_items_own() {
+        let inner = group(3, vec![rect(1, Rect::new(0.0, 0.0, 10.0, 20.0)), rect(2, Rect::new(30.0, 5.0, 40.0, 8.0))], Affine::rotate(0.4));
+        let outer = group(4, vec![inner.clone(), rect(5, Rect::new(-5.0, -5.0, 0.0, 0.0))], Affine::translate((100.0, 50.0)) * Affine::scale(2.0));
+        let mut frame = rect(6, Rect::new(0.0, 0.0, 50.0, 50.0));
+        frame.content = Content::Group { items: vec![Arc::new(rect(7, Rect::new(-100.0, -100.0, 200.0, 200.0)))] };
+        for it in [rect(8, Rect::new(1.0, 2.0, 3.0, 4.0)), inner, outer, frame] {
+            let (want, got) = (it.bounds(), super::bounds_under(&it, Affine::IDENTITY).unwrap());
+            for (a, b) in [(want.x0, got.x0), (want.y0, got.y0), (want.x1, got.x1), (want.y1, got.y1)] {
+                assert!((a - b).abs() < 1e-9, "{want:?} vs {got:?}");
+            }
+        }
+        assert_eq!(super::bounds_under(&group(9, vec![], Affine::IDENTITY), Affine::IDENTITY), None);
+    }
+
+    /// A group 100,000 deep is measured without recursion. It is leaked rather than dropped,
+    /// since dropping it recurses.
+    #[test]
+    fn a_deep_group_is_measured_without_recursion() {
+        let mut it = rect(0, Rect::new(10.0, 20.0, 30.0, 40.0));
+        for i in 1..=100_000 {
+            it = group(i, vec![it], Affine::translate((1.0, 0.0)));
+        }
+        let r = super::bounds_under(&it, Affine::IDENTITY);
+        std::mem::forget(it);
+        assert_eq!(r, Some(Rect::new(100_010.0, 20.0, 100_030.0, 40.0)));
     }
 }

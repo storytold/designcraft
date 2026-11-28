@@ -11,7 +11,7 @@
 - 2026-10-23: placed-artwork layer options survive IDML and native round trips per placement, independently of shared assets. Unsupported visibility overrides are explicit import/preflight/PDF warnings; format 4 prevents older native readers from silently discarding them. Rendering parity is still open; see [graphic-layer-options.md](docs/graphic-layer-options.md).
 - FID1: PDF export normalizes mixed emitted gradient color spaces to RGB with an explicit warning; homogeneous device-space gradients retain their components. Linear/radial, midpoint, archival and print policies have synthetic regression coverage.
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-19 · **Change:** minor (hidden characters follow frame, group and layer visibility (#1994); obsolete CI gap removed; tracked-change selection mapping; Croatian hyphenation (hyph-hr); Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-11-19 · **Change:** minor (IDML parent/copy override import and review fixes; hidden characters follow frame, group and layer visibility (#1994); obsolete CI gap removed; tracked-change selection mapping; Croatian hyphenation (hyph-hr); Pages panel parents and alternate layouts; File ▸ Export Layouts and Versions; placed graphic layer-option preservation and explicit rendering warnings; File ▸ Open Recent; .indd and .indt open through indd-utils; text threads by hand; the alpha gate waits on Primary Text Frame page fixes; Japanese print, import and table controls localized; Live corners (#186); Optical kerning from outlines (#181); window and menu quit confirmation; failed writes preserve live save and collection state; spring-loaded Zoom navigation; orderly native exit recovery; Pages panel parents; cancelable macOS Dock Quit; text stroke behind fill; Based on Parent; object styles carry effects; table anchors keep their own paragraphs; grouped HTML/EPUB reading order; Links source paths; XLSX cached cell values retain numeric precision and text; automation roots refuse superscript COM/LPT names and a device name before a colon) · **Target:** Adobe InDesign 2026
 - AR1.1: Kashida justification tests verify space fallback without Tatweel fonts using an isolated font database, while retaining elongation assertions when fonts support it.
 
 - AR1: Arabic IDML controls now retain character direction, kashida switches, diacritic offsets/forms, paragraph policy values and independent story/table directions. Shaping preserves joining context and script/language selection; paragraph-level bidi, contextual digit conversion, mark-safe elongation, RTL columns/tables and physical column insertion have regression coverage. Vendor-specific justification and diacritic presets remain explicit preflight warnings; see docs/arabic-typography.md.
@@ -19,6 +19,18 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-11-19** · IDML override review fixes keep parent-only lists warning-free and assign
+  translated empty copies to their own pages. Export indexes copies while preserving the
+  original page reservations, writer order and spread-wide fallback pairs. Synthetic
+  regressions cover both fixes and exact list equivalence. An 88-page real file exports the
+  same lists as before and opens in InDesign 2026 (21.3) with every override linked.
+  No readiness percentage change.
+- **2026-11-19** · IDML import restores local copies' parent links from page `OverrideList` pairs,
+  including copies inside groups and deleted overrides (`n`). Legacy lists keep their parent
+  order and duplicates; unresolved copies and conflicting parents warn. Export writes `n` for
+  a deleted override copy, matching InDesign's lists. Synthetic round trips
+  and a 20,000-pair import are covered; real-file and InDesign checks remain pending.
+  No readiness percentage change.
 - **2026-11-15** · Story targets are checked before they are used: `story.setDirection`, `story.get`,
   `type.fillWithPlaceholder` and `file.exportText` refuse a `story` or `frame` the document doesn't have instead
   of acting on the selected frame's story, so an edit can no longer land on the wrong story and an export cannot
