@@ -1133,6 +1133,76 @@ fn gradient_type_combo(ui: &mut egui::Ui, lang: &str, g: &designcraft_color::Gra
     send
 }
 
+/// The Gradient panel's Stop Color row for the selected stop (none for a midpoint): a list of the
+/// swatches a stop can take and an RGB picker; the stops chosen, as the command's parameters.
+fn gradient_stop_color_row(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    lang: &str,
+    doc: &designcraft_doc::Document,
+    g: &designcraft_color::Gradient,
+    sel: RampSel,
+) -> Option<serde_json::Value> {
+    let RampSel::Stop(i) = sel else { return None };
+    let s = g.stops.get(i)?;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| stop_color_widgets(ui, t, lang, doc, g, i, s)).inner
+}
+
+fn stop_color_widgets(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    lang: &str,
+    doc: &designcraft_doc::Document,
+    g: &designcraft_color::Gradient,
+    i: usize,
+    s: &designcraft_color::GradientStop,
+) -> Option<serde_json::Value> {
+    let mut send = None;
+    crate::widgets::caption(ui, crate::i18n::tr(lang, "Stop Color:"));
+    let colors: Vec<(&str, designcraft_color::Color)> = doc
+        .swatches
+        .iter()
+        .filter(|w| !w.hidden)
+        // Every swatch a stop can take: colours, tints and [Paper] (not [None],
+        // [Registration] or gradients), with the colour it resolves to.
+        .filter(|w| matches!(w.value, SwatchValue::Color { .. } | SwatchValue::Tint { .. } | SwatchValue::Paper { .. }))
+        .filter_map(|w| doc.resolve_color(&w.name, 1.0).map(|c| (w.name.as_str(), c)))
+        .collect();
+    // The stop's own swatch, not the first one of the same colour; "Custom" without one.
+    let current = s.swatch.as_deref().unwrap_or(crate::i18n::tr(lang, "Custom"));
+    let combo = craft_ui::ComboBox::from_id_salt("grad_stop_swatch").selected_text(crate::rtl::widget(ui, current)).width(120.0).show_ui(ui, |ui| {
+        for (name, c) in &colors {
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(140.0), 20.0), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, s.swatch.as_deref() == Some(*name), *name));
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 0.0, t.hover);
+            }
+            let chip = egui::Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(14.0, 14.0));
+            ui.painter().rect_filled(chip, 0.0, color32(c, 1.0));
+            ui.painter().rect_stroke(chip, 0.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+            ui.painter().text(r.min + vec2(24.0, 10.0), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(12.5), t.text);
+            if resp.clicked() {
+                let mut stops = stops_json(g);
+                if let Some(o) = stops.get_mut(i).and_then(serde_json::Value::as_object_mut) {
+                    o.insert("swatch".to_string(), json!(name));
+                    o.remove("color");
+                }
+                send = Some(json!({"stops": stops}));
+            }
+        }
+    });
+    let _ = crate::widgets::name_combo(combo, crate::i18n::tr(lang, "Color"));
+    let [r, gg, bb] = s.color.to_rgb();
+    let mut rgb = [r, gg, bb].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+    if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).on_hover_text(crate::i18n::tr(lang, "Stop Color:")).changed() {
+        let mut stops = stops_json(g);
+        set_stop_color(&mut stops, i, json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])));
+        send = Some(json!({"stops": stops}));
+    }
+    send
+}
+
 /// What's selected on the ramp: a stop, or the midpoint after a stop.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum RampSel {
@@ -1426,6 +1496,9 @@ pub fn gradient_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
             painter.rect_filled(sq, 0.0, color32(&s.color, 1.0));
             painter.rect_stroke(sq, 0.0, egui::Stroke::new(if on { 1.5 } else { 1.0 }, edge), egui::StrokeKind::Inside);
         }
+        // The selected stop's colour, chosen here: in a workspace where the Swatches panel and
+        // this one share the flyout, dragging a swatch onto the ramp is impossible.
+        send = gradient_stop_color_row(ui, &t, &lang, &st.doc, &g, sel).or(send.take());
         ui.data_mut(|d| {
             d.insert_temp(sel_id, sel);
             match dragging {
@@ -1463,6 +1536,79 @@ mod gradient_panel_tests {
         let d = &app.session.doc().unwrap().doc;
         let id = app.session.doc().unwrap().selection.items[0];
         designcraft_color::swatch::resolve_gradient(&d.swatches, &d.item(id).unwrap().fill.swatch).cloned()
+    }
+
+    /// In a workspace where the Gradient and Swatches panels share one flyout no swatch can be
+    /// dragged onto the ramp: the selected stop takes a colour swatch from the Stop Color list,
+    /// and choosing one with no gradient yet starts it.
+    #[test]
+    fn the_stop_color_list_colours_the_selected_stop() {
+        let mut app = app_with_frame();
+        app.ui.open_panel = Some("gradient".into());
+        let mut h = crate::test_window::open(app, vec2(1200.0, 800.0));
+        h.run_steps(4);
+        assert!(gradient(&h.state().app).is_none(), "no gradient yet");
+        // The list beside the Stop Color caption (accessibility trees name a combo box by its
+        // label or its value, depending on the platform).
+        let stop_list = |h: &Harness<'static, crate::test_window::Window>| {
+            let caption = h.get_by_label("Stop Color:").rect();
+            h.query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox)
+                .map(|n| n.rect())
+                .find(|r| (r.center().y - caption.center().y).abs() < 8.0 && r.left() > caption.right())
+                .expect("the Stop Color list")
+        };
+        let at = stop_list(&h).center();
+        crate::test_window::click_at(&mut h, at);
+        h.get_by_label("C=100 M=0 Y=0 K=0").click();
+        h.run_steps(4);
+        let g = gradient(&h.state().app).expect("choosing a stop colour starts the gradient");
+        assert_eq!(g.stops[0].color, Color::cmyk(1.0, 0.0, 0.0, 0.0), "the first stop is chosen at first");
+        assert_eq!(g.stops[0].swatch.as_deref(), Some("C=100 M=0 Y=0 K=0"), "linked to the swatch, not only its colour");
+        assert_eq!(g.stops.len(), 2);
+        let at = stop_list(&h).center();
+        crate::test_window::click_at(&mut h, at);
+        h.get_by_label("C=0 M=100 Y=0 K=0").click();
+        h.run_steps(4);
+        assert_eq!(gradient(&h.state().app).unwrap().stops[0].color, Color::cmyk(0.0, 1.0, 0.0, 0.0));
+        // [Paper] and tints are offered too.
+        let at = stop_list(&h).center();
+        crate::test_window::click_at(&mut h, at);
+        h.get_by_label("[Paper]").click();
+        h.run_steps(4);
+        let paper = h.state().app.session.doc().unwrap().doc.resolve_color("[Paper]", 1.0).unwrap();
+        assert_eq!(gradient(&h.state().app).unwrap().stops[0].color, paper);
+    }
+
+    /// The Stop Color list shows the stop's own swatch, even when another swatch has the same
+    /// colour, and "Custom" for a stop without one.
+    #[test]
+    fn the_stop_color_list_shows_the_stops_own_swatch() {
+        let mut app = app_with_frame();
+        app.run("swatch.create", json!({"name": "Cyan Twin", "color": {"c": 100, "m": 0, "y": 0, "k": 0}})).unwrap();
+        app.run("object.gradient", json!({"stops": [{"location": 0, "swatch": "Cyan Twin"}, {"location": 100, "color": "#000000"}]})).unwrap();
+        app.ui.open_panel = Some("gradient".into());
+        let mut h = crate::test_window::open(app, vec2(1200.0, 800.0));
+        h.run_steps(4);
+        let shown = |h: &Harness<'static, crate::test_window::Window>| {
+            let caption = h.get_by_label("Stop Color:").rect();
+            h.query_all_by(|n| n.role() == egui::accesskit::Role::ComboBox)
+                .find(|n| (n.rect().center().y - caption.center().y).abs() < 8.0 && n.rect().left() > caption.right())
+                .map(|n| format!("{n:?}"))
+                .expect("the Stop Color list")
+        };
+        let text = shown(&h);
+        assert!(text.contains("Cyan Twin") && !text.contains("C=100"), "{text}");
+        // A colour picked in RGB replaces the swatch: the stop is a custom colour now.
+        let g = gradient(&h.state().app).unwrap();
+        let mut stops = stops_json(&g);
+        set_stop_color(&mut stops, 0, json!("#ff0000"));
+        h.state_mut().app.run("object.gradient", json!({"stops": stops})).unwrap();
+        h.run_steps(4);
+        let g = gradient(&h.state().app).unwrap();
+        assert_eq!(g.stops[0].swatch, None, "the picked colour wins over the old swatch");
+        assert_eq!(g.stops[0].color.to_rgb(), [1.0, 0.0, 0.0]);
+        let text = shown(&h);
+        assert!(text.contains("Custom"), "{text}");
     }
 
     #[test]
