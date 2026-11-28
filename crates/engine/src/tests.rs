@@ -754,7 +754,9 @@ fn object_style_effects_follow_the_style_until_overridden() {
 
 /// `style.object.create` and `edit` refuse an unknown swatch, a misspelled setting (a stroke type's
 /// included), a word or null for a switch, a rename that isn't a name, a corner size outside
-/// 0–10000 pt and a stroke gap tint outside 0–1.
+/// 0–10000 pt, a stroke gap tint outside 0–1, and a stroke type `object.stroke` refuses (a dash
+/// pattern of zeros or of 65 lengths, stripes that are empty, too many or past the weight, an
+/// unknown stroke style).
 #[test]
 fn object_style_parameters_are_checked() {
     let mut s = session();
@@ -774,6 +776,12 @@ fn object_style_parameters_are_checked() {
         json!({"stroke": {"type": {"kind": "dashed", "pattern": [2, 2], "patern": [4, 4]}}}),
         json!({"stroke": {"type": {"kind": "solid", "pattern": [2, 2]}}}),
         json!({"stroke": {"type": {"bands": [[0, 0.5]]}}}),
+        json!({"stroke": {"type": {"kind": "dashed", "pattern": [0, 0]}}}),
+        json!({"stroke": {"type": {"kind": "dashed", "pattern": vec![4; 65]}}}),
+        json!({"stroke": {"type": {"kind": "stripes", "bands": []}}}),
+        json!({"stroke": {"type": {"kind": "stripes", "bands": [[0.5, 0.7]]}}}),
+        json!({"stroke": {"type": {"kind": "stripes", "bands": vec![[0.0, 0.01]; 65]}}}),
+        json!({"stroke": {"type": {"kind": "style", "name": "Nope"}}}),
     ] {
         let mut p = bad.clone();
         p["name"] = json!("Framed");
@@ -791,6 +799,12 @@ fn object_style_parameters_are_checked() {
     }
     let names: Vec<_> = s.doc().unwrap().doc.styles.object.iter().map(|o| o.name.clone()).collect();
     assert!(!names.iter().any(|n| n == "Other" || n == "Odd"), "{names:?}");
+    // A stroke type the style already has is kept, even when its stroke style was deleted since.
+    s.execute("strokeStyle.new", &json!({"name": "Rails", "type": "stripes", "bands": [[0, 0.3], [0.7, 0.3]]})).unwrap();
+    let rails = json!({"kind": "style", "name": "Rails"});
+    s.execute("style.object.edit", &json!({"name": "Framed", "stroke": {"type": rails}})).unwrap();
+    s.execute("strokeStyle.delete", &json!({"name": "Rails"})).unwrap();
+    s.execute("style.object.edit", &json!({"name": "Framed", "stroke": {"type": rails, "weight": 3}})).unwrap();
 }
 
 /// An edit that leaves the style as it is answers with the same fields as one that changes it.

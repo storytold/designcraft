@@ -15,7 +15,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Stroke Style…",
             ["Object", "Stroke Styles"],
             None,
-            "{name, type: stripes|dash|dot, bands?: [[start, width] (fractions of the weight)], pattern?: [dash, gap, …] (pt)} — apply with object.stroke {type: {kind: \"style\", name}}",
+            "{name, type: stripes|dash|dot, bands?: [[start, width] (fractions of the weight)] (stripes: 1 to 64 bands, width above 0, ending inside 0–1), pattern?: [dash, gap, …] (pt)} — apply with object.stroke {type: {kind: \"style\", name}}",
             has_doc,
             |s, p| {
                 const ID: &str = "strokeStyle.new";
@@ -35,8 +35,11 @@ pub fn specs() -> Vec<CommandSpec> {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        if bands.is_empty() || bands.iter().any(|(a, w)| a + w > 1.0 + 1e-9 || *w <= 0.0) {
-                            return Err(bad(ID, "stripes need `bands`: [[start, width], …] inside 0–1"));
+                        if bands.is_empty()
+                            || bands.len() > designcraft_doc::MAX_DASH_ENTRIES
+                            || bands.iter().any(|(a, w)| a + w > 1.0 + 1e-9 || *w <= 0.0)
+                        {
+                            return Err(bad(ID, "stripes need 1 to 64 `bands`: [[start, width], …] inside 0–1"));
                         }
                         StrokeType::Stripes { bands }
                     }
@@ -101,5 +104,8 @@ mod tests {
         assert_eq!(it.stroke.kind, designcraft_doc::StrokeType::Style { name: "Rails".into() });
         s.execute("strokeStyle.delete", &json!({"name": "Rails"})).unwrap();
         assert!(s.execute("strokeStyle.new", &json!({"name": "Bad", "bands": [[0.5, 0.7]]})).is_err());
+        assert!(s.execute("strokeStyle.new", &json!({"name": "Bad", "bands": vec![[0.0, 0.01]; 65]})).is_err());
+        s.execute("strokeStyle.new", &json!({"name": "Many", "bands": vec![[0.0, 0.01]; 64]})).unwrap();
+        s.execute("object.stroke", &json!({"ids": [id], "type": {"kind": "style", "name": "Many"}})).unwrap();
     }
 }
