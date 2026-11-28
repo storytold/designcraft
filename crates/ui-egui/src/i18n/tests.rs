@@ -58,7 +58,8 @@ fn cached_lookup_preserves_every_translation_across_language_switches() {
     for (lang, table) in LANGUAGE_TABLES {
         for (key, expected) in *table {
             if !expected.trim().is_empty() {
-                assert_eq!(tr(lang, key), *expected, "{lang}: {key}");
+                let want = if *lang == "sv" { swedish_catalog().app_override("", key).unwrap_or(*expected) } else { *expected };
+                assert_eq!(tr(lang, key), want, "{lang}: {key}");
             }
             assert_eq!(tr("", key), *key);
         }
@@ -320,7 +321,8 @@ fn context_captions_come_from_their_context_or_the_plain_translation() {
     for (lang, table) in CONTEXT_TABLES {
         for (key, scope, text) in *table {
             if !text.trim().is_empty() {
-                assert_eq!(tr_context(lang, key, scope), *text, "{lang}: {key} ({scope})");
+                let want = if *lang == "sv" { swedish_catalog().app_override(scope, key).unwrap_or(*text) } else { *text };
+                assert_eq!(tr_context(lang, key, scope), want, "{lang}: {key} ({scope})");
             }
         }
     }

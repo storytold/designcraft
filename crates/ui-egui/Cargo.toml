@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 craft-ui = { workspace = true, features = ["native-windows"] }
 craft-window = { workspace = true }
+craft-i18n = { workspace = true }
 craft-keymap = { workspace = true }
 craft-file-formats = { workspace = true }
 designcraft-geom = { workspace = true }
