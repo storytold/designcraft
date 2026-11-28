@@ -8141,6 +8141,43 @@ fn a_line_that_exactly_fills_the_measure_fits() {
     }
 }
 
+/// The narrowest frame width that still sets `text` on one line, to 0.01 pt.
+fn one_line_width(text: &str, para: &ParaAttrs) -> f64 {
+    let mut hi = 100.0;
+    while tracked_lines(text, hi, para.clone(), 0.0).len() != 1 {
+        hi *= 2.0;
+        assert!(hi < 1e7, "no one-line width found for {text:?}");
+    }
+    let mut lo = if hi > 100.0 { hi / 2.0 } else { 0.0 };
+    while hi - lo > 0.01 {
+        let mid = (lo + hi) / 2.0;
+        if tracked_lines(text, mid, para.clone(), 0.0).len() == 1 {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// With optical margin alignment, the paragraph's last glyph hangs into the right margin, and a
+/// line that fits only because of that hang must be accepted: the ragged fill glue and the
+/// paragraph-end break measure the line with the final glyph's hang (#3036).
+#[test]
+fn last_glyph_hangs_at_paragraph_end() {
+    use designcraft_doc::Composer;
+    for (text, align) in [("Harbour light,", Align::Right), ("nu nu nu.", Align::Left)] {
+        for composer in [Composer::Paragraph, Composer::SingleLine] {
+            let on =
+                ParaAttrs { align: Some(align), optical_margin: Some(true), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+            let off = ParaAttrs { align: Some(align), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+            let w_on = one_line_width(text, &on);
+            let w_off = one_line_width(text, &off);
+            assert!(w_on < w_off - 0.01, "{text} {composer:?}: optical margin on still needs the full {w_on}, off needs {w_off}");
+        }
+    }
+}
+
 // ---------- split columns ----------
 
 /// A story of a body paragraph, `split` paragraphs in split columns and `after` body paragraphs.
@@ -10507,6 +10544,69 @@ fn cross_reference_text_breaks_at_its_spaces() {
     for l in &lines {
         for w in l.split(' ').filter(|w| !w.is_empty()) {
             assert!(words.contains(&w), "a line breaks inside a word: {w:?} in {lines:?}");
+        }
+    }
+}
+
+/// A line whose last glyph carries a mojikumi line-end gap (a negative hang) still composes: the
+/// fill glues carry the end elasticity their penalties have, so the paragraph composer keeps a
+/// node that needs that shrink instead of dropping it one break too early. Justified, no other
+/// line can stretch to the measure, so the shrink-fit line is the only fitting one.
+#[test]
+fn a_line_end_gap_does_not_lose_the_fitting_line() {
+    use designcraft_doc::Composer;
+    use designcraft_doc::cjk::{MojikumiAki, MojikumiTable};
+    // Every ideograph takes a half-em gap at a line end, shrinkable back to zero: a negative
+    // hang of 5 pt at 10 pt (SimpChineseDefault pairs ideographs with no internal gap).
+    let doc = |text: &str, width: f64| {
+        let (mut d, sid, _) = doc_with(
+            text,
+            Rect::new(0.0, 0.0, width, 4000.0),
+            ParaAttrs { composer: Some(Composer::Paragraph), align: Some(Align::LeftJustified), hyphenate: Some(false), ..Default::default() },
+        );
+        Arc::make_mut(&mut d.styles).mojikumi_tables.push(MojikumiTable {
+            name: "EndGap".into(),
+            based_on: "SimpChineseDefault".into(),
+            overrides: vec![MojikumiAki {
+                target_class: 12,
+                side_class: 22,
+                after: true,
+                minimum: 0.0,
+                desired: 0.5,
+                maximum: 1.0,
+                ..Default::default()
+            }],
+        });
+        d.story_mut(sid).unwrap().paras[0].para.mojikumi = Some("MojikumiTable/EndGap".into());
+        d.story_mut(sid).unwrap().format_chars(0..text.len(), |f| f.over.size = Some(10.0));
+        (d, sid)
+    };
+    for text in ["甲乙 甲乙", "甲乙甲乙 甲乙甲乙"] {
+        // The natural width of the set line, with its line-end gap; the breaker measures the
+        // line 2 pt wider than the frame after that gap (which can shrink by 5 pt).
+        let (d, sid) = doc(text, 1e5);
+        let one = all_lines(&compose_story(&d, sid, &ComposeOptions::default()))[0].clone();
+        let natural = one.end_x - one.x0;
+        let width = natural - 2.0;
+        let (d, sid) = doc(text, width);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let texts: Vec<String> = all_lines(&cs).iter().map(|l| l.glyphs.iter().filter(|g| g.visible).map(|g| g.rendered_char).collect()).collect();
+        assert_eq!(texts.len(), 1, "{text} at width {width}: {:?}", texts);
+    }
+}
+
+/// The paragraph-end fill and forced break hang the last glyph the line shows: spaces hanging at
+/// the paragraph end are skipped, so a final period gets the hang, not the space after it.
+#[test]
+fn paragraph_end_hangs_the_last_visible_glyph() {
+    use designcraft_doc::Composer;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        for text in ["nu nu nu. ", "nu nu nu.  "] {
+            let on = ParaAttrs { optical_margin: Some(true), hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+            let off = ParaAttrs { hyphenate: Some(false), composer: Some(composer), ..Default::default() };
+            let w_on = one_line_width(text, &on);
+            let w_off = one_line_width(text, &off);
+            assert!(w_on < w_off - 0.01, "{text} {composer:?}: with the trailing space optical margin still needs {w_on}, off needs {w_off}");
         }
     }
 }

@@ -450,7 +450,16 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 ig.push(i);
             } else {
                 // Ragged right (Knuth): glue(0, s, 0) penalty(0) glue(w, -s, 0).
-                it.push(Item::glue(0.0, sp.ragged_stretch, 0.0));
+                // The fill glue is a break point too, so it measures the line with the last
+                // glyph's hang, like the penalty after it does (#3036). It carries the penalty's
+                // end elasticity as well: a line-end gap that can shrink is available at the fill
+                // too, so a line that fits only by shrinking keeps its node alive past the fill.
+                let mut fill = Item::glue(0.0, sp.ragged_stretch, 0.0);
+                fill.hang = prev_hang;
+                if let Some(prev) = i.checked_sub(1).and_then(|j| glyphs.get(j)) {
+                    fill.edge_elastic = crate::mojikumi::end_elastic(prev, sp.justify, !sp.push_out_only());
+                }
+                it.push(fill);
                 ig.push(i);
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = prev_hang;
@@ -506,14 +515,22 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
             }
         }
     }
-    // Paragraph end: fill glue + forced break.
-    it.push(Item::glue(0.0, INF, 0.0));
+    // Paragraph end: fill glue + forced break. The fill glue is a break point, so it measures
+    // the line with the final glyph's hang, like the forced break after it (#3036), and carries
+    // the forced break's end elasticity, so a line that fits only by shrinking a line-end gap
+    // keeps its node alive past the fill. Both end items come from the last glyph the line
+    // shows: spaces hanging at the paragraph end are skipped and hang no glyph.
+    let last = (0..n).rev().find(|&i| !hangs[i]);
+    let end_hang = last.map_or(0.0, |i| right_hang(&glyphs[i], sp));
+    let end_elastic = last.map_or([0.0; 2], |i| crate::mojikumi::end_elastic(&glyphs[i], sp.justify, !sp.push_out_only()));
+    let mut fill = Item::glue(0.0, INF, 0.0);
+    fill.hang = end_hang;
+    fill.edge_elastic = end_elastic;
+    it.push(fill);
     ig.push(n);
     let mut p = Item::penalty(0.0, -INF, false);
-    p.hang = if n > 0 { right_hang(&glyphs[n - 1], sp) } else { 0.0 };
-    if let Some(g) = glyphs.last() {
-        p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only());
-    }
+    p.hang = end_hang;
+    p.edge_elastic = end_elastic;
     it.push(p);
     ig.push(n);
     (it, ig)
