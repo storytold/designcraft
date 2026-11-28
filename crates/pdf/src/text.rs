@@ -180,13 +180,24 @@ fn text_rules(cs: &ComposedStory, ft: &FrameText, underline: bool) -> Vec<(desig
 }
 
 impl Exporter<'_> {
-    pub(crate) fn font(&mut self, face: &FontFace) -> Option<Font> {
+    /// The subset for one spelling mode. All Caps can map a lowercase source to the same glyph
+    /// an ordinary run maps to lowercase; separate subsets keep each ToUnicode map unambiguous.
+    pub(crate) fn font(&mut self, face: &FontFace, all_caps: bool) -> Option<Font> {
         self.fonts
-            .entry(face.id())
+            .entry((face.id(), all_caps))
             .or_insert_with(|| {
                 // Keep the existing outline fallback and warning when embedding fails.
                 let variations = face.is_variable().then_some(face.coords.as_slice());
-                craft_pdf::write::font(face.data(), face.index(), variations)
+                // Krilla deduplicates Font handles by SFNT metadata, including data length.
+                // Legal zero padding after the tables gives All Caps a distinct subset identity
+                // without changing a glyph, metric or name.
+                let padded = all_caps.then(|| {
+                    let mut data = face.data().to_vec();
+                    data.extend_from_slice(&[0; 4]);
+                    data
+                });
+                let data = padded.as_deref().unwrap_or_else(|| face.data());
+                craft_pdf::write::font(data, face.index(), variations)
                     .inspect_err(|error| log::warn!("PDF font `{} {}` could not be embedded: {error}", face.family, face.style))
                     .ok()
             })
@@ -466,7 +477,7 @@ impl Exporter<'_> {
     }
 
     /// Unicode text for a run's glyphs: (text, per-glyph byte range into it).
-    fn run_text(&mut self, glyphs: &[PlacedGlyph], story: &str) -> (String, Vec<Range<usize>>) {
+    fn run_text(&mut self, glyphs: &[PlacedGlyph], story: &str, all_caps: bool) -> (String, Vec<Range<usize>>) {
         let cmap = self.reverse_cmap(&glyphs[0].face);
         let mut text = String::new();
         let mut ranges: Vec<Range<usize>> = Vec::with_capacity(glyphs.len());
@@ -477,7 +488,25 @@ impl Exporter<'_> {
             let range = if let Some(t) = src {
                 prev_src = Some(g.byte);
                 let a = text.len();
-                text.push_str(t);
+                // All Caps uppercases the source before shaping, including before OpenType
+                // substitutions. Use that displayed spelling even when a feature replaces the
+                // cmap-default uppercase glyph; otherwise the alternate gets ActualText nested
+                // in the structure span, which tag-aware readers such as poppler truncate.
+                let mut chars = t.chars();
+                let single = chars.next().filter(|_| chars.next().is_none());
+                match single {
+                    Some(c) => {
+                        let mut ups = c.to_uppercase();
+                        let upper = ups.next().unwrap_or(c);
+                        let one = ups.next().is_none();
+                        if all_caps && one && upper != c {
+                            text.push(upper);
+                        } else {
+                            text.push_str(t);
+                        }
+                    }
+                    None => text.push_str(t),
+                }
                 a..text.len()
             } else if g.len == 0 && prev_src == Some(g.byte) && !ranges.is_empty() {
                 // Second glyph of a multi-glyph cluster: share the cluster's text.
@@ -565,8 +594,8 @@ impl Exporter<'_> {
         // A missing glyph is drawn as its box: PDF/A and PDF/UA forbid showing .notdef as text.
         if g0.gid == 0 {
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
-        } else if let Some(font) = self.font(&face) {
-            self.text_run(s, glyphs, story, font, origin, size, hs, tan, fill, stroke, weight);
+        } else if let Some(font) = self.font(&face, st.all_caps) {
+            self.text_run(s, glyphs, story, st.all_caps, font, origin, size, hs, tan, fill, stroke, weight);
         } else {
             self.warn(format!("font `{} {}` could not be embedded; its text was drawn as outlines", face.family, face.style));
             self.paint_outlines(s, &glyph_outlines(glyphs, size, tan), origin, fill, stroke, weight);
@@ -586,6 +615,7 @@ impl Exporter<'_> {
         s: &mut Surface,
         glyphs: &[PlacedGlyph],
         story: &str,
+        all_caps: bool,
         font: Font,
         origin: Affine,
         size: f64,
@@ -596,7 +626,7 @@ impl Exporter<'_> {
         stroke_weight: f64,
     ) {
         let Some(g0) = glyphs.first() else { return };
-        let (text, mut ranges) = self.run_text(glyphs, story);
+        let (text, mut ranges) = self.run_text(glyphs, story, all_caps);
         let order = split_clusters(glyphs, &text, &mut ranges);
         let k = 1.0 / (hs * size);
         // Glyphs are placed absolutely: each advance reaches the next glyph drawn, a vertical offset
@@ -656,7 +686,7 @@ impl Exporter<'_> {
     /// One line of plain text in the bundled UI face (page information mark).
     pub(crate) fn plain_text(&mut self, s: &mut Surface, text: &str, at: (f64, f64), size: f64, color: krilla::color::Color) {
         let face = FontDb::global().face(designcraft_fonts::FALLBACK_FAMILY, "Regular");
-        let Some(font) = self.font(&face) else { return };
+        let Some(font) = self.font(&face, false) else { return };
         let shaped = designcraft_fonts::shape(&face, text, &[], |c| c);
         let upem = face.upem as f32;
         let glyphs: Vec<KrillaGlyph> = shaped
