@@ -19,6 +19,8 @@ const MAX_VERSIONS: usize = 24;
 const MAX_PIXELS: f64 = 8.0e7;
 /// The most characters in a file or folder name.
 const MAX_NAME: usize = 120;
+/// The most UTF-8 bytes in a name before a collision suffix and extension are added.
+const MAX_NAME_BYTES: usize = 240;
 /// The most bytes an export returns in its reply (no `dir`): past it, export to a folder.
 const MAX_INLINE_BYTES: usize = 512 << 20;
 /// The most saved export presets, and the longest preset name.
@@ -252,13 +254,14 @@ pub(crate) fn layout_pages(cmd: &str, d: &designcraft_doc::Document, names: &[St
 
 /// `s` as a file or folder name: no path separators, reserved or control characters, no leading
 /// dots, no Windows device name (`CON`, `NUL`… get a leading `_`), at most [`MAX_NAME`]
-/// characters; "Untitled" when nothing is left.
+/// characters and [`MAX_NAME_BYTES`] UTF-8 bytes; "Untitled" when nothing is left.
 pub fn safe_name(s: &str) -> String {
     let cleaned: String = s.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { ' ' } else { c }).collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
     let joined = words.join(" ");
     let trimmed = joined.trim_start_matches('.').trim();
-    let capped: String = trimmed.chars().take(MAX_NAME).collect();
+    let mut capped: String = trimmed.chars().take(MAX_NAME).collect();
+    capped.truncate(capped.floor_char_boundary(MAX_NAME_BYTES));
     let capped = capped.trim_end_matches(['.', ' ']).to_string();
     if capped.is_empty() {
         "Untitled".into()
@@ -564,6 +567,7 @@ mod tests {
         assert_eq!(safe_name("../a/b:c*?"), "a b c");
         assert_eq!(safe_name("  ...  "), "Untitled");
         assert_eq!(safe_name(&"x".repeat(500)).chars().count(), MAX_NAME);
+        assert_eq!(safe_name(&format!("a{}", "界".repeat(120))), format!("a{}", "界".repeat(79)));
         // Windows device names name no file.
         for (name, safe) in
             [("CON", "_CON"), ("nul", "_nul"), ("com1.x", "_com1.x"), ("COM¹", "_COM¹"), ("lpt³.x", "_lpt³.x"), ("Console", "Console")]
