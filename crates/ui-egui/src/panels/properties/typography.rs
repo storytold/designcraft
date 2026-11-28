@@ -77,6 +77,17 @@ pub fn character_panel(app: &mut DesignApp, ui: &mut egui::Ui) {
         crate::rtl::label(ui, c["fill"].as_str().unwrap_or(""));
     });
     ui.horizontal(|ui| {
+        caption(ui, crate::i18n::tr(&app.ui.language, "Stroke:"));
+        let resp = crate::panels::swatch_picker(app, ui, "tstroke", c["stroke"].as_str().map(str::to_string), |app, n| {
+            let _ = app.run("type.char", json!({"attrs": {"stroke": n}}));
+        });
+        if let Some(resp) = resp {
+            let label = crate::i18n::tr(&app.ui.language, "Text Stroke");
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+        }
+        crate::rtl::label(ui, c["stroke"].as_str().unwrap_or(""));
+    });
+    ui.horizontal(|ui| {
         // Bold and Italic pick the family's own styles (style linking).
         let (weight, italic) =
             crate::panels::fonts(app).traits_of(c["fontFamily"].as_str().unwrap_or_default(), c["fontStyle"].as_str().unwrap_or_default());

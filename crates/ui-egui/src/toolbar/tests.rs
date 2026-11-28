@@ -446,6 +446,25 @@ fn apply_color_and_gradient_reuse_the_last_ones() {
     }
 }
 
+/// Apply Gradient with text selected and no gradient yet: a new white-to-black gradient on the
+/// text, not on its frame.
+#[test]
+fn apply_gradient_with_text_selected_colours_the_text() {
+    use serde_json::json;
+    let mut app = app(true);
+    app.run("file.new", json!({})).unwrap();
+    let r = app.run("frame.create", json!({"rect": [72, 72, 300, 200], "content": "text", "text": "gradient", "caret": false})).unwrap();
+    let (fid, sid) = (r["id"].as_u64().unwrap(), r["story"].as_u64().unwrap());
+    app.run("text.select", json!({"story": sid, "anchor": 0, "focus": 8})).unwrap();
+    let frame_before = app.session.active().unwrap().doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch.clone();
+    app.run("color.applyGradient", json!({})).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    let fill = doc.story(designcraft_doc::StoryId(sid)).unwrap().format_after(0).over.fill.clone().expect("the text's fill");
+    let grad = designcraft_color::swatch::resolve_gradient(&doc.swatches, &fill).expect("a gradient on the text");
+    assert_eq!((grad.stops[0].color.to_rgb(), grad.stops[1].color.to_rgb()), ([1.0; 3], [0.0; 3]));
+    assert_eq!(doc.item(designcraft_doc::ItemId(fid)).unwrap().fill.swatch, frame_before, "the frame keeps its fill");
+}
+
 /// A new default gradient on the stroke in front is one undo step; the fill keeps its swatch and tint.
 #[test]
 fn apply_gradient_to_the_stroke_is_one_undo_step() {
