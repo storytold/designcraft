@@ -722,10 +722,72 @@ fn prefix_sums(items: &[Item]) -> PrefixSums {
     PrefixSums { sw, sy, sz, so }
 }
 
+/// Glyph advances, word-space advances and word-space counts up to each glyph: the raw material
+/// of the ragged overrun allowance (see [`GlyphSums::overrun_fit_eps`]).
+struct GlyphSums {
+    adv: Vec<f64>,
+    space_adv: Vec<f64>,
+    spaces: Vec<usize>,
+}
+
+impl GlyphSums {
+    fn new(glyphs: &[Glyph]) -> Self {
+        let mut sums = GlyphSums { adv: vec![0.0; glyphs.len() + 1], space_adv: vec![0.0; glyphs.len() + 1], spaces: vec![0; glyphs.len() + 1] };
+        for (i, g) in glyphs.iter().enumerate() {
+            sums.adv[i + 1] = sums.adv[i] + g.adv;
+            let space = g.is_space();
+            sums.space_adv[i + 1] = sums.space_adv[i] + if space { g.adv } else { 0.0 };
+            sums.spaces[i + 1] = sums.spaces[i] + usize::from(space);
+        }
+        sums
+    }
+
+    /// The fit epsilon of a candidate line: the fixed rounding epsilon, or where that is wider,
+    /// the ragged overrun allowance. On a ragged line, InDesign tolerates an overrun of 1% of the
+    /// word the line's last space starts, together with the space before it — in the paragraph
+    /// composer 1% more (of one more word space) for each further space in the line, on every
+    /// ragged line, not only the last one (issue #3034). Justified lines stretch to the measure
+    /// and keep the fixed epsilon, so they never end visibly overfull. Never used to change
+    /// advances, only to decide whether an overfull line is accepted.
+    ///
+    /// The line runs from glyph `start_g` (where the previous break left it) to `end_g` (where
+    /// this one happens). The span is bounded to it: spaces the previous line consumed are
+    /// skipped, and hanging spaces at the end take no room on the line. Tabs (including
+    /// right-indent tabs) have a breaking advance that differs from where they are finally
+    /// placed, so the glyphs before the trailing word cannot be summed and tabbed paragraphs
+    /// keep the fixed epsilon.
+    fn overrun_fit_eps(&self, glyphs: &[Glyph], justify: bool, has_tabs: bool, start_g: usize, end_g: usize) -> f64 {
+        let mut fit_eps = FIT_EPS;
+        if justify || has_tabs {
+            return fit_eps;
+        }
+        let end_g = end_g.min(glyphs.len());
+        let mut s = start_g.min(end_g);
+        while s < end_g && glyphs[s].is_space() {
+            s += 1;
+        }
+        let mut e = end_g;
+        while e > s && glyphs[e - 1].is_space() {
+            e -= 1;
+        }
+        if self.spaces[e] > self.spaces[s] {
+            let space_g = (s..e).rev().find(|&j| glyphs[j].is_space()).unwrap_or(s);
+            // The trailing word together with the space before it, plus one word space
+            // more for each further space in the line.
+            let trailing = self.adv[e] - self.adv[space_g];
+            let further_spaces = self.space_adv[space_g] - self.space_adv[s];
+            fit_eps = fit_eps.max(0.01 * (trailing + further_spaces));
+        }
+        fit_eps
+    }
+}
+
 fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
     let PassInput { items, item_glyphs, glyphs, spacing: sp, width, tolerance: tol, emergency } = input;
     let m = items.len();
     let PrefixSums { sw, sy, sz, so } = prefix_sums(items);
+    let sums = GlyphSums::new(glyphs);
+    let has_tabs = glyphs.iter().any(|g| g.ch == '\t' || g.ch == designcraft_doc::story::RIGHT_INDENT_TAB);
     let first_box = items.iter().find(|i| i.kind == Kind::Box);
     let first_hang = first_box.map_or(0.0, |b| b.hang);
     let first_elastic = first_box.map_or([0.0; 2], |b| b.start_elastic);
@@ -763,6 +825,7 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
         let mut last_removed: Option<usize> = None;
         for &a in &active {
             let n = arena[a];
+            let fit_eps = sums.overrun_fit_eps(glyphs, sp.justify, has_tabs, item_glyphs.get(n.pos).copied().unwrap_or(0), item_glyphs[b]);
             let l = sw[b] - n.tw + pw - it.hang;
             let target = width(n.line).max(1.0);
             let mut y = [0.0; 3];
@@ -773,9 +836,10 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
             }
             y[0] = (y[0] + it.edge_elastic[0]).max(0.0);
             z[0] = (z[0] + it.edge_elastic[1]).max(0.0);
-            // A line that overruns its measure by a rounding error fits exactly.
+            // A line that overruns its measure by a rounding error (or by the allowed 1% of its
+            // trailing word on a ragged line) fits exactly.
             let d = target - l;
-            let d = if d < 0.0 && d > -FIT_EPS { 0.0 } else { d };
+            let d = if d < 0.0 && d > -fit_eps { 0.0 } else { d };
             let (mut r, feasible) = tiered_ratio(d, y, z, so[b] - n.to);
             if it.emergency && sp.justify && r > 0.0 {
                 // A piece of an overlong word usually has no elastic material: rate it by the
@@ -945,6 +1009,9 @@ pub fn greedy(
         return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
     }
     let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
+    // Tabs (including right-indent tabs) have a breaking advance that differs from where they are
+    // finally placed, so the glyphs before the trailing word cannot be summed for the allowance.
+    let has_tabs = glyphs.iter().any(|g| g.ch == '\t' || g.ch == designcraft_doc::story::RIGHT_INDENT_TAB);
     while start < n {
         let w = width(line).max(1.0);
         let mut x = -hang_left(&glyphs[start], sp) + glyphs[start].moji.start;
@@ -977,15 +1044,22 @@ pub fn greedy(
             let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
             let end_shrink = crate::mojikumi::end_elastic(g, sp.justify, !sp.push_out_only())[1];
             let available = shrink + sp.box_elastic(g).1.iter().sum::<f64>() + end_shrink;
+            // InDesign tolerates a ragged line overrunning its measure by 1% of the word being
+            // completed together with the space before it. It is a fit allowance only: advances
+            // stay natural, so a frame fitted to the text in InDesign does not overset here.
+            // Justified lines are stretched to the measure and keep the fixed epsilon, so they do
+            // not end visibly past the edge.
+            let trailing_allowance = if sp.justify || has_tabs { 0.0 } else { last_space.map_or(0.0, |(_, xs)| (x + adv - hang_r - xs).max(0.0)) };
+            let fit_eps = FIT_EPS.max(0.01 * trailing_allowance);
             if sp.kinsoku_cjk
                 && sp.kinsoku_priority == 2
-                && x + adv - hang_r > w + FIT_EPS
+                && x + adv - hang_r > w + fit_eps
                 && let Some((end, hyphen)) = last_natural
             {
                 brk = Some((end, hyphen, false));
                 break;
             }
-            if x + adv - hang_r > w + available.max(0.0) + FIT_EPS
+            if x + adv - hang_r > w + available.max(0.0) + fit_eps
                 && i > start
                 && (last_ok.is_some() || glyphs.get(i - 1).is_none_or(|p| p.break_after != Some(false) && !p.no_break))
             {
