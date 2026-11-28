@@ -30,8 +30,17 @@ fn median_ms(runs: usize, mut f: impl FnMut()) -> f64 {
             t.elapsed().as_secs_f64() * 1000.0
         })
         .collect();
-    v.sort_by(f64::total_cmp);
-    v[v.len() / 2]
+    sample_median(&mut v)
+}
+
+fn sample_median(samples: &mut [f64]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    samples.sort_by(f64::total_cmp);
+    let lower = (samples.len() - 1) / 2;
+    let upper = samples.len() / 2;
+    samples[lower].midpoint(samples[upper])
 }
 
 /// 1-minute load average (macOS / Linux), if available.
@@ -372,4 +381,16 @@ pub fn bench(args: &[String]) -> Result<(), String> {
     outln!("{file}: {} pages, {} stories, {} assets (opened in {open:.0} ms)", doc.page_count(), doc.stories.len(), doc.assets.len());
     let rows = measure(&doc, runs)?;
     print("", &rows, noisy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sample_median;
+
+    #[test]
+    fn benchmark_median_averages_the_middle_two_samples() {
+        assert_eq!(sample_median(&mut [9.0, 1.0, 7.0, 3.0]), 5.0);
+        assert_eq!(sample_median(&mut [9.0, 1.0, 7.0]), 7.0);
+        assert_eq!(sample_median(&mut [9.0]), 9.0);
+    }
 }
