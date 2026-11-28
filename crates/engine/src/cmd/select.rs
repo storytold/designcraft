@@ -6,15 +6,15 @@ use designcraft_geom::corners::{CornerOptions, CornerShape};
 use designcraft_geom::{Point, Rect, shapes};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, bad, cmd, has_doc, has_selection, ok, str_param, targets};
+use super::{CommandSpec, bad, cmd, has_doc, has_selection, ok, spread_param, str_param, targets};
 use crate::{Result, Session};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!(noundo "select.firstAbove", "First Object Above", ["Object", "Select"], Some("Cmd+Alt+Shift+]"), "{} — the frontmost object on the spread (layers included)", has_doc, |s, _| select_stacked(s, Step::Top)),
-        cmd!(noundo "select.nextAbove", "Next Object Above", ["Object", "Select"], Some("Cmd+Alt+]"), "{}", has_doc, |s, _| select_stacked(s, Step::Up)),
-        cmd!(noundo "select.nextBelow", "Next Object Below", ["Object", "Select"], Some("Cmd+Alt+["), "{}", has_doc, |s, _| select_stacked(s, Step::Down)),
-        cmd!(noundo "select.lastBelow", "Last Object Below", ["Object", "Select"], Some("Cmd+Alt+Shift+["), "{} — the backmost object on the spread", has_doc, |s, _| select_stacked(s, Step::Bottom)),
+        cmd!(noundo "select.firstAbove", "First Object Above", ["Object", "Select"], Some("Cmd+Alt+Shift+]"), "{spread? (when nothing is selected, defaults to the first spread)} — the frontmost object on the spread (layers included)", has_doc, |s, p| select_stacked(s, p, Step::Top)),
+        cmd!(noundo "select.nextAbove", "Next Object Above", ["Object", "Select"], Some("Cmd+Alt+]"), "{spread? (when nothing is selected, defaults to the first spread)}", has_doc, |s, p| select_stacked(s, p, Step::Up)),
+        cmd!(noundo "select.nextBelow", "Next Object Below", ["Object", "Select"], Some("Cmd+Alt+["), "{spread? (when nothing is selected, defaults to the first spread)}", has_doc, |s, p| select_stacked(s, p, Step::Down)),
+        cmd!(noundo "select.lastBelow", "Last Object Below", ["Object", "Select"], Some("Cmd+Alt+Shift+["), "{spread? (when nothing is selected, defaults to the first spread)} — the backmost object on the spread", has_doc, |s, p| select_stacked(s, p, Step::Bottom)),
         cmd!(noundo "select.container", "Container", ["Object", "Select"], None, "{} — the group or frame holding the selection", has_selection, |s, _| select_container(s)),
         cmd!(noundo "select.content", "Content", ["Object", "Select"], None, "{} — the graphic in a frame, or the first object in a group", has_selection, |s, _| select_content(s)),
         cmd!(noundo "select.nextInGroup", "Next Object in Group", ["Object", "Select"], None, "{}", has_selection, |s, _| select_sibling(s, 1)),
@@ -52,10 +52,14 @@ fn stacking(d: &Document, r: SpreadRef) -> Vec<ItemId> {
     v
 }
 
-fn select_stacked(s: &mut Session, how: Step) -> Result<Value> {
+fn select_stacked(s: &mut Session, p: &Value, how: Step) -> Result<Value> {
     let st = s.doc_mut()?;
     let cur = st.selection.items.first().and_then(|id| st.doc.find(*id).map(|l| (*id, l)));
-    let r = cur.as_ref().map(|(_, l)| l.spread).or_else(|| st.doc.spread_refs().next()).ok_or_else(|| bad("select", "no spread"))?;
+    let r = match &cur {
+        Some((_, loc)) => loc.spread,
+        None if p.get("spread").is_some_and(|v| !v.is_null()) => spread_param(p, "select")?,
+        None => st.doc.spread_refs().next().ok_or_else(|| bad("select", "no spread"))?,
+    };
     let order = stacking(&st.doc, r);
     if order.is_empty() {
         return ok();
@@ -227,6 +231,30 @@ mod tests {
         assert_eq!(ids(&s)[0], first, "wraps");
         s.execute("select.container", &json!({})).unwrap();
         assert_eq!(ids(&s), [g]);
+    }
+
+    #[test]
+    fn stacking_selection_uses_the_supplied_spread_when_nothing_is_selected() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 2, "facingPages": false})).unwrap();
+        let create = |s: &mut Session, spread, x| {
+            s.execute("frame.create", &json!({"spread": spread, "rect": [x, 100, x + 50, 150]})).unwrap()["id"].as_u64().unwrap()
+        };
+        let first = create(&mut s, 0, 0);
+        let back = create(&mut s, 1, 60);
+        let front = create(&mut s, 1, 120);
+        let shown = json!({"spread": {"kind": "doc", "index": 1}});
+
+        for (command, expected) in [("select.firstAbove", front), ("select.nextAbove", back), ("select.nextBelow", front), ("select.lastBelow", back)]
+        {
+            s.execute("edit.deselectAll", &json!({})).unwrap();
+            assert_eq!(s.execute(command, &shown).unwrap()["id"], expected);
+            assert_eq!(ids(&s), [expected]);
+        }
+
+        assert_eq!(s.execute("select.firstAbove", &json!({"spread": 0})).unwrap()["id"], front, "the selected object's spread wins");
+        s.execute("edit.deselectAll", &json!({})).unwrap();
+        assert_eq!(s.execute("select.firstAbove", &json!({})).unwrap()["id"], first, "the engine defaults to the first spread");
     }
 
     #[test]

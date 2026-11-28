@@ -28,9 +28,11 @@ impl DesignApp {
             }
             _ => id,
         };
-        // Copied objects paste on the spread in view.
-        if matches!(id, "edit.paste" | "edit.pasteInPlace" | "edit.pasteSvg")
-            && let Some(spread) = canvas::current_spread(self)
+        // Paste and selection by stacking order use the spread in view when no spread was supplied.
+        if matches!(
+            id,
+            "edit.paste" | "edit.pasteInPlace" | "edit.pasteSvg" | "select.firstAbove" | "select.nextAbove" | "select.nextBelow" | "select.lastBelow"
+        ) && let Some(spread) = canvas::current_spread(self)
             && let Some(p) = params.as_object_mut()
         {
             p.entry("spread").or_insert(json!(spread));
