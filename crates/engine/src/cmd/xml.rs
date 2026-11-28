@@ -1,7 +1,7 @@
 //! Structure and XML: tags on frames (Tags panel), paragraph styles mapped to tags, the structure
 //! tree, XML export and import (content flows into the frames with matching tags).
 
-use designcraft_doc::{Content, Document, Item, ItemId, ParaFormat, Story, StoryId, XmlTag};
+use designcraft_doc::{Content, Document, Item, ItemId, Story, StoryId, XmlTag};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, cmd, has_doc, ids_param, ok, str_param};
@@ -421,7 +421,10 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             el.children
                 .into_iter()
-                .map(|(t, txt)| (reverse.iter().find(|(tag, _)| *tag == t).map(|(_, st)| st.clone()), txt.trim().to_string()))
+                .flat_map(|(t, txt)| {
+                    let style = reverse.iter().find(|(tag, _)| *tag == t).map(|(_, st)| st.clone());
+                    txt.trim().split('\n').map(|l| (style.clone(), l.trim().to_string())).collect::<Vec<_>>()
+                })
                 .collect()
         };
         fills.push((slot.1, paras));
@@ -429,22 +432,142 @@ fn import_xml(s: &mut Session, p: &Value) -> Result<Value> {
     let placed = fills.len();
     s.edit(|d, _| {
         for (sid, paras) in fills {
-            let Some(st) = d.story_mut(sid) else { continue };
-            let base = st.paras.first().cloned().unwrap_or_default();
-            let text = paras.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
-            let frames = std::mem::take(&mut st.frames);
-            let mut fresh = Story::with_text(sid, &text, ParaFormat { table: None, ..base.clone() });
-            for (i, (style, _)) in paras.iter().enumerate() {
-                if let (Some(sty), Some(pf)) = (style, fresh.paras.get_mut(i)) {
-                    pf.style = sty.clone();
-                }
+            if let Some(st) = d.story_mut(sid) {
+                fill_story(st, &paras);
             }
-            fresh.frames = frames;
-            fresh.rev = st.rev.wrapping_add(1);
-            *st = fresh;
         }
         Ok(json!({"placed": placed, "unmatched": unmatched}))
     })
+}
+
+/// Byte lengths of the longest common start of `a` and `b`, and of the longest common end of
+/// what is left, on character boundaries.
+fn common_ends(a: &str, b: &str) -> (usize, usize) {
+    let pre: usize = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
+    let suf: usize = a[pre..].chars().rev().zip(b[pre..].chars().rev()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
+    (pre, suf)
+}
+
+/// `s` as tokens (byte ranges): runs of letters and digits, every other character on its own.
+fn tokens(s: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    for (i, c) in s.char_indices() {
+        let end = i + c.len_utf8();
+        match out.last_mut() {
+            Some(last) if c.is_alphanumeric() && last.end == i && s[last.clone()].chars().all(char::is_alphanumeric) => last.end = end,
+            _ => out.push(i..end),
+        }
+    }
+    out
+}
+
+/// Most token pairs [`hunks`] compares; longer paragraphs are one hunk between their common ends.
+const MAX_DIFF_CELLS: usize = 250_000;
+
+/// What turns `old` into `new`: (byte range of `old`, its replacement), in order, apart from each
+/// other, so text the two share between changes stays as it is (with its format).
+fn hunks<'a>(old: &str, new: &'a str) -> Vec<(std::ops::Range<usize>, &'a str)> {
+    let (mut pre, mut suf) = common_ends(old, new);
+    // Whole words: the common ends stop where a word does.
+    let alnum = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    while pre > 0 && alnum(old[..pre].chars().next_back()) && (alnum(old[pre..].chars().next()) || alnum(new[pre..].chars().next())) {
+        pre -= old[..pre].chars().next_back().map_or(1, char::len_utf8);
+    }
+    while suf > 0
+        && alnum(old[old.len() - suf..].chars().next())
+        && (alnum(old[..old.len() - suf].chars().next_back()) || alnum(new[..new.len() - suf].chars().next_back()))
+    {
+        suf -= old[old.len() - suf..].chars().next().map_or(1, char::len_utf8);
+    }
+    let (o, n) = (&old[pre..old.len() - suf], &new[pre..new.len() - suf]);
+    if o == n {
+        return Vec::new();
+    }
+    let (ot, nt) = (tokens(o), tokens(n));
+    if ot.len().saturating_mul(nt.len()) > MAX_DIFF_CELLS {
+        return vec![(pre..old.len() - suf, n)];
+    }
+    // Longest common token subsequence, from the end: `l[i][j]` for `ot[i..]` and `nt[j..]`.
+    let w = nt.len() + 1;
+    let mut l = vec![0u32; (ot.len() + 1) * w];
+    for i in (0..ot.len()).rev() {
+        for j in (0..nt.len()).rev() {
+            l[i * w + j] = if o[ot[i].clone()] == n[nt[j].clone()] { l[(i + 1) * w + j + 1] + 1 } else { l[(i + 1) * w + j].max(l[i * w + j + 1]) };
+        }
+    }
+    let (mut out, mut i, mut j) = (Vec::new(), 0, 0);
+    // The start (old, new byte offsets) of the hunk being gathered.
+    let mut open: Option<(usize, usize)> = None;
+    let at = |t: &[std::ops::Range<usize>], k: usize, len: usize| t.get(k).map_or(len, |r| r.start);
+    while i < ot.len() || j < nt.len() {
+        if i < ot.len() && j < nt.len() && o[ot[i].clone()] == n[nt[j].clone()] {
+            if let Some((os, ns)) = open.take() {
+                out.push((pre + os..pre + at(&ot, i, o.len()), &n[ns..at(&nt, j, n.len())]));
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+        open.get_or_insert((at(&ot, i, o.len()), at(&nt, j, n.len())));
+        if j < nt.len() && (i == ot.len() || l[i * w + j + 1] >= l[(i + 1) * w + j]) {
+            j += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if let Some((os, ns)) = open {
+        out.push((pre + os..pre + o.len(), &n[ns..]));
+    }
+    out
+}
+
+/// Puts the paragraphs into the story in place, so the template's formatting stays: paragraph
+/// `i` replaces old paragraph `i` (only the parts that differ, each taking the format of the
+/// first character it replaces), extra paragraphs copy the last one's formats, surplus old
+/// paragraphs are removed. A trailing empty paragraph (the story ending in a return) stays, and an
+/// empty last paragraph in the XML is that one.
+fn fill_story(st: &mut Story, paras: &[(Option<String>, String)]) {
+    let ranges = st.para_ranges();
+    let keep_last = ranges.len() > 1 && ranges.last().is_some_and(|r| r.is_empty());
+    let old_n = ranges.len() - usize::from(keep_last);
+    let texts = match paras.split_last() {
+        Some((last, rest)) if keep_last && paras.len() > old_n && last.1.is_empty() => rest,
+        _ => paras,
+    };
+    // Edits inside paragraph `i` move only what follows it: from the last paragraph back, the
+    // ranges read once stay right.
+    for (i, (_, new)) in texts.iter().enumerate().take(old_n).rev() {
+        let r = ranges[i].clone();
+        let old = st.text[r.clone()].to_string();
+        for (h, repl) in hunks(&old, new).into_iter().rev() {
+            let (a, b) = (r.start + h.start, r.start + h.end);
+            if a < b {
+                st.replace(a..b, repl);
+            } else if !repl.is_empty() {
+                let fmt = if h.start > 0 { st.char_format_at(a).clone() } else { st.format_after(a).clone() };
+                st.insert_with(a, repl, fmt);
+            }
+        }
+    }
+    if texts.len() > old_n {
+        if let Some(prev) = st.para_ranges().get(old_n.wrapping_sub(1)).cloned() {
+            let extra: String = texts[old_n..].iter().map(|(_, t)| format!("\n{t}")).collect();
+            st.insert(prev.end, &extra);
+        }
+    } else if old_n > texts.len() {
+        let ranges = st.para_ranges();
+        if let (Some(keep), Some(last)) = (texts.len().checked_sub(1).and_then(|k| ranges.get(k)), ranges.get(old_n - 1)) {
+            st.delete(keep.end..last.end);
+        }
+    }
+    for (i, (style, _)) in paras.iter().enumerate() {
+        if let (Some(sty), Some(pf)) = (style, st.paras.get_mut(i))
+            && pf.style != *sty
+        {
+            pf.style = sty.clone();
+            st.rev = st.rev.wrapping_add(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -521,6 +644,107 @@ mod tests {
         s.execute("file.importXml", &json!({"text": x})).unwrap();
         let d = &s.doc().unwrap().doc;
         assert_eq!(d.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text, "See the glossary entry");
+    }
+
+    #[test]
+    fn import_xml_keeps_the_frames_character_formatting() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s
+            .execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "Contains: 300 g/L\nSecond\n", "caret": false}))
+            .unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 25})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"size": 20.0}})).unwrap();
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 0, "focus": 9})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "c", "ids": [f["id"]]})).unwrap();
+        let before = s.doc().unwrap().doc.stories[&sid].clone();
+        let story = |s: &Session| s.doc().unwrap().doc.stories[&sid].clone();
+        let size = |st: &designcraft_doc::Story, at: usize| st.format_after(at).over.size;
+        let style = |st: &designcraft_doc::Story, at: usize| st.format_after(at).over.font_style.clone();
+
+        // The same text changes nothing.
+        s.execute("file.importXml", &json!({"text": "<Root><c>Contains: 300 g/L\nSecond</c></Root>"})).unwrap();
+        assert_eq!(story(&s).text, before.text);
+        assert_eq!(story(&s).chars, before.chars, "runs unchanged");
+
+        // A changed number keeps the bold label and the size; a new paragraph copies the last.
+        s.execute("file.importXml", &json!({"text": "<Root><c>Contains: 400 g/L\nSecond\nThird</c></Root>"})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "Contains: 400 g/L\nSecond\nThird\n", "the trailing return stays");
+        assert_eq!(style(&st, 0), before.format_after(0).over.font_style, "label stays bold");
+        assert_ne!(style(&st, 10), style(&st, 0), "the number stays regular");
+        assert_eq!(size(&st, 10), Some(20.0));
+        assert_eq!(size(&st, st.text.find("Third").unwrap()), Some(20.0), "a new paragraph takes the last one's format");
+
+        // Fewer paragraphs: the surplus goes, formatting stays.
+        s.execute("file.importXml", &json!({"text": "<Root><c>Enthält: 300 g/L</c></Root>"})).unwrap();
+        let st = story(&s);
+        assert_eq!(st.text, "Enthält: 300 g/L\n");
+        assert_eq!(size(&st, 0), Some(20.0));
+        assert_eq!(st.paras.len(), 2);
+    }
+
+    /// Two changes in one paragraph are two edits: the label between them keeps its format.
+    #[test]
+    fn import_xml_keeps_unchanged_text_between_two_changes() {
+        use designcraft_doc::StoryId;
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "A: 300; B: 400", "caret": false})).unwrap();
+        let sid = StoryId(f["story"].as_u64().unwrap());
+        s.execute("text.select", &json!({"story": sid.0, "anchor": 8, "focus": 11})).unwrap();
+        s.execute("type.char", &json!({"attrs": {"fontStyle": "Bold"}})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "c", "ids": [f["id"]]})).unwrap();
+        let bold = |s: &Session, at: usize| s.doc().unwrap().doc.stories[&sid].format_after(at).over.font_style.clone();
+        let label = bold(&s, 8);
+        assert!(label.is_some());
+        s.execute("file.importXml", &json!({"text": "<Root><c>A: 310; B: 410</c></Root>"})).unwrap();
+        assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "A: 310; B: 410");
+        assert_eq!((bold(&s, 8), bold(&s, 10)), (label.clone(), label), "`B: ` stays bold");
+        assert_ne!(bold(&s, 11), bold(&s, 8), "the new number stays regular");
+    }
+
+    /// A story ending in a return exports its empty last paragraph; importing that back keeps
+    /// one return, not two.
+    #[test]
+    fn import_xml_of_mapped_paragraphs_keeps_one_trailing_return() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        s.execute("style.paragraph.create", &json!({"name": "Body"})).unwrap();
+        let a = s.execute("frame.create", &json!({"rect": [72, 72, 400, 150], "content": "text", "text": "a\n", "caret": false})).unwrap();
+        s.execute("text.select", &json!({"story": a["story"], "anchor": 0, "focus": 2})).unwrap();
+        s.execute("style.paragraph.apply", &json!({"name": "Body"})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "story", "ids": [a["id"]]})).unwrap();
+        s.execute("xml.mapStyle", &json!({"style": "Body", "tag": "p"})).unwrap();
+        let x = s.execute("file.exportXml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        s.execute("file.importXml", &json!({"text": x.clone()})).unwrap();
+        let text = s.doc().unwrap().doc.stories[&designcraft_doc::StoryId(a["story"].as_u64().unwrap())].text.clone();
+        assert_eq!(text, "a\n", "{x}");
+    }
+
+    #[test]
+    fn hunks_keep_shared_text_between_changes() {
+        fn h(a: &str, b: &str) -> Vec<(String, String)> {
+            super::hunks(a, b).into_iter().map(|(r, t)| (a[r].to_string(), t.to_string())).collect()
+        }
+        assert_eq!(h("A: 300; B: 400", "A: 310; B: 410"), [("300".to_string(), "310".to_string()), ("400".to_string(), "410".to_string())]);
+        assert!(h("same", "same").is_empty());
+        assert_eq!(h("Enthält: 300", "Contains: 300"), [("Enthält".to_string(), "Contains".to_string())]);
+        assert_eq!(h("ab", "ab cd"), [(String::new(), " cd".to_string())]);
+    }
+
+    #[test]
+    fn import_xml_splits_lines_inside_a_child_element() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [72, 72, 400, 300], "content": "text", "text": "x\ny", "caret": false})).unwrap();
+        s.execute("xml.tag", &json!({"tag": "c", "ids": [f["id"]]})).unwrap();
+        s.execute("file.importXml", &json!({"text": "<Root><c><p>a\nb</p><p>c</p></c></Root>"})).unwrap();
+        let sid = designcraft_doc::StoryId(f["story"].as_u64().unwrap());
+        assert_eq!(s.doc().unwrap().doc.stories[&sid].text, "a\nb\nc");
     }
 
     #[test]
