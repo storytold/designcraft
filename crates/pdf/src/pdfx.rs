@@ -171,9 +171,64 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     if text.contains("/Subtype/Type3") {
         issues.push("Type 3 fonts aren't allowed".into());
     }
+    if let Some(f) = file.as_ref() {
+        issues.extend(box_nesting(f));
+    }
     issues.extend(device_rgb(file.as_ref()));
     issues.extend(fonts::unembedded_fonts(pdf));
     issues
+}
+
+/// Page boxes that don't nest as PDF/X requires (#2947, #2948): the CropBox and the BleedBox within the MediaBox,
+/// the TrimBox and ArtBox within the BleedBox (else the MediaBox), and within the CropBox, which
+/// is the visible page (the MediaBox when there is none). Each problem is named once, however
+/// many pages have it. The MediaBox and CropBox are the page's own or inherited ones.
+fn box_nesting(file: &craft_pdf::syntax::Pdf) -> Vec<String> {
+    use craft_pdf::syntax::object::Rect;
+    let mut found: Vec<String> = Vec::new();
+    let mut add = |what: String| {
+        if !found.contains(&what) {
+            found.push(what);
+        }
+    };
+    for page in file.pages().iter() {
+        // Within a hundredth of a point: writers round box coordinates differently. Boxes are in
+        // the page's user units, `/UserUnit` points each (at least 1).
+        let e = 0.01 / f64::from(page.user_unit());
+        let inside =
+            |inner: &Rect, outer: &Rect| inner.x0 >= outer.x0 - e && inner.y0 >= outer.y0 - e && inner.x1 <= outer.x1 + e && inner.y1 <= outer.y1 + e;
+        let (media, crop) = (page.media_box(), page.crop_box());
+        let raw = page.raw();
+        let bleed = raw.get::<Rect>(b"BleedBox");
+        if let Some(b) = &bleed
+            && !inside(b, &media)
+        {
+            add("the bleed box extends past the media box".into());
+        }
+        if !inside(&crop, &media) {
+            add("the crop box extends past the media box".into());
+        }
+        for (name, key) in [("trim", &b"TrimBox"[..]), ("art", &b"ArtBox"[..])] {
+            let Some(r) = raw.get::<Rect>(key) else { continue };
+            if !inside(&r, &media) {
+                add(format!("the {name} box extends past the media box"));
+            }
+            if let Some(b) = &bleed
+                && !inside(&r, b)
+            {
+                add(format!("the {name} box extends past the bleed box"));
+            }
+            // The part of the box on the media is what the CropBox may cut into; past the media
+            // is said above. Without a CropBox of its own the page's is its MediaBox, which cuts nothing.
+            let on_media = Rect { x0: r.x0.max(media.x0), y0: r.y0.max(media.y0), x1: r.x1.min(media.x1), y1: r.y1.min(media.y1) };
+            // A box wholly off the media, beyond the same hundredth of a point, has no part on it to cut.
+            let off_media = r.x0 > media.x1 + e || r.x1 < media.x0 - e || r.y0 > media.y1 + e || r.y1 < media.y0 - e;
+            if !off_media && !inside(&on_media, &crop) {
+                add(format!("the crop box cuts into the {name} box"));
+            }
+        }
+    }
+    found
 }
 
 /// The document information's `GTS_PDFXVersion` (`PDF/X-4`, `PDF/X-1:2003`, …), read as an
