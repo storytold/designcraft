@@ -184,6 +184,32 @@ impl<'r> Importer<'r> {
             }
         }
         self.read_content(e, &model_item, tag, id, &mut it);
+        // A text frame drawn as a slightly slanted rectangle carries the slant in its transform:
+        // its text is set in the rectangle and slants with the frame, instead of being cut by
+        // the sloped edges as in a shaped frame (#2615).
+        if tag == "TextFrame"
+            && let Some((rect, slant)) = unslant_text_frame_path(&it.path)
+        {
+            let back = slant.inverse();
+            it.path = rect;
+            it.xf *= slant;
+            if let Some(p) = &mut it.wrap.path {
+                p.transform(back);
+            }
+            // Explicit gradient vectors are in the inner space too, so they move with the path. A
+            // linear gradient's colour is its parameter along the axis, which the slant changes
+            // for points off the axis, so its axis is compensated; a radial vector is a centre
+            // and a radius point, so both just move back.
+            let linear = |name: &str| {
+                designcraft_color::swatch::resolve_gradient(&self.swatches, name).is_some_and(|g| g.kind == designcraft_color::GradientKind::Linear)
+            };
+            if let Some(v) = it.fill.gradient_vector {
+                it.fill.gradient_vector = Some(unslant_gradient_vector(v, back, linear(&it.fill.swatch)));
+            }
+            if let Some(v) = it.stroke.gradient_vector {
+                it.stroke.gradient_vector = Some(unslant_gradient_vector(v, back, linear(&it.stroke.swatch)));
+            }
+        }
         Some(it)
     }
 
@@ -414,6 +440,71 @@ fn clipping_path(g: &El, to_graphic: Affine) -> Option<Arc<designcraft_doc::Clip
     c.source_name = settings.source_name.filter(|name| name != "$ID/").unwrap_or_default();
     c.source_index = settings.index.map_or(-1, |value| value.clamp(-1.0, i32::MAX as f64) as i32);
     Some(Arc::new(c))
+}
+
+/// Largest slope (1 in 20, about 3°) of a slanted rectangle's edges that [`unslant_text_frame_path`]
+/// moves into the transform; a frame slanted more stays a shaped frame.
+const MAX_FRAME_SLANT: f64 = 0.05;
+
+/// For a text frame path that is one closed parallelogram of four corner points, each edge within
+/// [`MAX_FRAME_SLANT`] of horizontal or vertical but not all axis-aligned: the axis-aligned
+/// rectangle with the same centre, width and height (anchors in the same order), and the slant
+/// that maps it onto the path. None for any other path.
+fn unslant_text_frame_path(path: &PathData) -> Option<(PathData, Affine)> {
+    let [sp] = path.subpaths.as_slice() else { return None };
+    let [p0, p1, p2, p3] = sp.anchors.as_slice() else { return None };
+    let pts = [p0, p1, p2, p3];
+    if !sp.closed || pts.iter().any(|a| a.h_in != a.p || a.h_out != a.p || !(a.p.x.is_finite() && a.p.y.is_finite())) {
+        return None;
+    }
+    let (e1, e2) = (p1.p - p0.p, p3.p - p0.p);
+    // A parallelogram: the fourth corner is where the two edges from the first one lead.
+    let size = e1.hypot().max(e2.hypot());
+    if !size.is_finite() || ((p0.p + e1 + e2) - p2.p).hypot() > size * 1e-9 {
+        return None;
+    }
+    let (h, v) = if e1.x.abs() >= e1.y.abs() { (e1, e2) } else { (e2, e1) };
+    // Edge directions with positive width and height.
+    let h = if h.x < 0.0 { -h } else { h };
+    let v = if v.y < 0.0 { -v } else { v };
+    let (w, ht) = (h.x, v.y);
+    let (sy, sx) = (h.y / w, v.x / ht);
+    if !(w > 0.0 && ht > 0.0 && sy.abs() <= MAX_FRAME_SLANT && sx.abs() <= MAX_FRAME_SLANT) || (sy == 0.0 && sx == 0.0) {
+        return None;
+    }
+    let c = p0.p.midpoint(p2.p).to_vec2();
+    let slant = Affine::translate(c) * Affine::new([1.0, sy, sx, 1.0, 0.0, 0.0]) * Affine::translate(-c);
+    // Unslanted corners, snapped to the rectangle's edges so it is exactly axis-aligned.
+    let mut rect = path.transformed(slant.inverse());
+    for sp in &mut rect.subpaths {
+        for a in &mut sp.anchors {
+            let x = if a.p.x < c.x { c.x - w / 2.0 } else { c.x + w / 2.0 };
+            let y = if a.p.y < c.y { c.y - ht / 2.0 } else { c.y + ht / 2.0 };
+            a.p = Point::new(x, y);
+            (a.h_in, a.h_out) = (a.p, a.p);
+        }
+    }
+    Some((rect, slant))
+}
+
+/// A gradient vector in a text frame's inner space, moved into the unslanted space that `back`
+/// maps the path back to. A radial vector is a centre and a radius point, so both move back. A
+/// linear gradient's colour is its parameter along the axis, and the slant changes that parameter
+/// for points off the axis, so its axis takes the shear's inverse transpose, scaled to span the
+/// same parameter range: every point then keeps the colour it had in the original space.
+fn unslant_gradient_vector([x0, y0, x1, y1]: [f64; 4], back: Affine, linear: bool) -> [f64; 4] {
+    let (a, b) = (back * Point::new(x0, y0), back * Point::new(x1, y1));
+    let [m11, m12, m21, m22, _, _] = back.as_coeffs();
+    let det = m11 * m22 - m12 * m21;
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    // The axis's image under the shear's inverse transpose, and the factor that keeps the
+    // parameter the one it had in the original space.
+    let (ex, ey) = ((m22 * dx - m12 * dy) / det, (m11 * dy - m21 * dx) / det);
+    let k = (dx * dx + dy * dy) / (ex * ex + ey * ey);
+    if !linear || !(k.is_finite() && k > 0.0) {
+        return [a.x, a.y, b.x, b.y];
+    }
+    [a.x, a.y, a.x + k * ex, a.y + k * ey]
 }
 
 fn path_from_model(geometry: craft_idml::model::PathGeometry) -> PathData {
