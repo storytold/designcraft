@@ -72,6 +72,7 @@ pub(crate) fn place_media(s: &mut Session, p: &Value, asset: Asset) -> Result<Va
         };
         sel.items = vec![id];
         sel.text = None;
+        sel.anchored = None;
         Ok(json!({"id": id.0, "asset": aid.0, "media": true}))
     })
 }
