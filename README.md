@@ -272,7 +272,9 @@ egui frontend is a separate crate, so the UI can be swapped without touching the
 |---|---|---|
 | x64 (64-bit Intel/AMD) | `designcraft-<ver>-windows-x64.msi` | `designcraft-<ver>-windows-x64-portable.zip` |
 | arm64 (Snapdragon and other ARM PCs) | `designcraft-<ver>-windows-arm64.msi` | `designcraft-<ver>-windows-arm64-portable.zip` |
-| x86 (32-bit) | `designcraft-<ver>-windows-x86.msi` | `designcraft-<ver>-windows-x86-portable.zip` |
+
+For 32-bit Windows, [DesignCraft v0.18.0](https://github.com/storytold/designcraft/releases/tag/v0.18.0)
+was the last release with both an x86 MSI and portable ZIP.
 
 Installers and executables are code-signed.
 
@@ -315,6 +317,7 @@ emerge --ask media-gfx/designcraft-bin
 | Build | File |
 |---|---|
 | x86_64 | `designcraft-<ver>-freebsd-x86_64.tar.gz` |
+| aarch64 (ARM64) | `designcraft-<ver>-freebsd-aarch64.tar.gz` |
 
 ### Web (WebAssembly)
 
