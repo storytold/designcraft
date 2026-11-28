@@ -207,6 +207,10 @@ impl FontDb {
     /// The box drawn for `face`'s missing glyph (.notdef) when the font's own has no outline, in
     /// font units, y-down: a hollow rectangle across the glyph's advance, cap height tall. `None`
     /// when the font draws its own.
+    ///
+    /// Contract: `Some` means exactly that the font's .notdef (glyph 0) has an empty outline, so
+    /// callers may test `missing_box(face).is_some()` for "this font's .notdef is empty" (PDF export
+    /// prints such a glyph as nothing, while [`FontDb::outline`] and the screen show this box).
     pub fn missing_box(&self, face: &FontFace) -> Option<BezPath> {
         if !font_outline(face, 0).elements().is_empty() {
             return None;
