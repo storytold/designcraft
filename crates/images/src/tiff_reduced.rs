@@ -30,10 +30,34 @@ fn supported_ink_set(bytes: &[u8]) -> bool {
     !crate::default_tiff_page(bytes).is_some_and(|page| page.photometric == Some(5) && page.ink_set.is_some_and(|set| set != InkSet::Cmyk))
 }
 
+/// Bytes the Photoshop payloads of the page [`TiffBands::open`] opens take as metadata: it copies
+/// the first directory's 34377 (image resources) and 37724 (image source data, a layered TIFF's
+/// layers) payloads into its metadata and keeps them for the whole decode, under no limit of its
+/// own. `None` when the default page is a later directory, whose own payloads the public
+/// zero-copy probe cannot read: the caller then refuses the reduced path rather than allocating
+/// blindly. The probe walks only header bytes and allocates nothing.
+fn retained_meta_bytes(bytes: &[u8]) -> Option<usize> {
+    let info = craft_image_codecs::tiff_info(bytes).ok()?;
+    let page = info.default_page().and_then(|i| info.pages.get(i))?;
+    let first = info.pages.first()?;
+    if page.ifd_offset != first.ifd_offset {
+        return None;
+    }
+    let (resources, layers) = craft_image_codecs::tiff_photoshop_tags(bytes);
+    Some(resources.map_or(0, <[u8]>::len).saturating_add(layers.map_or(0, <[u8]>::len)))
+}
+
 /// Opens the default TIFF page for banded decoding at `1 / 2^shrink`, enforcing that both the
-/// stream bands and the reduced RGBA output stay within budget.
-fn open_checked(bytes: &[u8], shrink: u8) -> Option<(TiffBands<'_>, u32, u32)> {
+/// stream bands and the reduced RGBA output stay within budget, together with the metadata the
+/// open copies and retains.
+fn open_checked(bytes: &[u8], shrink: u8) -> Option<(TiffBands<'_>, u32, u32, usize)> {
     if !is_tiff(bytes) || !(1..=MAX_SHRINK).contains(&shrink) || !supported_ink_set(bytes) {
+        return None;
+    }
+    // The metadata copy is unbounded in the codec, so bound it here, before the open: payloads
+    // over the band budget refuse the reduced path instead of allocating them first.
+    let meta_bytes = retained_meta_bytes(bytes)?;
+    if meta_bytes > MAX_BAND_BYTES as usize {
         return None;
     }
     let (pw, ph) = crate::pixel_size(bytes)?;
@@ -50,7 +74,7 @@ fn open_checked(bytes: &[u8], shrink: u8) -> Option<(TiffBands<'_>, u32, u32)> {
     if rw == 0 || rh == 0 || crate::over_rgba_budget(rw, rh) {
         return None;
     }
-    Some((bands, rw, rh))
+    Some((bands, rw, rh, meta_bytes))
 }
 
 type PartialCell = ([u32; 4], u32, u16);
@@ -75,7 +99,7 @@ fn partial_map_bytes(cells: usize) -> usize {
 /// Reduced `(width, height, estimated_peak_bytes)` for a TIFF at `1 / 2^shrink` without decoding
 /// any pixels. `None` when [`decode_reduced`] cannot handle the file.
 pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, usize)> {
-    let (bands, rw, rh) = open_checked(bytes, shrink)?;
+    let (bands, rw, rh, meta_bytes) = open_checked(bytes, shrink)?;
     let group = bands.group_bytes().ok()?;
     let scratch = usize::try_from(bands.decode_scratch_bytes()).ok()?;
     let is_cmyk = bands.layout().is_cmyk();
@@ -105,7 +129,7 @@ pub(crate) fn reduced_estimate(bytes: &[u8], shrink: u8) -> Option<(u32, u32, us
     let partial_bytes = partial_map_bytes(max_partial_cells(rw, rh, out_px)?);
     // Reduced output buffers (CMYK inks + alpha + RGBA display, or RGBA + premultiplied copy).
     let out_bytes = out_px.saturating_mul(if is_cmyk { 9 } else { 8 });
-    let peak = band_peak.saturating_add(partial_bytes).saturating_add(out_bytes).max(8);
+    let peak = band_peak.saturating_add(partial_bytes).saturating_add(out_bytes).saturating_add(meta_bytes).max(8);
     Some((rw, rh, peak))
 }
 
@@ -238,7 +262,7 @@ fn accumulate_group(target: &mut AccumTarget<'_>, gx: u32, gy: u32, gw: u32, gh:
 /// strip/tile groups through [`TiffBands`] and averaging directly into the reduced display buffer,
 /// applying the embedded ICC profile or active working CMYK profile just like [`crate::decode_rgba`].
 pub(crate) fn decode_reduced(bytes: &[u8], shrink: u8) -> Option<RgbaImage> {
-    let (mut bands, rw, rh) = open_checked(bytes, shrink)?;
+    let (mut bands, rw, rh, _) = open_checked(bytes, shrink)?;
     let (w, h) = bands.dimensions();
     let step = 1u32 << shrink;
     let is_cmyk = bands.layout().is_cmyk();
