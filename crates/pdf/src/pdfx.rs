@@ -163,9 +163,19 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     if text.contains("/Encrypt") {
         issues.push("the file is encrypted".into());
     }
-    let pages = text.matches("/Type/Page/").count() + text.matches("/Type/Page>").count();
-    let trims = text.matches("/TrimBox").count();
-    if pages > 0 && trims < pages {
+    // Each page's own dictionary, read as an object: counting `/Type/Page` and `/TrimBox` in the
+    // bytes found no page at all when the pages were in object streams, or written with a space
+    // after `/Type`, and passed a page without one (#2943). A TrimBox or an ArtBox will do (ISO
+    // 15930-7); neither is inherited. A box counts only as a rectangle: `/TrimBox null` is no box,
+    // nor is an array of five numbers.
+    let without_trim = match file.as_ref() {
+        Some(f) => f.pages().iter().filter(|p| !is_rect(p.raw(), b"TrimBox") && !is_rect(p.raw(), b"ArtBox")).count(),
+        None => {
+            let pages = text.matches("/Type/Page/").count() + text.matches("/Type/Page>").count();
+            pages.saturating_sub(text.matches("/TrimBox").count())
+        }
+    };
+    if without_trim > 0 {
         issues.push("every page needs a trim box".into());
     }
     if text.contains("/Subtype/Type3") {
@@ -174,6 +184,13 @@ pub fn check_pdfx4(pdf: &[u8]) -> Vec<String> {
     issues.extend(device_rgb(file.as_ref()));
     issues.extend(fonts::unembedded_fonts(pdf));
     issues
+}
+
+/// Whether `key` in a page dictionary is a rectangle: an array of exactly four numbers (a
+/// reference to one will do). `Rect` alone reads the first four and ignores any more.
+fn is_rect(page: &craft_pdf::syntax::object::Dict<'_>, key: &[u8]) -> bool {
+    use craft_pdf::syntax::object::{Array, Rect};
+    page.get::<Array<'_>>(key).is_some_and(|a| a.raw_iter().count() == 4 && a.iter::<f64>().count() == 4) && page.get::<Rect>(key).is_some()
 }
 
 /// The document information's `GTS_PDFXVersion` (`PDF/X-4`, `PDF/X-1:2003`, …), read as an
