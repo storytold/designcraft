@@ -542,7 +542,16 @@ fn shape_pieces(input: &ShapeInput<'_, '_>, table: &mut StyleTable<'_>, pieces: 
         if first.composite_note {
             if let Some(composite) = styles.composite_font(&first.props.font_family) {
                 let at = first.range.start;
-                let label = sub.notes.get(&at).map_or("#", String::as_str);
+                let strong = |c| match unicode_bidi::bidi_class(c) {
+                    unicode_bidi::BidiClass::AL => Some(true),
+                    unicode_bidi::BidiClass::L | unicode_bidi::BidiClass::R => Some(false),
+                    _ => None,
+                };
+                // The reference's Digits apply as in shape_run_raw (#1510), from the last strong character up to and including the reference.
+                let context =
+                    story.text.get(..first.range.end).unwrap_or("").chars().rev().take_while(|c| !matches!(c, '\n' | '\r')).find_map(strong);
+                let mode = digit_mode(&first.props, context);
+                let label: String = sub.notes.get(&at).map_or("#", String::as_str).chars().map(|ch| mode.map(ch, &first.props.language)).collect();
                 let begin = glyphs.len();
                 let mut segments: Vec<(usize, usize, Option<&designcraft_doc::cjk::CompositeFontEntry>)> = Vec::new();
                 for (at, c) in label.char_indices() {
@@ -964,8 +973,11 @@ fn shape_run_raw(
                     }
                 },
                 designcraft_doc::FOOTNOTE_REF | designcraft_doc::ENDNOTE_REF => {
-                    let s = sub.notes.get(&i).map_or("#", String::as_str);
-                    shape_segment(db, text, i..i + c.len_utf8(), Some(s), p, &primary, auto_leading, styles, out, sub.upright());
+                    // Like page numbers, a note's number follows the Digits of its reference's
+                    // character style; it was always drawn in Western digits (#1510).
+                    let mode = digit_mode(p, arabic_context);
+                    let s: String = sub.notes.get(&i).map_or("#", String::as_str).chars().map(|ch| mode.map(ch, &p.language)).collect();
+                    shape_segment(db, text, i..i + c.len_utf8(), Some(&s), p, &primary, auto_leading, styles, out, sub.upright());
                 }
                 _ => {
                     // Zero-width control glyph carrying metrics (tabs get their width at line layout).

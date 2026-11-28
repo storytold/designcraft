@@ -3841,6 +3841,47 @@ fn page_numbers_take_the_digits_option() {
     assert_eq!(fourth(&format!("No. {}", story::PAGE_NUMBER)), fourth("No. \u{661}"));
 }
 
+/// A footnote reference is drawn in the Digits of its character style, as the number before the
+/// footnote text already was. The marker in the body text was always drawn with Western digits,
+/// so an Arabic document with Hindi digits showed 1 above and ١ below (#1510).
+#[test]
+fn footnote_references_take_the_digits_of_their_character_style() {
+    use designcraft_fonts::testing::font_mapping;
+    // Draws ١ as X, every other character as itself.
+    let glyphs = [('N', 'N'), ('o', 'o'), ('.', '.'), (' ', ' '), ('1', '1'), ('\u{661}', 'X')];
+    designcraft_fonts::FontDb::global().add_font(font_mapping("DC Test Note Digits", &glyphs).unwrap());
+    let font = |d: &mut Document, sid| {
+        let st = d.story_mut(sid).unwrap();
+        let n = st.text.len();
+        st.format_chars(0..n, |f| f.over.font_family = Some("DC Test Note Digits".into()));
+    };
+    // The glyph drawn at byte 4 of the first line.
+    let fourth = |cs: &ComposedStory| cs.frames[0].lines[0].glyphs.iter().find(|g| g.byte == 4).map(|g| g.gid).unwrap();
+    let rect = Rect::new(100.0, 100.0, 400.0, 300.0);
+    // A typed Arabic-Indic one, in Hindi digits so it isn't drawn as a Western 1.
+    let (mut d, sid, _) = doc_with("No. \u{661}", rect, ParaAttrs::default());
+    font(&mut d, sid);
+    d.story_mut(sid).unwrap().format_chars(0..7, |f| f.over.digits = Some(designcraft_doc::Digits::Hindi));
+    let typed = fourth(&compose_story(&d, sid, &ComposeOptions::default()));
+    let (mut d, sid, _) = doc_with("No. 1", rect, ParaAttrs::default());
+    font(&mut d, sid);
+    assert_ne!(typed, fourth(&compose_story(&d, sid, &ComposeOptions::default())), "١ and 1 are different glyphs");
+    // The first footnote's reference, whose character style alone sets Hindi digits.
+    let (mut d, sid, _) = doc_with("No. ", rect, ParaAttrs::default());
+    d.story_mut(sid).unwrap().insert_note(4, "Note.", ParaFormat::default());
+    font(&mut d, sid);
+    let chars = designcraft_doc::CharAttrs { digits: Some(designcraft_doc::Digits::Hindi), ..Default::default() };
+    std::sync::Arc::make_mut(&mut d.styles).character.push(designcraft_doc::CharacterStyle {
+        name: "Note Reference".into(),
+        based_on: None,
+        chars,
+        shortcut: String::new(),
+    });
+    d.footnote_options.ref_char_style = "Note Reference".into();
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    assert_eq!(fourth(&cs), typed, "the reference is drawn as ١");
+}
+
 #[test]
 fn digits_option_draws_page_numbers_and_list_numbers_in_that_script() {
     use designcraft_doc::{Digits, ListType};
