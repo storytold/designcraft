@@ -62,8 +62,13 @@ impl ScopedFonts<'_> {
             return false;
         }
         let face = self.face(family, style);
+        Self::is_named_style(&face, family, style) || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == norm(style)))
+    }
+
+    /// Is `face`, found for `family`, named `style` by its own style name or, for an optical-size
+    /// face, its WWS names? Not by an alias: a Light face's legacy subfamily is often "Regular".
+    fn is_named_style(face: &FontFace, family: &str, style: &str) -> bool {
         norm(&face.style) == norm(style)
-            || (face.coords.is_empty() && face.style_aliases.iter().any(|alias| norm(alias) == norm(style)))
             // An optical-size face asked for by its WWS names.
             || face.wws.as_ref().is_some_and(|w| w.0.eq_ignore_ascii_case(family) && norm(&w.1) == norm(style))
     }
@@ -258,6 +263,13 @@ impl ScopedFonts<'_> {
 
     fn find_or_load(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
         if let Some(f) = self.find(family, style) {
+            // Only the document's fonts, without a face named that style (the closest style, or a
+            // Light face whose legacy subfamily is "Regular"): the installed family, not loaded
+            // yet, may have one (#2619).
+            #[cfg(not(target_arch = "wasm32"))]
+            if !style.contains('{') && !Self::is_named_style(&f, family, style) && !self.db.is_loaded(family) && self.db.load_cataloged(family) {
+                return self.find(family, style);
+            }
             return Some(f);
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -316,7 +328,7 @@ impl ScopedFonts<'_> {
     /// `Style {wght:650,wdth:90}`: the named style's font at those axis values, made on first use.
     fn instance(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
         let open = style.find('{')?;
-        let base = self.find(family, style[..open].trim())?;
+        let base = self.find_or_load(family, style[..open].trim())?;
         if base.skrifa().is_none_or(|f| f.axes().is_empty()) {
             return Some(base);
         }
@@ -359,17 +371,23 @@ impl ScopedFonts<'_> {
             return self.instance(family, style);
         }
         let faces = self.db.read_faces();
-        // The document's fonts first: they stand in for other fonts of the same name.
+        // The document's fonts first: they stand in for other fonts of the same name and style,
+        // and add to the other styles of their family (#2619).
         let named = |f: &&Arc<FontFace>| f.family.eq_ignore_ascii_case(family);
         let own: Vec<&Arc<FontFace>> = self.own().iter().filter(named).collect();
-        let mut cands: Vec<&Arc<FontFace>> = if own.is_empty() { faces.iter().filter(named).collect() } else { own };
+        // An installed face of a style the document has is replaced by it, so it isn't a candidate either.
+        let kept = |f: &&Arc<FontFace>| !own.iter().any(|o| norm(&o.style) == norm(&f.style));
+        let mut cands: Vec<&Arc<FontFace>> = own.iter().copied().chain(faces.iter().filter(named).filter(kept)).collect();
         // No face of that typographic family: the family may be a WWS name, whose faces carry
         // their WWS style names.
         let by_wws = cands.is_empty();
         if by_wws {
             let aliased = |f: &&Arc<FontFace>| has_wws_family(f, family);
             let own: Vec<&Arc<FontFace>> = self.own().iter().filter(aliased).collect();
-            cands = if own.is_empty() { faces.iter().filter(aliased).collect() } else { own };
+            // These faces are told apart by their WWS style names (see `style_of`), not their typographic ones.
+            let wws_style = |f: &FontFace| norm(f.wws.as_ref().map_or(&f.style, |w| &w.1));
+            let kept = |f: &&Arc<FontFace>| !own.iter().any(|o| wws_style(o) == wws_style(f));
+            cands = own.iter().copied().chain(faces.iter().filter(aliased).filter(kept)).collect();
         }
         if cands.is_empty() {
             return None;
