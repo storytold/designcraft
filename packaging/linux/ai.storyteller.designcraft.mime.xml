@@ -5,12 +5,14 @@
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-designcraft">
     <comment>DesignCraft document</comment>
+    <comment xml:lang="ru">Документ DesignCraft</comment>
     <sub-class-of type="application/zip"/>
     <generic-icon name="ai.storyteller.designcraft"/>
     <glob pattern="*.designcraft"/>
   </mime-type>
   <mime-type type="application/vnd.adobe.indesign-idml-package">
     <comment>IDML document</comment>
+    <comment xml:lang="ru">Документ IDML</comment>
     <sub-class-of type="application/zip"/>
     <glob pattern="*.idml"/>
   </mime-type>
