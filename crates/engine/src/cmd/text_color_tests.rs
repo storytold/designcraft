@@ -179,3 +179,214 @@ fn integration_color_swap_validates_new_fill_before_any_edit() {
     assert_eq!(s.doc().unwrap().history.undo.len(), before.history.undo.len());
     assert_eq!(s.journal, journal);
 }
+
+/// The Gradient Swatch tool on selected text sets the characters' gradient vector, in the text
+/// space of their frame, and leaves the frame's fill alone; reset lays it across the frame again.
+#[test]
+fn a_gradient_dragged_across_selected_text_sets_the_texts_vector() {
+    let (mut s, sid) = setup("hello world");
+    let frame = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().frames[0];
+    // The frame moved: the vector is in its text space, not the spread's.
+    s.execute("transform.move", &json!({"ids": [frame.0], "dx": 100, "dy": 50})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    let frame_fill = s.doc().unwrap().doc.item(frame).unwrap().fill.clone();
+    s.execute("type.gradient", &json!({"from": [146, 100], "to": [246, 100]})).unwrap();
+    let a = attrs(&mut s);
+    let v: Vec<f64> = a["fillGradient"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    let d = &s.doc().unwrap().doc;
+    let it = d.item(frame).unwrap();
+    let to_text = (d.parent_xf(&d.find(frame).unwrap()) * d.text_xf(it)).inverse();
+    let (a0, b0) = (to_text * designcraft_geom::Point::new(146.0, 100.0), to_text * designcraft_geom::Point::new(246.0, 100.0));
+    assert!((v[0] - a0.x).abs() < 1e-6 && (v[2] - b0.x).abs() < 1e-6 && (v[1] - a0.y).abs() < 1e-6, "{v:?}");
+    assert_eq!(d.item(frame).unwrap().fill, frame_fill, "the frame's fill is untouched");
+    // Only the selected characters.
+    s.execute("text.select", &json!({"story":sid,"anchor":7,"focus":9})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null());
+    // Reset, and refusals.
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    s.execute("type.gradient", &json!({"reset": true})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null());
+    assert!(s.execute("type.gradient", &json!({"from": [1, 1], "to": [1, 1]})).is_err());
+    assert!(s.execute("type.gradient", &json!({})).is_err());
+}
+
+/// A selection running through two threaded frames: each frame's characters take the drag in
+/// their own frame's text space, so the second frame's text isn't offset by the first's place.
+#[test]
+fn a_gradient_across_threaded_frames_is_in_each_frames_own_space() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let long = "word ".repeat(80);
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 76], "content": "text", "text": long})).unwrap();
+    let sid = a["story"].as_u64().unwrap();
+    let a = a["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 600], "content": "text"})).unwrap()["id"].as_u64().unwrap();
+    // Moved: its text space is no longer the spread's (a new frame's path is in spread space).
+    s.execute("transform.move", &json!({"ids": [b], "dx": 100, "dy": 50})).unwrap();
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    let cs = s.cache.get(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), None);
+    let split = cs.frames.iter().find(|f| f.frame.0 == b).map(|f| f.range.start).expect("text runs on into the second frame");
+    assert!(split > 0);
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": split + 10})).unwrap();
+    s.execute("type.gradient", &json!({"from": [40, 50], "to": [120, 50]})).unwrap();
+    let vector = |s: &mut Session, at: usize| {
+        s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at + 1})).unwrap();
+        attrs(s)["fillGradient"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<_>>()
+    };
+    let (first, second) = (vector(&mut s, 0), vector(&mut s, split + 2));
+    assert_ne!(first, second, "each frame has its own vector");
+    // Each is the drag in its own frame's text space.
+    let d = &s.doc().unwrap().doc;
+    for (id, v) in [(a, &first), (b, &second)] {
+        let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+        let to_text = (d.parent_xf(&d.find(designcraft_doc::ItemId(id)).unwrap()) * d.text_xf(it)).inverse();
+        let p = to_text * designcraft_geom::Point::new(40.0, 50.0);
+        assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "{id}: {v:?}");
+    }
+}
+
+/// Two threaded frames, the second moved, with the story running on into it: (session, story,
+/// first frame, second frame, where the second frame's text starts).
+fn threaded_pair() -> (Session, u64, u64, u64, usize) {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let a = s.execute("frame.create", &json!({"rect": [36, 36, 136, 76], "content": "text", "text": "word ".repeat(80)})).unwrap();
+    let sid = a["story"].as_u64().unwrap();
+    let a = a["id"].as_u64().unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 600], "content": "text"})).unwrap()["id"].as_u64().unwrap();
+    s.execute("transform.move", &json!({"ids": [b], "dx": 100, "dy": 50})).unwrap();
+    s.execute("text.thread", &json!({"from": a, "to": b})).unwrap();
+    let cs = s.cache.get(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), None);
+    let split = cs.frames.iter().find(|f| f.frame.0 == b).map(|f| f.range.start).expect("text runs on into the second frame");
+    (s, sid, a, b, split)
+}
+
+/// The drag from (40, 50) as a point in frame `id`'s text space, and character `at`'s vector start.
+fn drag_start_in(s: &mut Session, id: u64, sid: u64, at: usize) -> (designcraft_geom::Point, [f64; 2]) {
+    s.execute("text.select", &json!({"story": sid, "anchor": at, "focus": at + 1})).unwrap();
+    let v: Vec<f64> = attrs(s)["fillGradient"].as_array().expect("a vector").iter().map(|x| x.as_f64().unwrap()).collect();
+    let d = &s.doc().unwrap().doc;
+    let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+    let to_text = (d.parent_xf(&d.find(designcraft_doc::ItemId(id)).unwrap()) * d.text_xf(it)).inverse();
+    (to_text * designcraft_geom::Point::new(40.0, 50.0), [v[0], v[1]])
+}
+
+/// A selection wholly inside a later threaded frame takes the drag in that frame's text space.
+#[test]
+fn a_gradient_on_text_in_a_later_threaded_frame_is_in_that_frames_space() {
+    let (mut s, sid, _, b, split) = threaded_pair();
+    s.execute("text.select", &json!({"story": sid, "anchor": split + 2, "focus": split + 12})).unwrap();
+    s.execute("type.gradient", &json!({"from": [40, 50], "to": [120, 50]})).unwrap();
+    let (p, v) = drag_start_in(&mut s, b, sid, split + 4);
+    assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "{v:?} vs {p:?}");
+}
+
+/// Overset text past the last threaded frame takes the drag in the last frame's text space, so
+/// it sits right when the text later flows into that frame.
+#[test]
+fn a_gradient_on_overset_text_is_in_the_last_frames_space() {
+    let (mut s, sid, _, b, _) = threaded_pair();
+    let len = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len();
+    s.execute("text.select", &json!({"story": sid, "anchor": len, "focus": len})).unwrap();
+    s.execute("text.insert", &json!({"text": "word ".repeat(400)})).unwrap();
+    let len = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len();
+    let cs = s.cache.get(&s.doc().unwrap().doc, designcraft_doc::StoryId(sid), None);
+    let shown = cs.frames.last().map(|f| f.range.end).unwrap();
+    assert!(shown + 20 < len, "the story is overset");
+    s.execute("text.select", &json!({"story": sid, "anchor": len - 12, "focus": len - 2})).unwrap();
+    s.execute("type.gradient", &json!({"from": [40, 50], "to": [120, 50]})).unwrap();
+    let (p, v) = drag_start_in(&mut s, b, sid, len - 8);
+    assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "{v:?} vs {p:?}");
+}
+
+/// With the first of two threaded frames selected, the characters drawn in the second take the
+/// drag in the second frame's text space.
+#[test]
+fn a_gradient_on_a_selected_threaded_frame_is_in_each_frames_own_space() {
+    let (mut s, sid, a, b, split) = threaded_pair();
+    s.execute("tool.select", &json!({"tool": "selection"})).unwrap();
+    s.execute("selection.set", &json!({"ids": [a]})).unwrap();
+    s.execute("type.gradient", &json!({"from": [40, 50], "to": [120, 50]})).unwrap();
+    for (id, at) in [(a, 2), (b, split + 2)] {
+        let (p, v) = drag_start_in(&mut s, id, sid, at);
+        assert!((v[0] - p.x).abs() < 1e-6 && (v[1] - p.y).abs() < 1e-6, "frame {id}: {v:?} vs {p:?}");
+    }
+}
+
+/// Selected text in a table cell gets the vector; the story around the table does not.
+#[test]
+fn a_gradient_on_cell_text_stays_in_the_cell() {
+    let (mut s, sid) = setup("hello world");
+    let all = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().len();
+    s.execute("text.select", &json!({"story": sid, "anchor": all, "focus": all})).unwrap();
+    s.execute("table.insert", &json!({"rows": 1, "cols": 1})).unwrap();
+    s.execute("text.insert", &json!({"text": "cell", "raw": true})).unwrap();
+    for _ in 0..4 {
+        s.execute("text.move", &json!({"dir": "left", "extend": true})).unwrap();
+    }
+    assert!(s.doc().unwrap().selection.text.is_some_and(|t| t.cell.is_some() && !t.is_caret()));
+    s.execute("type.gradient", &json!({"from": [0, 0], "to": [100, 0]})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_array(), "the cell's text");
+    s.execute("text.select", &json!({"story": sid, "anchor": 0, "focus": 5})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null(), "not the story's own text: {}", attrs(&mut s)["fillGradient"]);
+}
+
+/// Switching from the Type tool to the Gradient Swatch tool keeps the text selected (any other
+/// tool selects its frame instead); with the frame selected, `type.gradient` sets the vector on its
+/// whole text.
+#[test]
+fn the_gradient_swatch_tool_keeps_the_text_and_takes_a_whole_frame() {
+    let (mut s, sid) = setup("hello world");
+    let frame = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap().frames[0];
+    s.execute("tool.select", &json!({"tool": "type"})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    s.execute("tool.select", &json!({"tool": "gradientSwatch"})).unwrap();
+    assert!(s.doc().unwrap().selection.text.is_some(), "the text stays selected");
+    s.execute("tool.select", &json!({"tool": "selection"})).unwrap();
+    assert!(s.doc().unwrap().selection.text.is_none());
+    assert_eq!(s.doc().unwrap().selection.items, vec![frame], "the frame instead");
+    // The frame selected: the whole story.
+    s.execute("type.gradient", &json!({"from": [0, 0], "to": [100, 0]})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":6,"focus":11})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_array(), "the last word too");
+}
+
+/// Reset lays the gradient across the frame again even when the character style sets a vector:
+/// the characters get an explicit "no vector", which also survives saving.
+#[test]
+fn reset_overrides_a_character_styles_gradient_vector() {
+    let (mut s, sid) = setup("hello world");
+    s.execute("style.character.create", &json!({"name": "Swept", "chars": {"fillGradient": [0, 0, 50, 0]}})).unwrap();
+    s.execute("text.select", &json!({"story":sid,"anchor":0,"focus":5})).unwrap();
+    s.execute("style.character.apply", &json!({"name": "Swept"})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_array(), "the style's vector");
+    s.execute("type.gradient", &json!({"reset": true})).unwrap();
+    assert!(attrs(&mut s)["fillGradient"].is_null(), "reset wins over the style");
+    let story = s.doc().unwrap().doc.story(designcraft_doc::StoryId(sid)).unwrap();
+    let over = story.format_after(0).over.clone();
+    assert_eq!(over.fill_gradient, Some(None));
+    let back: designcraft_doc::CharAttrs = serde_json::from_value(serde_json::to_value(&over).unwrap()).unwrap();
+    assert_eq!(back.fill_gradient, Some(None), "kept through saving");
+}
+
+/// Two text frames selected (Formatting Affects Text): each story takes the drag in its own
+/// frame's text space, so a frame elsewhere on the page shows it where it was made too.
+#[test]
+fn a_gradient_dragged_over_two_frames_is_placed_in_each() {
+    let mut s = Session::new();
+    s.execute("file.new", &json!({})).unwrap();
+    let a = s.execute("frame.create", &json!({"rect": [72, 72, 272, 172], "content": "text", "text": "one"})).unwrap();
+    let b = s.execute("frame.create", &json!({"rect": [72, 300, 272, 400], "content": "text", "text": "two"})).unwrap();
+    let ids = [a["id"].as_u64().unwrap(), b["id"].as_u64().unwrap()];
+    s.execute("selection.set", &json!({"ids": ids})).unwrap();
+    s.execute("type.gradient", &json!({"from": [100, 350], "to": [200, 350]})).unwrap();
+    let d = &s.doc().unwrap().doc;
+    for (id, key) in [(ids[0], &a), (ids[1], &b)] {
+        let it = d.item(designcraft_doc::ItemId(id)).unwrap();
+        let to_text = (d.parent_xf(&d.find(designcraft_doc::ItemId(id)).unwrap()) * d.text_xf(it)).inverse();
+        let want = to_text * designcraft_geom::Point::new(100.0, 350.0);
+        let story = d.story(designcraft_doc::StoryId(key["story"].as_u64().unwrap())).unwrap();
+        let v = story.format_after(0).over.fill_gradient.flatten().expect("a vector on the story");
+        assert!((v[0] - want.x).abs() < 1e-6 && (v[1] - want.y).abs() < 1e-6, "frame {id}: {v:?} vs {want:?}");
+    }
+}

@@ -144,6 +144,7 @@ fn shaping_key(p: &CharProps) -> CharProps {
         skew: d.skew,
         fill: d.fill,
         fill_tint: d.fill_tint,
+        fill_gradient: d.fill_gradient,
         stroke: d.stroke,
         stroke_tint: d.stroke_tint,
         stroke_weight: d.stroke_weight,
@@ -257,6 +258,7 @@ impl StyleTable<'_> {
         let rs = RunStyle {
             fill: p.fill.clone(),
             fill_tint: p.fill_tint,
+            fill_gradient: p.fill_gradient,
             stroke: p.stroke.clone(),
             stroke_tint: p.stroke_tint,
             stroke_weight: p.stroke_weight,
