@@ -878,6 +878,23 @@ fn kp_pass(input: PassInput<'_>) -> Option<Vec<Break>> {
     Some(breaks_from_positions(items, item_glyphs, glyphs, &chain))
 }
 
+/// Where the visible glyphs of a line `start..end` stop: before its trailing spaces, and before
+/// the spaces in front of a forced line break (the break glyph leaves the range with them, so the
+/// line is as wide as its last word).
+fn visible_end(glyphs: &[Glyph], start: usize, end: usize) -> usize {
+    let spaces = |mut at: usize| {
+        while at > start && glyphs.get(at - 1).is_some_and(Glyph::is_space) {
+            at -= 1;
+        }
+        at
+    };
+    let vis_end = spaces(end);
+    if vis_end > start + 1 && glyphs.get(vis_end - 1).is_some_and(|g| is_forced(g.ch)) && glyphs.get(vis_end - 2).is_some_and(Glyph::is_space) {
+        return spaces(vis_end - 1);
+    }
+    vis_end
+}
+
 fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: &[usize]) -> Vec<Break> {
     let n = glyphs.len();
     let mut out = Vec::with_capacity(chain.len());
@@ -894,10 +911,7 @@ fn breaks_from_positions(items: &[Item], ig: &[usize], glyphs: &[Glyph], chain: 
             Kind::Glue | Kind::Box => (ig[b], false, false),
         };
         // Trim trailing spaces from the visible range; skip leading spaces of the next line.
-        let mut vis_end = end;
-        while vis_end > start && glyphs[vis_end - 1].is_space() {
-            vis_end -= 1;
-        }
+        let vis_end = visible_end(glyphs, start, end);
         let mut next = end;
         while next < n && glyphs[next].is_space() {
             next += 1;
@@ -1030,10 +1044,7 @@ pub fn greedy(
         }
         let (end, hyphen, forced) = brk.unwrap_or((n, false, true));
         hyphens = if hyphen { hyphens + 1 } else { 0 };
-        let mut vis_end = end;
-        while vis_end > start && glyphs[vis_end - 1].is_space() {
-            vis_end -= 1;
-        }
+        let vis_end = visible_end(glyphs, start, end);
         let mut next = end;
         while next < n && glyphs[next].is_space() {
             next += 1;

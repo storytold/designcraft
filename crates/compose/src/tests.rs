@@ -46,6 +46,28 @@ fn all_lines(cs: &ComposedStory) -> Vec<&Line> {
     cs.frames.iter().flat_map(|f| f.lines.iter()).collect()
 }
 
+/// The spaces before a forced line break take no room in the line, as the spaces a soft break
+/// trims take none: a right-aligned "Total ⏎Eclipse" ends its first line on the `l` at the frame's
+/// edge (InDesign sets it so; with the space counted the word stood a space short of the edge).
+#[test]
+fn spaces_before_a_forced_line_break_do_not_count_in_the_line() {
+    let rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+    let end_of_first = |text: &str, composer| {
+        let para = ParaAttrs { align: Some(Align::Right), composer: Some(composer), ..Default::default() };
+        let (d, sid, _) = doc_with(text, rect, para);
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = all_lines(&cs)[0];
+        let last = l.glyphs.iter().rev().find(|g| g.visible && g.adv > 0.0 && !g.rendered_char.is_whitespace()).unwrap();
+        last.x + last.adv
+    };
+    for composer in [designcraft_doc::Composer::Paragraph, designcraft_doc::Composer::SingleLine] {
+        let plain = end_of_first("Total\u{2028}Eclipse", composer);
+        let spaced = end_of_first("Total \u{2028}Eclipse", composer);
+        assert!((plain - 200.0).abs() < 0.01, "{composer:?}: the line without a space ends at the edge: {plain}");
+        assert!((spaced - plain).abs() < 0.01, "{composer:?}: the space before the break moved the line: {spaced} vs {plain}");
+    }
+}
+
 /// A long run of soft hyphens composes: each one's hyphen width comes from the last other glyph,
 /// kept as the breaker goes (it searched back over the whole run for every one).
 #[test]
@@ -2355,16 +2377,20 @@ fn line_before_a_break_character_is_a_last_line() {
         (PAGE_BREAK, Align::FullyJustified, true),
         (FORCED_LINE_BREAK, Align::LeftJustified, true),
     ] {
-        // A space after the break is skipped and does not keep the break from moving the text.
-        let text = format!("one two three{brk} four five six");
-        let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 300.0), ParaAttrs { align: Some(align), ..Default::default() });
-        d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
-        let cs = compose_story(&d, sid, &ComposeOptions::default());
-        let l = &cs.frames[0].lines[0];
-        let full = (l.end_x - l.x1).abs() < 0.6;
-        assert_eq!(full, justified, "{brk:?} {align:?}: line ends at {} of {}", l.end_x, l.x1);
-        if brk == COLUMN_BREAK {
-            assert_eq!(all_lines(&cs)[1].column, 1, "the text after a column break starts the next column");
+        // A space after the break is skipped and does not keep the break from moving the text;
+        // a space before it is trimmed and does not hide the break.
+        for before in ["", " "] {
+            let text = format!("one two three{before}{brk} four five six");
+            let (mut d, sid, fid) = doc_with(&text, Rect::new(0.0, 0.0, 400.0, 300.0), ParaAttrs { align: Some(align), ..Default::default() });
+            d.item_mut(fid).unwrap().text_frame_mut().unwrap().options.columns = 2;
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let l = &cs.frames[0].lines[0];
+            let full = (l.end_x - l.x1).abs() < 0.6;
+            assert_eq!(full, justified, "{brk:?} {align:?} {before:?}: line ends at {} of {}", l.end_x, l.x1);
+            assert!(l.glyphs.iter().any(|g| text[g.byte..].starts_with(brk)), "{brk:?} {before:?}: the break glyph stays in the line");
+            if brk == COLUMN_BREAK {
+                assert_eq!(all_lines(&cs)[1].column, 1, "{before:?}: the text after a column break starts the next column");
+            }
         }
     }
 }
