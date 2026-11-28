@@ -1078,7 +1078,8 @@ fn wrap_obstacles(
     let xf = parent * it.xf;
     let left = || left_page(parent.transform_rect_bbox(it.bounds()).center().x);
     // An exclusion whose mode came back None (nothing visible to wrap) is left out.
-    if it.wrap.mode != WrapMode::None {
+    // A group's wrap acts on other text: not on the text of a frame inside that group.
+    if it.wrap.mode != WrapMode::None && !group_holds(it, skip, 0) {
         out.extend(Some(exclusion(doc, it, xf, inv, left())).filter(|e| e.mode != WrapMode::None));
     }
     match &it.content {
@@ -1092,6 +1093,13 @@ fn wrap_obstacles(
         }
         _ => {}
     }
+}
+
+/// Whether `it` is a group with the item `id` somewhere inside it, in any of its states.
+fn group_holds(it: &Item, id: ItemId, depth: usize) -> bool {
+    matches!(it.content, Content::Group { .. })
+        && depth <= MAX_WRAP_DEPTH
+        && it.children().iter().any(|c| c.id == id || group_holds(c, id, depth + 1))
 }
 
 /// Adds to `exclusions` the objects on `sp` that wrap the text of frame `item`. Only objects that
