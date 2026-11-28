@@ -139,6 +139,34 @@ fn graphic_layer_options_survive_for_each_placement_of_a_shared_asset() {
 }
 
 #[test]
+fn import_idml_linked_converts_each_resolved_link_before_reading_the_next() {
+    let frames = [frame(1, 0.0, 0.0, &image(1, PHOTO, None)), frame(2, 100.0, 0.0, &image(2, "file:///tmp/second.png", None))];
+    let reads = std::cell::Cell::new(0usize);
+    let links_seen = std::cell::RefCell::new(Vec::new());
+    let imported = import_idml_linked(
+        &package(&frames),
+        &|uri| {
+            let n = reads.get();
+            assert_eq!(links_seen.borrow().len(), n, "prior link must be handed off before reading {uri}");
+            reads.set(n + 1);
+            Some(vec![uri.len() as u8; 16])
+        },
+        &Default::default(),
+        &|_, asset| {
+            let link = asset.link.clone().unwrap_or_default();
+            links_seen.borrow_mut().push(link.clone());
+            let source =
+                designcraft_doc::LinkedSource { path: link, relative: None, document: None, len: asset.data.len(), fingerprint: None, hash: None };
+            asset.data = designcraft_doc::AssetData::linked(source);
+            asset.storage = designcraft_doc::Storage::Linked;
+        },
+    )
+    .unwrap();
+    assert_eq!((reads.get(), links_seen.borrow().len(), imported.document.assets.len()), (2, 2, 2));
+    assert!(imported.document.assets.values().all(|a| a.storage == designcraft_doc::Storage::Linked && a.data.embedded_bytes().is_none()));
+}
+
+#[test]
 fn malformed_native_graphic_layer_parents_cannot_cycle_or_overflow_xml_depth() {
     let mut d = import_idml(&package(&[frame(1, 0.0, 0.0, &image(1, PHOTO, None))])).unwrap();
     let Content::Graphic(g) = &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut d.spreads[0]).items[0]).content else {

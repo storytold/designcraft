@@ -5,7 +5,7 @@
 //! link's trailing names beside the package (where a package moved from its author's computer
 //! keeps them). Links to other computers and devices are not followed
 //! ([`crate::io::document_path`]). Only regular files that hold an image or a graphic format are
-//! read, and only up to [`MAX_LINKED_FILE_BYTES`].
+//! read, and only up to [`designcraft_doc::asset_data::MAX_LINKED_BYTES`].
 
 use designcraft_doc::Document;
 use serde_json::{Value, json};
@@ -153,20 +153,7 @@ fn with_pdf_layer_variants(doc: &Document, embed: bool) -> Result<Option<Documen
 /// beside `package` (the package's file, if it has one), so the automation read root applies to
 /// the paths the package names, and its PDF crops resolved.
 pub(crate) fn import_idml_confined(bytes: &[u8], package: Option<&std::path::Path>) -> designcraft_idml::Result<Document> {
-    let read = |link: &str| -> Option<Vec<u8>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            read_packaged_link(link, package).map(|(_, data, _)| data)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (link, package);
-            None
-        }
-    };
-    let mut d = designcraft_idml::import_idml_with(bytes, &read)?;
-    resolve_pdf_crops(&mut d);
-    Ok(d)
+    import_within(bytes, package, &std::collections::HashMap::new(), designcraft_doc::asset_data::MAX_LINKED_BYTES).map(|(document, _, _)| document)
 }
 
 /// Import IDML bytes; `package` is the package's file (its folder is where links are looked for).
@@ -185,13 +172,52 @@ fn import_report_with_previews(
     package: Option<&std::path::Path>,
     previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
 ) -> Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
+    import_within(bytes, package, previews, designcraft_doc::asset_data::MAX_LINKED_BYTES).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ResolvedFile {
+    fingerprint: Option<designcraft_doc::Fingerprint>,
+    /// Populated once the first placement of this resolved file is linked, so other pages,
+    /// PDF crops, or link spellings of the same file reuse its [`designcraft_doc::SourceKey`],
+    /// content hash, and resident store entry instead of reading and hashing the file again.
+    linked: Option<(designcraft_doc::AssetData, String)>,
+}
+
+fn import_within(
+    bytes: &[u8],
+    package: Option<&std::path::Path>,
+    previews: &std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
+    cap: u64,
+) -> designcraft_idml::Result<(Document, Vec<String>, std::collections::HashMap<String, designcraft_doc::StoryId>)> {
+    crate::asset_io::install();
     #[cfg(not(target_arch = "wasm32"))]
-    let resolved = std::cell::RefCell::new(std::collections::HashMap::new());
+    let resolved_links = std::cell::RefCell::new(std::collections::HashMap::<String, (String, bool)>::new());
+    #[cfg(not(target_arch = "wasm32"))]
+    let resolved_files = std::cell::RefCell::new(std::collections::HashMap::<String, ResolvedFile>::new());
+    #[cfg(not(target_arch = "wasm32"))]
+    let crop_sizes =
+        std::cell::RefCell::new(std::collections::HashMap::<(designcraft_doc::SourceKey, u32, designcraft_doc::PdfCrop), (f64, f64)>::new());
+    #[cfg(target_arch = "wasm32")]
+    let _ = cap;
     let read = |link: &str| -> Option<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (path, data, fingerprint) = read_packaged_link(link, package)?;
-            resolved.borrow_mut().insert(link.to_string(), (path, fingerprint, data.len() as u64));
+            let cached = resolved_links.borrow().get(link).cloned();
+            if let Some((path, _)) = cached
+                && let Some((data, _)) = resolved_files.borrow().get(&path).and_then(|file| file.linked.as_ref())
+                && let Some(bytes) = data.resident()
+            {
+                resolved_links.borrow_mut().insert(link.to_string(), (path, true));
+                return Some((*bytes).clone());
+            }
+            let (path, data, fingerprint) = read_packaged_link(link, package, cap)?;
+            resolved_links.borrow_mut().insert(link.to_string(), (path.clone(), false));
+            resolved_files
+                .borrow_mut()
+                .entry(path)
+                .and_modify(|file| file.fingerprint = fingerprint)
+                .or_insert(ResolvedFile { fingerprint, linked: None });
             Some(data)
         }
         #[cfg(target_arch = "wasm32")]
@@ -200,29 +226,59 @@ fn import_report_with_previews(
             None
         }
     };
-    let designcraft_idml::Imported { mut document, warnings, story_ids } =
-        designcraft_idml::import_idml_report_with_previews(bytes, &read, previews).map_err(|e| EngineError::Other(e.to_string()))?;
-    resolve_pdf_crops(&mut document);
-    #[cfg(not(target_arch = "wasm32"))]
-    let document = {
-        let mut document = document;
-        for asset in document.assets.values_mut() {
-            if let Some((path, fingerprint, len)) = asset.link.as_ref().and_then(|link| resolved.borrow().get(link).cloned()) {
-                // Relocated packages must also use the new path for preflight and link updates.
-                std::sync::Arc::make_mut(asset).set_link(Some(path), fingerprint);
-                // Bytes read from the file stay a link to it; graphics embedded in the IDML (whose
-                // size differs from the file's, or that share no read) stay embedded.
-                if asset.data.embedded_bytes().is_some_and(|b| b.len() as u64 == len) {
-                    link_read_file(std::sync::Arc::make_mut(asset), package);
-                } else if asset.proxy.is_some() {
-                    // An embedded graphic draws its own bytes.
-                    std::sync::Arc::make_mut(asset).proxy = None;
+    let link_asset = |link: &str, asset: &mut designcraft_doc::Asset| {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some((path, from_resident)) = resolved_links.borrow().get(link).cloned() else { return };
+            let (fingerprint, existing) = {
+                let files = resolved_files.borrow();
+                let Some(file) = files.get(&path) else { return };
+                (file.fingerprint, file.linked.as_ref().map(|(data, hash)| (data.key(), hash.clone())))
+            };
+            // Relocated packages must also use the new path for preflight and link updates.
+            asset.set_link(Some(path.clone()), fingerprint);
+            // Resolve fixed PDF page boxes while the bytes are still in memory, before linking
+            // moves them to external storage.
+            let crop_size = (!asset.content_box_pending())
+                .then(|| asset.data.embedded_bytes().cloned().and_then(|b| super::file::crop_pdf_from(asset, &b)))
+                .flatten();
+            if let Some((data, hash)) = link_read_file_with(asset, package, existing, from_resident) {
+                if let Some(size) = crop_size {
+                    crop_sizes.borrow_mut().insert((data.key(), asset.page, asset.pdf_crop), size);
+                }
+                if let Some(file) = resolved_files.borrow_mut().get_mut(&path)
+                    && file.linked.as_ref().map(|(d, _)| d.key()) != Some(data.key())
+                {
+                    file.linked = Some((data, hash));
                 }
             }
         }
-        resolve_packaged_links(&mut document, package);
-        document
+        #[cfg(target_arch = "wasm32")]
+        let _ = (link, asset);
     };
+    let designcraft_idml::Imported { mut document, warnings, story_ids } = designcraft_idml::import_idml_linked(bytes, &read, previews, &link_asset)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    for asset in document.assets.values_mut() {
+        if asset.storage != designcraft_doc::Storage::Linked
+            && let Some(link) = asset.link.as_deref()
+            && let Some((path, _)) = resolved_links.borrow().get(link).cloned()
+        {
+            // Embedded graphics sharing a relocated link URI also keep the relocated path.
+            let keep_original =
+                !std::path::Path::new(link).is_relative() && crate::io::document_path(link, package).is_ok_and(|p| crate::io::is_file(&p));
+            if !keep_original {
+                let asset = std::sync::Arc::make_mut(asset);
+                asset.set_link(Some(path), None);
+                asset.proxy = None;
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    resolve_pdf_crops(&mut document, &crop_sizes.borrow());
+    #[cfg(target_arch = "wasm32")]
+    resolve_pdf_crops(&mut document, &std::collections::HashMap::new());
+    #[cfg(not(target_arch = "wasm32"))]
+    resolve_packaged_links(&mut document, package);
     Ok((document, warnings, story_ids))
 }
 
@@ -230,21 +286,40 @@ fn import_report_with_previews(
 /// ([`super::links::link_to_file`]), drawn while the file can't be read with a proxy: the
 /// document's preview of it when that shows the whole image ([`preview_proxy`],
 /// [`shows_whole`]), else one made from the file, else the preview.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 fn link_read_file(asset: &mut designcraft_doc::Asset, package: Option<&std::path::Path>) {
-    let Some(bytes) = asset.data.embedded_bytes().cloned() else { return };
-    let Some(path) = asset.link.clone() else { return };
+    let _ = link_read_file_with(asset, package, None, false);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn link_read_file_with(
+    asset: &mut designcraft_doc::Asset,
+    package: Option<&std::path::Path>,
+    existing: Option<(designcraft_doc::SourceKey, String)>,
+    from_resident: bool,
+) -> Option<(designcraft_doc::AssetData, String)> {
+    let bytes = asset.data.embedded_bytes().cloned()?;
+    let path = asset.link.clone()?;
     let preview = asset.proxy.take().and_then(|p| preview_proxy(&p));
     let (whole, fallback) = match preview {
         Some(p) if shows_whole(asset, &bytes, &p) => (Some(p), None),
         p => (None, p),
     };
+    let (key, hash) = match existing {
+        Some((key, known)) if from_resident => (key, known),
+        Some((key, known)) => {
+            let current = crate::asset_io::content_hash(&bytes);
+            if known == current { (key, known) } else { (designcraft_doc::SourceKey::fresh(), current) }
+        }
+        None => (designcraft_doc::SourceKey::fresh(), crate::asset_io::content_hash(&bytes)),
+    };
     // The fingerprint kept by the read (none for a file just written: its hash tells its bytes).
     let file = super::links::FileLink::of(std::path::Path::new(&path), asset.link_fingerprint);
-    super::links::link_to_file(asset, bytes, file, package, whole);
+    super::links::link_to_file_under(asset, bytes, file, key, hash.clone(), package, whole);
     if asset.storage == designcraft_doc::Storage::Linked && asset.proxy.is_none() {
         asset.proxy = fallback;
     }
+    (asset.storage == designcraft_doc::Storage::Linked).then(|| (asset.data.clone(), hash))
 }
 
 /// A document's stored preview of a linked graphic as a proxy: checked to decode, and made again
@@ -289,7 +364,10 @@ fn shows_whole(asset: &designcraft_doc::Asset, bytes: &[u8], preview: &designcra
 /// `GraphicBounds`; a graphic without bounds takes the box's size. Bounding Box crops interpret
 /// the page's drawing to find the box, so they wait for drawing or export ([`designcraft_render::shown_box`],
 /// [`with_pdf_boxes`]) unless a graphic needs the box's size now.
-pub(crate) fn resolve_pdf_crops(d: &mut Document) {
+fn resolve_pdf_crops(
+    d: &mut Document,
+    known_sizes: &std::collections::HashMap<(designcraft_doc::SourceKey, u32, designcraft_doc::PdfCrop), (f64, f64)>,
+) {
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
@@ -308,7 +386,15 @@ pub(crate) fn resolve_pdf_crops(d: &mut Document) {
     }
     let mut sizes: HashMap<AssetId, (f64, f64)> = HashMap::new();
     for a in d.assets.values_mut() {
-        if a.pdf_crop == PdfCrop::Crop || a.pdf_box.is_some() || (a.content_box_pending() && !no_bounds.contains(&a.id)) {
+        if a.pdf_crop == PdfCrop::Crop || (a.content_box_pending() && !no_bounds.contains(&a.id)) {
+            continue;
+        }
+        if a.pdf_box.is_some() {
+            if no_bounds.contains(&a.id)
+                && let Some(&size) = known_sizes.get(&(a.data.key(), a.page, a.pdf_crop))
+            {
+                sizes.insert(a.id, size);
+            }
             continue;
         }
         let a = Arc::make_mut(a);
@@ -366,10 +452,6 @@ const MAX_LINK_PATH_BYTES: usize = 128 * 1024;
 /// How many trailing folders of a link are tried beside the opened package.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_LINK_SUFFIX_PARTS: usize = 8;
-
-/// Largest linked file read when a package is opened (bytes); bigger files stay missing.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) const MAX_LINKED_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The files to try for `link` in the package at `package`: the link itself, then its trailing
 /// names beside the package (without a package file, only an absolute link). Each is a path
@@ -456,10 +538,10 @@ pub(crate) fn resolve_packaged_links(document: &mut Document, package: Option<&s
 }
 
 /// The first candidate for `link` ([`packaged_link_candidates`]) that is a regular file no larger
-/// than [`MAX_LINKED_FILE_BYTES`] holding an image or a graphic, with its path and the size and
-/// time to keep with its bytes ([`super::links::loaded_fingerprint`]).
+/// than `cap` ([`designcraft_doc::asset_data::MAX_LINKED_BYTES`]) holding an image or a graphic,
+/// with its path and the size and time to keep with its bytes ([`super::links::loaded_fingerprint`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
+fn read_packaged_link(link: &str, package: Option<&std::path::Path>, cap: u64) -> Option<(String, Vec<u8>, Option<designcraft_doc::Fingerprint>)> {
     for path in packaged_link_candidates(link, package) {
         if !crate::io::is_file(&path) {
             continue;
@@ -467,13 +549,13 @@ fn read_packaged_link(link: &str, package: Option<&std::path::Path>) -> Option<(
         // The version about to be read: one that replaces it during the read (a syncing or
         // network file) has other metadata, and the next Links check compares the bytes.
         let Ok(metadata) = crate::io::metadata(&path) else { continue };
-        if metadata.len() > MAX_LINKED_FILE_BYTES {
+        if metadata.len() > cap {
             continue;
         }
         let before = super::datamerge::fingerprint_from(&metadata);
         // At most one byte over the limit, in case the file grew since.
-        let Ok(bytes) = crate::io::read_capped(&path, MAX_LINKED_FILE_BYTES) else { continue };
-        if bytes.len() as u64 > MAX_LINKED_FILE_BYTES || !is_graphic(&bytes) {
+        let Ok(bytes) = crate::io::read_capped(&path, cap) else { continue };
+        if bytes.len() as u64 > cap || !is_graphic(&bytes) {
             continue;
         }
         let loaded = super::links::loaded_fingerprint(Some(before), &bytes);
@@ -907,6 +989,245 @@ mod tests {
         assert!(!is_indd("Brochure.idml", b"PK"));
         assert_eq!(without_document_extension("Brochure.INDD"), "Brochure");
         assert_eq!(without_document_extension("notes.txt"), "notes.txt");
+    }
+
+    #[test]
+    fn packaged_links_respect_cap_link_immediately_and_skip_oversized_metadata() {
+        let dir = std::env::temp_dir().join(format!("dc-idml-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("Links").join("logo.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (idml, png) = linked_idml("/original-computer/project/logo.png", false).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let package = dir.join("x.idml");
+
+        // Over the cap: read_packaged_link skips the file without reading its bytes.
+        let (skipped, _, _) = import_within(&idml, Some(&package), &Default::default(), (png.len() - 1) as u64).unwrap();
+        let skipped_asset = skipped.assets.values().next().unwrap();
+        assert_eq!(skipped_asset.storage, designcraft_doc::Storage::Embedded);
+        assert!(skipped_asset.data.is_empty());
+
+        // Within the cap: imported directly into Storage::Linked (both open and confined import paths).
+        let (linked, _, _) = import_within(&idml, Some(&package), &Default::default(), png.len() as u64).unwrap();
+        let asset = linked.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+        assert!(asset.data.embedded_bytes().is_none());
+        assert_eq!(super::super::links::status_cached(asset, None, &mut Default::default()), "ok");
+
+        let confined = import_idml_confined(&idml, Some(&package)).unwrap();
+        let confined_asset = confined.assets.values().next().unwrap();
+        assert_eq!(confined_asset.storage, designcraft_doc::Storage::Linked);
+        assert!(confined_asset.data.embedded_bytes().is_none());
+
+        // Sparse file above MAX_LINKED_BYTES (1 GiB) is rejected via metadata without reading.
+        let huge = dir.join("Links").join("huge.png");
+        std::fs::File::create(&huge).unwrap().set_len(designcraft_doc::asset_data::MAX_LINKED_BYTES + 1).unwrap();
+        assert!(read_packaged_link("Links/huge.png", Some(&package), designcraft_doc::asset_data::MAX_LINKED_BYTES).is_none());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn rewrite_spreads_xml(idml: &[u8], mut transform: impl FnMut(&str) -> String) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use std::io::{Read, Write};
+        use zip::write::SimpleFileOptions;
+
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(idml))?;
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i)?;
+            let name = entry.name().to_string();
+            let method = entry.compression();
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf)?;
+            if name.starts_with("Spreads/") && name.ends_with(".xml") {
+                let text = String::from_utf8(buf)?;
+                buf = transform(&text).into_bytes();
+            }
+            out.start_file(name, SimpleFileOptions::default().compression_method(method))?;
+            out.write_all(&buf)?;
+        }
+        Ok(out.finish()?.into_inner())
+    }
+
+    #[test]
+    fn linked_pdf_crops_resolve_and_size_frames_without_bounds() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pdf_path = dir.path().join("Links").join("insert.pdf");
+        std::fs::create_dir_all(pdf_path.parent().unwrap()).unwrap();
+        let mut pdf_src = Session::new();
+        pdf_src.execute("file.new", &json!({})).unwrap();
+        pdf_src.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+        let pdf = base64_decode(pdf_src.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap());
+        std::fs::write(&pdf_path, &pdf).unwrap();
+
+        let mut doc_src = Session::new();
+        doc_src.execute("file.new", &json!({})).unwrap();
+        for x in [10, 100] {
+            doc_src.execute("edit.deselectAll", &json!({})).unwrap();
+            doc_src.execute("file.place", &json!({"path": pdf_path, "pdfCrop": "trim", "width": 630, "x": x, "y": 10})).unwrap();
+        }
+        let idml = designcraft_idml::export_idml_with(&doc_src.doc().unwrap().doc, &designcraft_idml::ExportOptions { embed_images: false });
+        // Drop the second placement's GraphicBounds so `resolve_pdf_crops` must also apply the
+        // precomputed crop size to a boundsless frame after linking.
+        let idml = rewrite_spreads_xml(&idml, |xml| {
+            let Some((head, tail)) = xml.rsplit_once("<GraphicBounds ") else { return xml.to_string() };
+            let Some((_, rest)) = tail.split_once("/>") else { return xml.to_string() };
+            format!("{head}{rest}")
+        })
+        .unwrap();
+
+        let imported = import(&idml, Some(&dir.path().join("x.idml"))).unwrap();
+        assert_eq!(imported.assets.len(), 1);
+        let asset = imported.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+        assert!(asset.data.embedded_bytes().is_none());
+        assert_eq!(asset.pdf_crop, designcraft_doc::PdfCrop::Trim);
+        let shown = asset.shown_box().expect("linked PDF trim crop must be resolved");
+        let want = [9.0 / 630.0, 9.0 / 810.0, 621.0 / 630.0, 801.0 / 810.0];
+        assert!(shown.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-4), "{shown:?}");
+        let graphics: Vec<_> = imported.placed_items().into_iter().filter_map(|i| i.graphic().map(|g| g.size)).collect();
+        assert_eq!(graphics.len(), 2);
+        for (w, h) in graphics {
+            assert!((w - 612.0).abs() < 1e-3 && (h - 792.0).abs() < 1e-3, "({w}, {h})");
+        }
+    }
+
+    #[test]
+    fn embedded_graphic_sharing_a_read_link_updates_its_path_and_stays_embedded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("Links").join("illustrations").join("logo.png");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let linked_png = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![200; 16] }.to_png();
+        let embedded_png = designcraft_render::Rendered { width: 4, height: 4, pixels: vec![40; 64] }.to_png();
+        std::fs::write(&path, &linked_png).unwrap();
+
+        let author_uri = r"C:\original-computer\project\Links\illustrations\logo.png";
+        let mut src = Session::new();
+        src.execute("file.new", &json!({})).unwrap();
+        src.execute("file.place", &json!({"base64": base64_encode(&embedded_png), "name": "logo.png", "x": 0, "y": 0})).unwrap();
+        src.execute("edit.deselectAll", &json!({})).unwrap();
+        src.execute("file.place", &json!({"base64": base64_encode(&linked_png), "name": "logo.png", "x": 50, "y": 0})).unwrap();
+        src.edit(|doc, _| {
+            for asset in doc.assets.values_mut() {
+                Arc::make_mut(asset).link = Some(author_uri.into());
+            }
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let idml = designcraft_idml::export_idml_with(&src.doc().unwrap().doc, &designcraft_idml::ExportOptions { embed_images: true });
+        // Strip only the second <Contents> element so the embedded graphic appears first and still
+        // shares its LinkResourceURI with the later linked placement.
+        let idml = rewrite_spreads_xml(&idml, |xml| {
+            let Some((head, tail)) = xml.rsplit_once("<Contents>") else { return xml.to_string() };
+            let Some((_, rest)) = tail.split_once("</Contents>") else { return xml.to_string() };
+            format!("{head}{rest}")
+        })
+        .unwrap();
+
+        let doc = import(&idml, Some(&dir.path().join("x.idml"))).unwrap();
+        assert_eq!(doc.assets.len(), 2);
+        let resolved = std::path::absolute(&path).unwrap().to_string_lossy().into_owned();
+        let embedded = doc.assets.values().find(|a| a.storage == designcraft_doc::Storage::Embedded).unwrap();
+        let linked = doc.assets.values().find(|a| a.storage == designcraft_doc::Storage::Linked).unwrap();
+        assert_eq!(embedded.link.as_deref(), Some(resolved.as_str()));
+        assert!(embedded.proxy.is_none());
+        assert_eq!(embedded.data.embedded_bytes().map(|b| (**b).as_slice()), Some(embedded_png.as_slice()));
+        assert_eq!(linked.link.as_deref(), Some(resolved.as_str()));
+        assert!(linked.data.embedded_bytes().is_none());
+    }
+
+    #[test]
+    fn multi_page_and_aliased_links_to_one_file_share_source_key_and_deduplicate() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pdf_path = dir.path().join("Links").join("insert.pdf");
+        std::fs::create_dir_all(pdf_path.parent().unwrap()).unwrap();
+        let mut pdf_src = Session::new();
+        pdf_src.execute("file.new", &json!({"pages": 2})).unwrap();
+        pdf_src.execute("layout.documentSetup", &json!({"bleed": 9})).unwrap();
+        let pdf = base64_decode(pdf_src.execute("file.exportPdf", &json!({"bleed": true})).unwrap()["base64"].as_str().unwrap());
+        std::fs::write(&pdf_path, &pdf).unwrap();
+
+        let mut src = Session::new();
+        src.execute("file.new", &json!({})).unwrap();
+        let mut ids = Vec::new();
+        for x in [0, 50, 100, 150] {
+            src.execute("edit.deselectAll", &json!({})).unwrap();
+            let placed = src.execute("file.place", &json!({"path": pdf_path, "x": x, "y": 0})).unwrap();
+            let item_id = designcraft_doc::ItemId(placed["id"].as_u64().unwrap());
+            // Give each placement a distinct initial AssetId so the test configures all 4 links/pages/crops.
+            src.edit(|doc, _| {
+                let mut asset = (*doc.assets[&designcraft_doc::AssetId(placed["asset"].as_u64().unwrap())]).clone();
+                asset.id = designcraft_doc::AssetId(doc.alloc());
+                let new_aid = asset.id;
+                doc.assets.insert(new_aid, Arc::new(asset));
+                if let Some(designcraft_doc::Content::Graphic(g)) = doc.item_mut(item_id).map(|i| &mut i.content) {
+                    g.asset = new_aid;
+                }
+                ids.push(new_aid);
+                Ok(Value::Null)
+            })
+            .unwrap();
+        }
+        src.edit(|doc, _| {
+            let specs = [
+                (ids[0], "/author/Links/insert.pdf", 0, designcraft_doc::PdfCrop::Trim),
+                (ids[1], "Links/insert.pdf", 0, designcraft_doc::PdfCrop::Trim),
+                (ids[2], "Links/insert.pdf", 1, designcraft_doc::PdfCrop::Trim),
+                (ids[3], "Links/insert.pdf", 0, designcraft_doc::PdfCrop::Media),
+            ];
+            for (aid, link, page, crop) in specs {
+                let asset = Arc::make_mut(doc.assets.get_mut(&aid).unwrap());
+                asset.link = Some(link.into());
+                asset.page = page;
+                asset.pdf_crop = crop;
+            }
+            Ok(Value::Null)
+        })
+        .unwrap();
+        let idml = designcraft_idml::export_idml_with(&src.doc().unwrap().doc, &designcraft_idml::ExportOptions { embed_images: false });
+        let imported = import(&idml, Some(&dir.path().join("x.idml"))).unwrap();
+
+        // Both URI spellings of page 1 Trim deduplicate once resolved to the same path; page 2 and
+        // Media stay distinct assets, and all 3 share one SourceKey and content hash.
+        assert_eq!(imported.placed_items().len(), 4);
+        assert_eq!(imported.assets.len(), 3);
+        assert!(imported.assets.values().all(|a| a.storage == designcraft_doc::Storage::Linked));
+        let keys: Vec<_> = imported.assets.values().map(|a| a.data.key()).collect();
+        assert!(keys.windows(2).all(|w| w[0] == w[1]), "{keys:?}");
+    }
+
+    #[test]
+    fn link_read_file_with_mints_fresh_source_key_when_reread_bytes_changed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("photo.png");
+        let original = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![10; 16] }.to_png();
+        let modified = designcraft_render::Rendered { width: 2, height: 2, pixels: vec![200; 16] }.to_png();
+        std::fs::write(&path, &original).unwrap();
+
+        let make_asset = |bytes: &[u8]| designcraft_doc::Asset {
+            name: "photo.png".into(),
+            mime: "image/png".into(),
+            link: Some(path.to_str().unwrap().into()),
+            data: designcraft_doc::AssetData::embedded(bytes.to_vec()),
+            ..Default::default()
+        };
+
+        let mut first = make_asset(&original);
+        let (first_data, first_hash) = link_read_file_with(&mut first, None, None, false).unwrap();
+
+        // Same bytes re-read from disk keep the existing SourceKey and hash.
+        let mut same = make_asset(&original);
+        let (same_data, same_hash) = link_read_file_with(&mut same, None, Some((first_data.key(), first_hash.clone())), false).unwrap();
+        assert_eq!(same_data.key(), first_data.key());
+        assert_eq!(same_hash, first_hash);
+
+        // Modified bytes re-read from disk must mint a fresh SourceKey and updated hash.
+        std::fs::write(&path, &modified).unwrap();
+        let mut changed = make_asset(&modified);
+        let (changed_data, changed_hash) = link_read_file_with(&mut changed, None, Some((first_data.key(), first_hash.clone())), false).unwrap();
+        assert_ne!(changed_data.key(), first_data.key());
+        assert_eq!(changed_hash, crate::asset_io::content_hash(&modified));
+        assert_eq!(changed.link_hash.as_deref(), Some(changed_hash.as_str()));
     }
 }
 

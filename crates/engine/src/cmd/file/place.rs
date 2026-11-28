@@ -666,7 +666,22 @@ pub(super) fn place_contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
 fn place_layout_page(s: &mut Session, p: &Value, bytes: &[u8], format: Option<craft_file_formats::Format>) -> Result<Value> {
     const ID: &str = "file.place";
     let src = if format == Some(craft_file_formats::Format::Idml) {
-        crate::cmd::interchange::import_idml_confined(bytes, str_param(p, "path").map(std::path::Path::new)).map_err(|e| bad(ID, e.to_string()))?
+        let mut src = crate::cmd::interchange::import_idml_confined(bytes, str_param(p, "path").map(std::path::Path::new))
+            .map_err(|e| bad(ID, e.to_string()))?;
+        let dst_doc = document_of(s);
+        for asset in src.assets.values_mut() {
+            if asset.storage == designcraft_doc::Storage::Linked {
+                let a = std::sync::Arc::make_mut(asset);
+                a.link_relative = a
+                    .link
+                    .as_deref()
+                    .and_then(|link| dst_doc.as_deref().and_then(|d| crate::cmd::native_links::relative_to(d, std::path::Path::new(link))));
+                if let Some(source) = designcraft_doc::LinkedSource::of(a, dst_doc.as_deref()) {
+                    a.data = designcraft_doc::AssetData::linked_under(a.data.key(), source);
+                }
+            }
+        }
+        src
     } else {
         from_bytes(bytes)?
     };
@@ -1338,6 +1353,52 @@ mod layout_place_tests {
         assert!((bb.x0 - 100.0).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "page top-left at 0,0: {bb:?}");
         assert!(d.stories.values().any(|st| st.text == "From page one"), "stories come along");
         assert!(b.execute("file.place", &json!({"base64": b64, "name": "src.idml", "layoutPage": 2})).is_err(), "page 2 is empty");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn place_an_idml_page_with_a_linked_graphic_adopts_the_link() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (pkg_dir, dst_dir) = (dir.path().join("pkg"), dir.path().join("dst"));
+        std::fs::create_dir_all(pkg_dir.join("Links")).unwrap();
+        std::fs::create_dir_all(dst_dir.join("Links")).unwrap();
+        let red_png = designcraft_render::Rendered { width: 20, height: 20, pixels: [210, 20, 20, 255].repeat(400) }.to_png();
+        let blue_png = designcraft_render::Rendered { width: 20, height: 20, pixels: [20, 20, 210, 255].repeat(400) }.to_png();
+        let photo = pkg_dir.join("Links").join("photo.png");
+        std::fs::write(&photo, &red_png).unwrap();
+        std::fs::write(dst_dir.join("Links").join("photo.png"), &blue_png).unwrap();
+
+        let mut src = Session::new();
+        src.execute("file.new", &json!({})).unwrap();
+        src.execute("file.place", &json!({"path": photo, "width": 40, "x": 10, "y": 10})).unwrap();
+        let idml = designcraft_idml::export_idml_with(&src.doc().unwrap().doc, &designcraft_idml::ExportOptions { embed_images: false });
+        let idml_path = pkg_dir.join("src.idml");
+        std::fs::write(&idml_path, idml).unwrap();
+
+        let mut dst = Session::new();
+        dst.execute("file.new", &json!({})).unwrap();
+        let dst_path = dst_dir.join("out.designcraft");
+        dst.execute("file.saveAs", &json!({"path": dst_path})).unwrap();
+        let placed = dst.execute("file.place", &json!({"path": idml_path, "layoutPage": 1, "x": 50, "y": 50})).unwrap();
+        assert_eq!(placed["items"], 1);
+
+        let d = dst.doc().unwrap().doc.clone();
+        assert_eq!(d.assets.len(), 1);
+        let asset = d.assets.values().next().unwrap();
+        assert_eq!(asset.storage, designcraft_doc::Storage::Linked);
+        assert!(asset.data.embedded_bytes().is_none());
+        let expected_photo = std::path::absolute(&photo).unwrap();
+        assert_eq!(asset.link.as_deref(), expected_photo.to_str());
+        assert_ne!(asset.link_relative.as_deref(), Some("Links/photo.png"), "relative link must be rebased to dst");
+        let list = dst.execute("links.list", &json!({})).unwrap();
+        assert_eq!(list[0]["storage"], "linked");
+        assert_eq!(list[0]["status"], "ok");
+
+        let mut renderer = designcraft_render::Renderer::new();
+        renderer.threads = 0;
+        let img = renderer.render_page(&d, &dst.cache, 0, 1.0, false, &Default::default()).unwrap();
+        let px = img.pixel(65, 65);
+        assert!(px[0] > 150 && px[2] < 80, "expected red linked graphic, got {px:?}");
     }
 }
 

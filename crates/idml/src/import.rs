@@ -85,12 +85,25 @@ pub fn import_idml_report_with_previews(
     read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
     previews: &HashMap<String, Arc<Vec<u8>>>,
 ) -> Result<Imported> {
+    import_idml_linked(bytes, read_link, previews, &|_, _| {})
+}
+
+/// [`import_idml_report_with_previews`], passing each asset whose bytes came from `read_link`
+/// (together with the link string passed to `read_link`) to `link_asset` as it is imported, so the
+/// caller can move its bytes into linked storage instead of holding every linked file in memory at
+/// once.
+pub fn import_idml_linked(
+    bytes: &[u8],
+    read_link: &dyn Fn(&str) -> Option<Vec<u8>>,
+    previews: &HashMap<String, Arc<Vec<u8>>>,
+    link_asset: &dyn Fn(&str, &mut Asset),
+) -> Result<Imported> {
     let mut pkg = Package::open(bytes)?;
     let package = pkg.document()?;
     let root = package.root;
     let top = package.top;
     let mut warnings = package.warnings;
-    let mut im = Importer::new(read_link, previews);
+    let mut im = Importer::new(read_link, previews, link_asset);
     if let Some(m) = package.metadata {
         im.created = xmp_date(&m, "xmp:CreateDate");
         im.modified = xmp_date(&m, "xmp:ModifyDate");
@@ -145,6 +158,7 @@ struct Importer<'r> {
     read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
     /// Graphic `Self` → stand-in image for a linked file that can't be read.
     previews: &'r HashMap<String, Arc<Vec<u8>>>,
+    link_asset: &'r dyn Fn(&str, &mut Asset),
     next_id: u64,
     /// Cells every table in this import has reserved. One table is capped, but a file chooses
     /// how many tables it has, so the cap has to be document-wide as well (noted in review).
@@ -200,9 +214,9 @@ struct Importer<'r> {
     assets: BTreeMap<AssetId, Arc<Asset>>,
     /// Content lookup for `assets`, so each placed graphic doesn't compare against every earlier one.
     asset_index: designcraft_doc::AssetIndex,
-    /// Assets read from a link path at a page and crop, so later placements of that path, page
-    /// and crop reuse them unread.
-    linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), AssetId>,
+    /// Assets read from a link path at a page and crop, along with any SVG viewBox size sniffed
+    /// from their bytes before linking, so later placements reuse them unread.
+    linked_assets: HashMap<(String, u32, designcraft_doc::PdfCrop), (AssetId, Option<(f64, f64)>)>,
     ctx: ItemCtx,
     sections: Vec<Section>,
     footnote_options: designcraft_doc::FootnoteOptions,
@@ -248,7 +262,11 @@ struct Importer<'r> {
 }
 
 impl<'r> Importer<'r> {
-    fn new(read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>, previews: &'r HashMap<String, Arc<Vec<u8>>>) -> Self {
+    fn new(
+        read_link: &'r dyn Fn(&str) -> Option<Vec<u8>>,
+        previews: &'r HashMap<String, Arc<Vec<u8>>>,
+        link_asset: &'r dyn Fn(&str, &mut Asset),
+    ) -> Self {
         let specials: Vec<Swatch> = designcraft_color::default_swatches().into_iter().filter(|s| s.locked).collect();
         let mut swatch_names = HashMap::new();
         swatch_names.insert("Swatch/None".to_string(), swatch::NONE.to_string());
@@ -261,6 +279,7 @@ impl<'r> Importer<'r> {
         Importer {
             read_link,
             previews,
+            link_asset,
             next_id: 0,
             table_cells: 0,
             table_warnings: 0,
