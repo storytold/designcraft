@@ -2688,6 +2688,25 @@ fn layers_import_and_export_in_stacking_order() {
     assert_eq!(back.spreads[0].items[0].layer, back.layers[1].id);
 }
 
+/// Layer Options › Lock Guides is IDML's `LockGuides`: read, and written back (it was always
+/// written as false).
+#[test]
+fn layer_lock_guides_round_trips() {
+    let designmap = r#"<Document xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging" Self="d">
+      <Layer Self="L1" Name="Grid" LockGuides="true" ShowGuides="true"/>
+      <Layer Self="L2" Name="Art"/>
+      <idPkg:Spread src="Spreads/Spread_s.xml"/>
+    </Document>"#;
+    let spread = r#"<idPkg:Spread xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging">
+      <Spread Self="s"><Page Self="p" GeometricBounds="0 0 100 100" ItemTransform="1 0 0 1 0 0"/></Spread>
+    </idPkg:Spread>"#;
+    let d = import_idml(&zip_files(&[("designmap.xml", designmap), ("Spreads/Spread_s.xml", spread)])).unwrap();
+    let lock = |d: &Document, name: &str| d.layers.iter().find(|l| l.name == name).unwrap().lock_guides;
+    assert!(lock(&d, "Grid") && !lock(&d, "Art"));
+    let back = import_idml(&export_idml(&d)).unwrap();
+    assert!(lock(&back, "Grid") && !lock(&back, "Art"));
+}
+
 /// Synthetic forward references: both a body anchor and a footnote anchor own
 /// a group containing a text frame whose story is serialized later.
 #[test]
@@ -3126,6 +3145,22 @@ fn hostile_table_spans_are_clamped_before_arithmetic() {
     assert_eq!(table.cell(1, 1).unwrap().col_span, 2);
 }
 
+/// Spans are read as numbers: a fraction rounds down, a span past the table (even one too large for
+/// 32 bits) reaches its edge, and anything under 1 or not a number spans one cell.
+#[test]
+fn numeric_table_spans_round_down_and_stop_at_the_table_edge() {
+    for (raw, rows, cols) in
+        [("1.5", 1, 1), ("2.5", 2, 2), ("4000000000", 2, 3), ("1e300", 2, 3), ("0", 1, 1), ("-3", 1, 1), ("NaN", 1, 1), ("x", 1, 1)]
+    {
+        let story = CASCADE_STORY.replace("Name=\"0:0\"", &format!("Name=\"0:0\" RowSpan=\"{raw}\" ColumnSpan=\"{raw}\""));
+        let document = import_idml(&fixture_with_table_styles(CASCADE_STYLES, &story)).unwrap();
+        document.check().unwrap();
+        let table = document.stories.values().flat_map(|s| s.tables.values()).next().unwrap();
+        let cell = table.cell(0, 0).unwrap();
+        assert_eq!((cell.row_span, cell.col_span), (rows, cols), "{raw}");
+    }
+}
+
 #[test]
 fn signed_idml_edge_priorities_roundtrip_without_clamping() {
     let story = CASCADE_STORY.replace(
@@ -3212,6 +3247,45 @@ fn complete_uniform_native_style_fields_keep_legacy_identity_on_idml_roundtrip()
     let table = back.styles.table.iter().find(|s| s.name == "Uniform").unwrap();
     assert_eq!(table.border.as_ref(), Some(&stroke));
     assert!(table.borders.iter().all(designcraft_doc::CellStrokeAttrs::is_empty));
+}
+
+#[test]
+fn table_style_row_fills_overlay_legacy_alt_rows_on_idml_roundtrip() {
+    let mut document = import_idml(&fixture()).unwrap();
+    document.styles_mut().table.push(designcraft_doc::TableStyle {
+        name: "RowFillsOverlay".into(),
+        alt_rows: Some(designcraft_doc::AltFills {
+            first: 2,
+            first_color: designcraft_color::swatch::PAPER.into(),
+            first_tint: 0.25,
+            next: 3,
+            next_color: designcraft_color::swatch::BLACK.into(),
+            next_tint: 0.5,
+            skip_first: 0,
+            skip_last: 0,
+        }),
+        row_fills: designcraft_doc::AltFillsAttrs {
+            first: Some(0),
+            first_color: Some(designcraft_color::swatch::BLACK.into()),
+            first_tint: Some(0.8),
+            next: Some(1),
+            next_color: Some(designcraft_color::swatch::PAPER.into()),
+            next_tint: Some(0.1),
+            skip_first: Some(1),
+            skip_last: Some(2),
+        },
+        ..Default::default()
+    });
+    let back = import_idml(&export_idml(&document)).unwrap();
+    let table = back.styles.table.iter().find(|s| s.name == "RowFillsOverlay").unwrap();
+    assert_eq!(table.row_fills.first, Some(0));
+    assert_eq!(table.row_fills.first_color.as_deref(), Some(designcraft_color::swatch::BLACK));
+    assert!((table.row_fills.first_tint.unwrap() - 0.8).abs() < 1e-4);
+    assert_eq!(table.row_fills.next, Some(1));
+    assert_eq!(table.row_fills.next_color.as_deref(), Some(designcraft_color::swatch::PAPER));
+    assert!((table.row_fills.next_tint.unwrap() - 0.1).abs() < 1e-4);
+    assert_eq!(table.row_fills.skip_first, Some(1));
+    assert_eq!(table.row_fills.skip_last, Some(2));
 }
 
 #[test]

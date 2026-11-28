@@ -112,6 +112,68 @@ fn to_png_survives_a_mismatched_buffer() {
 }
 
 #[test]
+fn to_png_parity_color_alpha_no_icc_no_phys_and_zero_guard() {
+    let rendered = Rendered {
+        width: 2,
+        height: 2,
+        pixels: vec![
+            128, 64, 0, 128, // premultiplied half-alpha -> straight [255, 128, 0, 128]
+            10, 20, 30, 255, // opaque
+            0, 0, 0, 0, // transparent
+            255, 0, 0, 255, // opaque red
+        ],
+    };
+    let png = rendered.to_png();
+    let decoded = craft_image_codecs::decode(&png).expect("valid PNG");
+    assert_eq!(decoded.dimensions(), (2, 2));
+    assert_eq!(decoded.layout(), craft_image_codecs::ChannelLayout::Rgba);
+    assert_eq!(decoded.sample_type(), craft_image_codecs::SampleType::U8);
+    assert_eq!(decoded.icc, None);
+    assert_eq!(decoded.meta.dpi, None);
+    assert_eq!(designcraft_images::raster_resolution(&png), None);
+    assert_eq!(decoded.data(), &[255, 128, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0, 255, 0, 0, 255]);
+
+    assert!(Rendered { width: 0, height: 0, pixels: vec![] }.to_png().is_empty());
+    assert!(Rendered { width: 0, height: 4, pixels: vec![] }.to_png().is_empty());
+    assert!(Rendered { width: 4, height: 0, pixels: vec![] }.to_png().is_empty());
+}
+
+#[test]
+fn to_jpeg_parity_white_backdrop_quality_no_icc_no_density_and_guards() {
+    let rendered = Rendered {
+        width: 2,
+        height: 2,
+        pixels: vec![
+            128, 0, 0, 128, // premultiplied half-alpha red over white -> ~[255, 127, 127]
+            0, 0, 0, 0, // transparent -> white [255, 255, 255]
+            10, 20, 30, 255, // opaque dark
+            0, 255, 0, 255, // opaque green
+        ],
+    };
+    let jpeg = rendered.to_jpeg(95);
+    let decoded = craft_image_codecs::decode(&jpeg).expect("valid JPEG");
+    assert_eq!(decoded.dimensions(), (2, 2));
+    assert_eq!(decoded.layout(), craft_image_codecs::ChannelLayout::Rgb);
+    assert_eq!(decoded.sample_type(), craft_image_codecs::SampleType::U8);
+    assert_eq!(decoded.icc, None);
+    assert_eq!(decoded.meta.dpi, None);
+    assert_eq!(designcraft_images::raster_resolution(&jpeg), None);
+
+    // Quality clamping (0 -> 1, 200 -> 100) produces valid JPEGs and respects quality ordering.
+    let low = rendered.to_jpeg(0);
+    let high = rendered.to_jpeg(200);
+    assert_eq!(craft_image_codecs::decode(&low).expect("clamped low").dimensions(), (2, 2));
+    assert_eq!(craft_image_codecs::decode(&high).expect("clamped high").dimensions(), (2, 2));
+
+    // Mismatched short buffer survives like to_png, and zero dimensions return empty.
+    let short = Rendered { width: 4, height: 4, pixels: vec![255; 10] }.to_jpeg(90);
+    assert_eq!(craft_image_codecs::decode(&short).expect("short buffer").dimensions(), (4, 4));
+    assert!(Rendered { width: 0, height: 0, pixels: vec![] }.to_jpeg(90).is_empty());
+    assert!(Rendered { width: 0, height: 4, pixels: vec![] }.to_jpeg(90).is_empty());
+    assert!(Rendered { width: 4, height: 0, pixels: vec![] }.to_jpeg(90).is_empty());
+}
+
+#[test]
 fn proof_view_simulates_the_target() {
     use designcraft_color::cms::{ProofSetup, ProofTarget};
     let red = |a: u8| Rendered { width: 1, height: 1, pixels: vec![a, 0, 0, a] };
@@ -545,6 +607,55 @@ fn table_edges_paint_gap_colour_between_dashes_and_stripes() {
     assert!(cyan(space), "gap {space:?}");
     let column: Vec<_> = (rect.y1 as u32 - 5..=rect.y1 as u32 + 5).map(|y| img.pixel(rect.center().x as u32, y)).collect();
     assert!(column.iter().any(|p| ink(*p)) && column.iter().any(|p| cyan(*p)), "stripes and gap: {column:?}");
+}
+
+#[test]
+fn cell_diagonal_lines_draw_in_front_of_or_behind_the_cell_text() {
+    let render = |lines, in_front| {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 336.0, 400.0), lid, "", ParaFormat::default()).unwrap();
+        let mut t = designcraft_doc::Table::new(1, 1, 1, 0, 0, 200.0);
+        t.rows[0].height = 60.0;
+        t.rows[0].mode = designcraft_doc::RowHeightMode::Exactly;
+        let cell = t.cell_mut(0, 0).unwrap();
+        cell.text.insert(0, "WWWWWWWWWWWWWWWWWWWW");
+        cell.text.format_chars(0..20, |f| f.over.size = Some(30.0));
+        let stroke = designcraft_doc::CellStroke { weight: 6.0, color: "C=100 M=0 Y=0 K=0".into(), ..Default::default() };
+        cell.diagonal = designcraft_doc::CellDiagonal { lines, stroke, in_front };
+        d.story_mut(sid).unwrap().insert_table(0, t);
+        let cache = Cache::new();
+        let rect = cache.get(&d, sid, None).frames[0].tables[0].cell(0, 0).unwrap().rect;
+        let mut r = Renderer::new();
+        r.threads = 0;
+        let img = r.render_page(&d, &cache, 0, 1.0, false, &RenderOptions::default()).unwrap();
+        let cyan = |p: [u8; 4]| p[0] < 80 && p[2] > 150;
+        let inside = |x: f64, y: f64| x > rect.x0 + 4.0 && x < rect.x1 - 4.0 && y > rect.y0 + 4.0 && y < rect.y1 - 4.0;
+        let count = |a: (f64, f64), b: (f64, f64)| {
+            (0..=200)
+                .map(|i| (a.0 + (b.0 - a.0) * i as f64 / 200.0, a.1 + (b.1 - a.1) * i as f64 / 200.0))
+                .filter(|&(x, y)| inside(x, y) && cyan(img.pixel(x as u32, y as u32)))
+                .count()
+        };
+        let down = count((rect.x0, rect.y0), (rect.x1, rect.y1));
+        let up = count((rect.x1, rect.y0), (rect.x0, rect.y1));
+        // Just past the corner, outside the cell.
+        let outside = img.pixel((rect.x1 + 2.0) as u32, (rect.y1 + 2.0) as u32);
+        (down, up, cyan(outside))
+    };
+    use designcraft_doc::DiagonalLines;
+    assert_eq!(render(DiagonalLines::None, true), (0, 0, false));
+    let (down, up, outside) = render(DiagonalLines::Crossed, true);
+    assert!(down > 150 && up > 150 && !outside, "crossed: {down} {up} {outside}");
+    let (down, up, _) = render(DiagonalLines::TopLeft, true);
+    // The other diagonal meets this one only where they cross, near the middle.
+    assert!(down > 150 && up < 40, "top left to bottom right: {down} {up}");
+    let (down, up, _) = render(DiagonalLines::TopRight, true);
+    assert!(down < 40 && up > 150, "top right to bottom left: {down} {up}");
+    // The text covers part of the line drawn behind it.
+    let (behind, _, _) = render(DiagonalLines::TopLeft, false);
+    let (front, _, _) = render(DiagonalLines::TopLeft, true);
+    assert!(behind + 10 < front, "content in front: {behind} vs {front}");
 }
 
 #[test]

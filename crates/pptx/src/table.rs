@@ -167,6 +167,9 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
     if t.cells.iter().any(|c| c.graphic.is_some()) {
         ex.warn("graphic cells are exported empty");
     }
+    if t.cells.iter().any(|c| !c.diagonals.is_empty() && !c.diagonals_in_front) {
+        ex.warn("diagonal lines drawn behind cell contents are exported without that drawing order");
+    }
     let edges_of = EdgeIndex::new(&t.strokes);
     let id = ex.id();
     let mut model = craft_pptx::table::Table {
@@ -223,6 +226,10 @@ fn table(ex: &mut Exporter, t: &TableFrag, m: Affine, k: f64, opacity: f32) {
                 edges_of.stroke(a, b)
             };
             cell.borders = ['L', 'R', 'T', 'B'].map(|side| Some(model_border(ex, edge(side), k, opacity)));
+            // Cell Options › Diagonal Lines.
+            let diagonal = |down: bool| placed.diagonals.iter().find(|s| ((s.a.x < s.b.x) == (s.a.y < s.b.y)) == down);
+            cell.diag_down = diagonal(true).map(|seg| model_border(ex, Some(seg), k, opacity));
+            cell.diag_up = diagonal(false).map(|seg| model_border(ex, Some(seg), k, opacity));
         }
     }
     ex.native_shapes.push(craft_pptx::Shape {
