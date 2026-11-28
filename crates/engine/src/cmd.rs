@@ -57,7 +57,7 @@ pub mod preflight;
 mod prefs;
 mod prepress;
 mod print;
-mod qr;
+pub mod qr;
 mod rulers;
 mod scripts;
 mod select;
