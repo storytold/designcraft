@@ -535,12 +535,14 @@ mod automation_contract_tests {
         let history = app.session.doc().unwrap().history.undo.len();
         app.session.begin_interaction("Style Options").unwrap();
         app.session.preview("style.paragraph.edit", json!({"name":designcraft_doc::BASIC_PARAGRAPH,"chars":{"size":24}})).unwrap();
-        app.ui.dialog = Some(crate::dialogs::Dialog::new(
+        let mut d = crate::dialogs::Dialog::new(
             "paragraphStyleOptions",
             json!({
                 "name":designcraft_doc::BASIC_PARAGRAPH,"preview":true,"_previewed":{"chars":{"size":24}}
             }),
-        ));
+        );
+        crate::dialogs::record_preview_owner(&app, &mut d);
+        app.ui.dialog = Some(d);
         assert_ne!(app.session.doc().unwrap().doc, before);
         let response = call(&mut app, &ctx, "ui.dialog.open", json!({"id":"characterStyleOptions","fields":{"new":true}}));
         assert_eq!(response["ok"], true);
