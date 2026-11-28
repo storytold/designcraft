@@ -628,8 +628,9 @@ mod story_direction_tests {
         assert_eq!(direction(&s, a), TextDirection::RightToLeft);
     }
 
-    /// A new text frame's story takes the default text frame style's Story Options, as in
-    /// InDesign; a part the style doesn't set stays as a new story has it.
+    /// A new text frame's story takes the default text frame style's Story Options (InDesign
+    /// doesn't: there a new frame needs Clear Overrides); a part the style doesn't set stays as a
+    /// new story has it (the direction by the binding).
     #[test]
     fn a_new_text_frame_takes_the_default_styles_story_options() {
         let mut s = Session::new();

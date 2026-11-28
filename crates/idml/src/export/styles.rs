@@ -143,7 +143,8 @@ impl<'a> Ex<'a> {
             }
             // Story Options: Optical Margin Alignment and its size (as a new story has them when
             // the style doesn't set them), and Story Direction: `UnknownDirection` when the style
-            // sets none, as InDesign writes it.
+            // sets none, as InDesign writes it. Object styles here set no orientation, so it is
+            // `Unknown` and InDesign leaves a vertical story vertical.
             if os.story_direction.is_some() || os.optical_margin.is_some() {
                 let om = os.optical_margin.unwrap_or_default();
                 let mut pref = crate::xml::from_craft(
@@ -156,6 +157,7 @@ impl<'a> Ex<'a> {
                     }
                     .to_el(),
                 );
+                pref.set("StoryOrientation", "Unknown");
                 if os.story_direction.is_none() {
                     pref.set("StoryDirection", "UnknownDirection");
                 }

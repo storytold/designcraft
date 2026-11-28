@@ -295,7 +295,9 @@ impl Document {
         let sid = StoryId(self.alloc());
         let mut story = Story::with_text(sid, text, para);
         story.direction = self.new_story_direction();
-        // The default text frame style's Story Options, where it sets them, as InDesign gives them.
+        // The default text frame style's Story Options, where it sets them (else the binding's
+        // direction above). InDesign doesn't give them to a new frame, which then needs Clear
+        // Overrides; done here on purpose, since that's what a right-to-left default style is for.
         if let Some(os) = self.styles.object_style(&self.styles.default_text_frame) {
             if let Some(d) = os.story_direction {
                 story.direction = d;
