@@ -486,6 +486,12 @@ impl<'a> Ex<'a> {
     /// Write paragraph attributes `a`, set over the resolved paragraph style `parent` (`None` for the
     /// root style).
     pub(super) fn para_attrs(&mut self, el: &mut El, props: &mut Vec<El>, a: &ParaAttrs, parent: Option<&str>) {
+        if a.last_line_min_fill.is_some_and(|v| v > 0.0) {
+            let warning = "lastLineMinFill has no IDML equivalent and was omitted".to_string();
+            if !self.warnings.contains(&warning) {
+                self.warnings.push(warning);
+            }
+        }
         let cjk = craft_idml::model::CjkParagraphValues {
             kinsoku_hang: a.kinsoku_hang.map(|value| match value {
                 designcraft_doc::cjk::KinsokuHang::None => "None".into(),

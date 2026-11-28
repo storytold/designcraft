@@ -172,6 +172,11 @@ fn percent(v: f64) -> String {
 /// the order of each row once the values are applied.
 pub(crate) fn validate_para_values(attrs: &ParaAttrs, command_id: &str) -> Result<()> {
     use designcraft_doc::Align;
+    if let Some(v) = attrs.last_line_min_fill
+        && !(0.0..=1.0).contains(&v)
+    {
+        return Err(bad(command_id, "lastLineMinFill must be a finite fraction from 0 to 1"));
+    }
     let spaces = [
         ("leftIndent", attrs.left_indent, 0.0),
         ("rightIndent", attrs.right_indent, 0.0),
@@ -1240,6 +1245,27 @@ mod size_bounds_tests {
     use serde_json::{Value, json};
 
     use crate::Session;
+
+    #[test]
+    fn last_line_fill_validation_styles_and_native_round_trip() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        let f = s.execute("frame.create", &json!({"rect": [0, 0, 300, 300], "content": "text", "text": "Hello world"})).unwrap();
+        s.execute("text.select", &json!({"story": f["story"], "anchor": 0, "focus": 5})).unwrap();
+        for v in [json!(-0.1), json!(1.1), json!("NaN")] {
+            assert!(s.execute("type.para", &json!({"attrs": {"lastLineMinFill": v}})).is_err());
+            assert!(s.execute("style.paragraph.create", &json!({"name": "Bad", "para": {"lastLineMinFill": v}})).is_err());
+        }
+        for v in [0.0, 0.6, 1.0] {
+            s.execute("type.para", &json!({"attrs": {"lastLineMinFill": v}})).unwrap();
+            assert_eq!(s.execute("type.selectionAttrs", &json!({})).unwrap()["para"]["lastLineMinFill"], v);
+        }
+        s.execute("style.paragraph.create", &json!({"name": "Fill", "para": {"lastLineMinFill": 0.6}})).unwrap();
+        let doc = &s.doc().unwrap().doc;
+        let bytes = designcraft_format::save(doc).unwrap();
+        let loaded = designcraft_format::load(&bytes).unwrap();
+        assert_eq!(serde_json::to_value(&loaded).unwrap(), serde_json::to_value(doc).unwrap());
+    }
 
     /// Type size was not checked anywhere: `{"size": 0}` set type with no size at all, a negative
     /// size was accepted the same way, and 1e9 pt asked the composer for a line a million times

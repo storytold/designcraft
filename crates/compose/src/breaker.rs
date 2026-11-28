@@ -1062,6 +1062,191 @@ pub fn line_width(glyphs: &[Glyph], b: &Break) -> f64 {
     w + if b.hyphen && b.end > 0 { glyphs[b.end - 1].size * 0.33 } else { 0.0 }
 }
 
+/// Retry a short final line using legal breaks and strict spacing capacities. Line count wins
+/// first, then the number of changed lines. Caps keep this optional pass cheap on hostile input;
+/// exhausting the budget preserves the original layout rather than accepting a partial search.
+pub fn last_line_fill(
+    glyphs: &[Glyph],
+    hyphens: &[bool],
+    sp: &Spacing,
+    width: &dyn Fn(usize) -> f64,
+    minimum: f64,
+    justify_last: bool,
+    original: Vec<Break>,
+) -> Vec<Break> {
+    let count = original.len();
+    if !minimum.is_finite()
+        || minimum <= 0.0
+        || !(2..=128).contains(&count)
+        || glyphs.len() > 4000
+        || glyphs.iter().any(|g| g.ch == '\t' || is_forced(g.ch))
+        || original.last().is_none_or(|b| line_width(glyphs, b) >= minimum * width(count - 1))
+    {
+        return original;
+    }
+    let (mut items, ig) = items(glyphs, hyphens, &[], sp);
+    for (it, &i) in items.iter_mut().zip(&ig) {
+        if it.kind == Kind::Box && glyphs.get(i).is_some_and(|g| g.adv <= 0.0) {
+            it.st[1] = 0.0;
+            it.sh[1] = 0.0;
+        }
+    }
+    let opportunities: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, it)| {
+            (matches!(it.kind, Kind::Penalty) && it.p < INF || it.kind == Kind::Glue && i > 0 && items[i - 1].kind == Kind::Box).then_some(i)
+        })
+        .collect();
+    if opportunities.len() > 256 {
+        return original;
+    }
+    let PrefixSums { sw, sy, sz, so } = prefix_sums(&items);
+    let first = items.iter().find(|it| it.kind == Kind::Box);
+    let elastic = first.map_or([0.0; 2], |it| it.start_elastic);
+    let mut arena = vec![Node {
+        pos: 0,
+        line: 0,
+        fitness: 1,
+        tw: first.map_or(0.0, |it| it.hang),
+        ty: [-elastic[0], 0.0, 0.0],
+        tz: [-elastic[1], 0.0, 0.0],
+        to: 0.0,
+        demerits: 0.0,
+        prev: None,
+        hyphens: 0,
+        flagged: false,
+    }];
+    let mut changed = vec![0usize];
+    let mut active = vec![0usize];
+    let mut ends = Vec::new();
+    let mut work = 0usize;
+    // Do not introduce an extra line that could overset a frame. The retry's line-count
+    // budget is the original count; absorption may use fewer lines.
+    for line in 0..count {
+        let mut next = std::collections::BTreeMap::<(usize, u32), usize>::new();
+        for &a in &active {
+            let n = arena[a];
+            for &b in &opportunities {
+                work += 1;
+                if work > 200_000 {
+                    return original;
+                }
+                if n.prev.is_some() && b <= n.pos {
+                    continue;
+                }
+                let it = items[b];
+                let target = width(line).max(1.0);
+                let natural = sw[b] - n.tw + if it.kind == Kind::Penalty { it.w } else { 0.0 } - it.hang;
+                let end = b + 1 == items.len();
+                let mut stretch = 0.0;
+                let mut shrink = 0.0;
+                for t in 0..3 {
+                    // Final fill glue is not real spacing capacity.
+                    let fill = if end && t == 0 { INF } else { 0.0 };
+                    stretch += (sy[b][t] - n.ty[t] - fill + if t == 0 { it.edge_elastic[0] } else { 0.0 }).max(0.0);
+                    shrink += (sz[b][t] - n.tz[t] + if t == 0 { it.edge_elastic[1] } else { 0.0 }).max(0.0);
+                }
+                // distribute() has no letter gap after the last visible glyph. An inserted
+                // hyphen supplies that gap; a normal word/paragraph boundary does not.
+                if (!it.flagged || it.w <= 0.0)
+                    && let Some(last) = ig[b]
+                        .checked_sub(1)
+                        .and_then(|i| glyphs.get(..=i))
+                        .and_then(|g| g.iter().rev().find(|g| !g.is_justify_space() && g.adv > 0.0))
+                {
+                    let (st, sh) = sp.box_elastic(last);
+                    stretch = (stretch - st[1]).max(0.0);
+                    shrink = (shrink - sh[1]).max(0.0);
+                }
+                let delta = target - natural;
+                if !natural.is_finite()
+                    || delta < -shrink - FIT_EPS
+                    || ((!end || justify_last) && sp.justify && delta > stretch + FIT_EPS)
+                    || (end && natural.min(target) + FIT_EPS < minimum * target)
+                    || it.flagged && !hyphen_allowed(it, n, sp, &sw, &items, target)
+                {
+                    continue;
+                }
+                let candidate = breaks_from_positions(&items, &ig, glyphs, &[b]).pop();
+                let start = n.prev.map_or(0, |_| {
+                    let mut i = ig[n.pos];
+                    while glyphs.get(i).is_some_and(Glyph::is_space) {
+                        i += 1;
+                    }
+                    i
+                });
+                let Some(mut candidate) = candidate else {
+                    continue;
+                };
+                candidate.start = start;
+                let edits = changed[a] + usize::from(original.get(line) != Some(&candidate));
+                let hs = if it.flagged { n.hyphens.saturating_add(1) } else { 0 };
+                let cost = n.demerits + delta.abs() + if it.flagged { sp.hyphen_penalty } else { 0.0 };
+                let key = (b, hs);
+                if next.get(&key).is_some_and(|&old| (changed[old], arena[old].demerits) <= (edits, cost)) {
+                    continue;
+                }
+                let mut i = b;
+                while i < items.len() && items[i].kind != Kind::Box {
+                    i += 1;
+                }
+                let edge = items.get(i);
+                let mut ty = sy[i];
+                let mut tz = sz[i];
+                ty[0] -= edge.map_or(0.0, |x| x.start_elastic[0]);
+                tz[0] -= edge.map_or(0.0, |x| x.start_elastic[1]);
+                arena.push(Node {
+                    pos: b,
+                    line: line + 1,
+                    fitness: 1,
+                    tw: sw[i] + edge.map_or(0.0, |x| x.hang),
+                    ty,
+                    tz,
+                    to: so[i],
+                    demerits: cost,
+                    prev: Some(a),
+                    hyphens: hs,
+                    flagged: it.flagged,
+                });
+                changed.push(edits);
+                next.insert(key, arena.len() - 1);
+            }
+        }
+        active.clear();
+        for &a in next.values() {
+            if arena[a].pos + 1 == items.len() {
+                ends.push(a);
+            } else {
+                active.push(a);
+            }
+        }
+        if line + 1 == count && ends.iter().any(|&a| arena[a].line == count) {
+            break;
+        }
+        if active.is_empty() {
+            break;
+        }
+    }
+    let Some(end) = ends.into_iter().min_by(|&a, &b| {
+        (usize::from(arena[a].line != count), changed[a] + count.saturating_sub(arena[a].line), arena[a].line.abs_diff(count))
+            .cmp(&(usize::from(arena[b].line != count), changed[b] + count.saturating_sub(arena[b].line), arena[b].line.abs_diff(count)))
+            .then_with(|| arena[a].demerits.total_cmp(&arena[b].demerits))
+    }) else {
+        return original;
+    };
+    let mut chain = Vec::new();
+    let mut cur = Some(end);
+    while let Some(a) = cur {
+        if arena[a].prev.is_some() {
+            chain.push(arena[a].pos);
+        }
+        cur = arena[a].prev;
+    }
+    chain.reverse();
+    breaks_from_positions(&items, &ig, glyphs, &chain)
+}
+
 /// Balance Ragged Lines: keep the composer's line count but make the lines as even as possible,
 /// by composing against the narrowest measure that still yields that many lines.
 pub fn balanced(glyphs: &[Glyph], hyph_after: &[bool], sp: &Spacing, width: &dyn Fn(usize) -> f64) -> Vec<Break> {

@@ -51,6 +51,9 @@ attr_set! {
         /// Better spacing (0) ↔ fewer hyphens (1).
         hyph_weight: f64 = 0.5,
         // Justification (percent as fractions)
+        /// Minimum natural last-line fill; zero disables the bounded rebreak pass.
+        #[serde(deserialize_with = "last_line_fill")]
+        last_line_min_fill: f64 = 0.0,
         word_space_min: f64 = 0.8,
         word_space_desired: f64 = 1.0,
         word_space_max: f64 = 1.33,
@@ -209,6 +212,27 @@ attr_set! {
     }
 }
 
+trait LoadedFill {
+    fn loaded(value: f64) -> Self;
+}
+impl LoadedFill for f64 {
+    fn loaded(value: f64) -> Self {
+        value
+    }
+}
+impl LoadedFill for Option<f64> {
+    fn loaded(value: f64) -> Self {
+        Some(value)
+    }
+}
+
+// Both sparse attributes and resolved properties sanitize file input. Commands deserialize
+// individual numbers through set_json and validate them before applying them.
+fn last_line_fill<'de, D: serde::Deserializer<'de>, T: LoadedFill>(d: D) -> Result<T, D::Error> {
+    let value = Option::<f64>::deserialize(d)?.unwrap_or(0.0);
+    Ok(T::loaded(if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 }))
+}
+
 impl ParaAttrs {
     /// [`set_json`](Self::set_json), except that a `ruleAbove` / `ruleBelow` object names only the
     /// rule fields to change; the others keep their values in `current` (the resolved attributes
@@ -263,5 +287,25 @@ impl ParaProps {
         let mut s: String = self.bullet_char.chars().filter(|c| *c != '\n' && *c != '\r').collect();
         s.push_str(&expand_list_text(&self.list_separator, ""));
         s
+    }
+}
+
+#[cfg(test)]
+mod last_line_tests {
+    use super::*;
+    #[test]
+    fn loaded_fill_is_finite_clamped_and_round_trips() {
+        for (json, expected) in [
+            ("{}", None),
+            (r#"{"lastLineMinFill":-2}"#, Some(0.0)),
+            (r#"{"lastLineMinFill":2}"#, Some(1.0)),
+            (r#"{"lastLineMinFill":0.6}"#, Some(0.6)),
+            (r#"{"lastLineMinFill":null}"#, Some(0.0)),
+        ] {
+            let attrs: ParaAttrs = serde_json::from_str(json).unwrap();
+            assert_eq!(attrs.last_line_min_fill, expected);
+            let back: ParaAttrs = serde_json::from_value(serde_json::to_value(&attrs).unwrap()).unwrap();
+            assert_eq!(back, attrs);
+        }
     }
 }

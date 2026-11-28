@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- 2026-11-20: `lastLineMinFill` retries short paragraph endings within justification ranges, keeping the line count when possible. Paragraph overrides and styles retain it in native files; IDML export warns that it is omitted.
+
 - 2026-11-19: Arabic UI glyphs use installed Arabic fonts when the optional craft-fonts input is absent; Arabic-specific families keep letters and spaces in the same fallback face (#3018).
 - **2026-11-18 · UI1994:** Hidden-character marks follow frame, layer and containing-group
   visibility. Locked, visible layers still show marks; showing a hidden layer restores them.
