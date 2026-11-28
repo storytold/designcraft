@@ -131,7 +131,9 @@ pub(super) fn sort_rows(s: &mut Session, p: &Value) -> Result<Value> {
             let (ka, kb) = (key(*a), key(*b));
             let o = match (ka.replace(',', "").parse::<f64>(), kb.replace(',', "").parse::<f64>()) {
                 (Ok(x), Ok(y)) => x.total_cmp(&y),
-                _ => ka.to_lowercase().cmp(&kb.to_lowercase()),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                (Err(_), Err(_)) => ka.to_lowercase().cmp(&kb.to_lowercase()),
             };
             if desc { o.reverse() } else { o }
         });
@@ -274,6 +276,20 @@ mod sort_tests {
         assert_eq!(col(&s, 0), ["Name", "Apple", "fig", "pear"], "header stays; case-insensitive");
         s.execute("table.sortRows", &json!({"column": 1, "descending": true})).unwrap();
         assert_eq!(col(&s, 1), ["Qty", "100", "10", "9"], "numbers by value");
+
+        for (row, text) in [(1, "1x"), (2, "10"), (3, "2")] {
+            s.execute("table.setCell", &json!({"rows": [row, row], "cols": [1, 1], "text": text})).unwrap();
+        }
+        let r = s.execute("table.sortRows", &json!({"column": 1})).unwrap();
+        assert_eq!(r, json!({"sorted": 3}));
+        assert_eq!(col(&s, 1), ["Qty", "2", "10", "1x"]);
+        assert_eq!(col(&s, 0), ["Name", "Apple", "pear", "fig"]);
+
+        let r = s.execute("table.sortRows", &json!({"column": 1, "descending": true})).unwrap();
+        assert_eq!(r, json!({"sorted": 3}));
+        assert_eq!(col(&s, 1), ["Qty", "1x", "10", "2"]);
+        assert_eq!(col(&s, 0), ["Name", "fig", "pear", "Apple"]);
+
         s.execute("table.splitVertically", &json!({"rows": [1, 1], "cols": [0, 0]})).unwrap();
         let r = s.execute("table.splitHorizontally", &json!({"rows": [0, 0], "cols": [1, 1]})).unwrap();
         assert_eq!((r["rows"].as_u64(), r["cols"].as_u64()), (Some(5), Some(3)));
